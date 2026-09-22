@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { CommentIndex } from "./CommentIndex";
 import type { Comment } from "../types";
 
@@ -29,5 +29,66 @@ describe("CommentIndex", () => {
     expect(screen.getByText(/1 stale/)).toBeInTheDocument();
     // Only the open comment carries the "⚠ stale" entry badge.
     expect(screen.getAllByText("⚠ stale")).toHaveLength(1);
+  });
+
+  it("offers stale cards resolve + delete but no edit", () => {
+    const onToggleResolved = vi.fn();
+    const onDelete = vi.fn();
+    const onEdit = vi.fn();
+    render(
+      <CommentIndex
+        open onOpenChange={() => {}} comments={comments} onJump={() => {}}
+        onEdit={onEdit} onDelete={onDelete} onToggleResolved={onToggleResolved}
+      />,
+    );
+    expect(screen.getByTitle("Resolve")).toBeInTheDocument();
+    expect(screen.getByTitle("Delete")).toBeInTheDocument();
+    expect(screen.queryByTitle("Edit")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle("Resolve"));
+    expect(onToggleResolved).toHaveBeenCalledWith("l");
+
+    // Delete goes through the confirm dialog before reaching onDelete.
+    fireEvent.click(screen.getByTitle("Delete"));
+    const dialog = screen.getByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    expect(onDelete).toHaveBeenCalledWith("l");
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+
+  it("edits fresh cards inline; saving persists and closes the editor", () => {
+    const onEdit = vi.fn();
+    const onJump = vi.fn();
+    const fresh: Comment[] = [{ ...comments[0], id: "f", stale: false, body: "draft text" }];
+    render(
+      <CommentIndex
+        open onOpenChange={() => {}} comments={fresh} onJump={onJump}
+        onEdit={onEdit} onDelete={vi.fn()} onToggleResolved={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTitle("Edit"));
+    const area = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(area.value).toBe("draft text");
+    // Typing inside the editor must not count as a card click (no jump).
+    fireEvent.click(area);
+    expect(onJump).not.toHaveBeenCalled();
+    fireEvent.change(area, { target: { value: "rewritten" } });
+    fireEvent.click(screen.getByRole("button", { name: /Save/ }));
+    expect(onEdit).toHaveBeenCalledWith("f", "rewritten");
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("resolved cards swap resolve for reopen", () => {
+    const onToggleResolved = vi.fn();
+    const done: Comment[] = [{ ...comments[0], id: "d", stale: true, resolved: true }];
+    render(
+      <CommentIndex
+        open onOpenChange={() => {}} comments={done} onJump={() => {}}
+        onEdit={vi.fn()} onDelete={vi.fn()} onToggleResolved={onToggleResolved}
+      />,
+    );
+    expect(screen.queryByTitle("Resolve")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTitle("Reopen"));
+    expect(onToggleResolved).toHaveBeenCalledWith("d");
   });
 });

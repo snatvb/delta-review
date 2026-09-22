@@ -745,6 +745,9 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
               onOpenChange={setIndexOpen}
               comments={allComments}
               onJump={onJump}
+              onEdit={updateCommentBody}
+              onDelete={deleteComment}
+              onToggleResolved={toggleResolved}
             />
           </>
           )
