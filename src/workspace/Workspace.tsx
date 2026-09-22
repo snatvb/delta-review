@@ -21,7 +21,7 @@ import { useReview } from "../review/useReview";
 import { useResolvedTheme } from "../theme";
 import { useDiffLayout } from "../diff/useDiffLayout";
 import { useResizableWidth, usePaneResize, PaneResizer, FILE_PANE } from "../lib/resizablePane";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Columns2, Copy, ExternalLink, GitBranch, MessageSquare, RefreshCw, Rows2, Search, Settings } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Columns2, Copy, ExternalLink, GitBranch, Loader2, MessageSquare, RefreshCw, Rows2, Search, Settings } from "lucide-react";
 import { getEditorPref } from "../editor";
 import { worktreeName } from "../lib/utils";
 import {
@@ -89,6 +89,9 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   const [commitOid, setCommitOid] = useState<string | null>(target.commit ?? null);
   const [commits, setCommits] = useState<CommitMeta[]>([]);
   const [commitSummary, setCommitSummary] = useState<DiffSummary | null>(null);
+  const [loadedCommitOid, setLoadedCommitOid] = useState<string | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const openSeq = useRef(0);
   const [summary, setSummary] = useState<DiffSummary | null>(null);
   const [repoName, setRepoName] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -136,9 +139,15 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   }, []);
 
   async function open() {
+    const seq = ++openSeq.current;
+    const isCurrent = () => seq === openSeq.current;
+    setDiffLoading(true);
     try {
       setError(null);
       const session = await api.openReview({ repoPath: target.repoPath, mode: diffMode, base: target.base });
+      if (!isCurrent()) {
+        return;
+      }
       setReview(session.review);
       setSummary(session.summary);
       track("review_opened", { file_count_bucket: fileCountBucket(session.summary.files.length) });
@@ -147,9 +156,16 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       pendingRef.current = null;
       setPendingRefresh(false);
     } catch (e) {
+      if (!isCurrent()) {
+        return;
+      }
       setError(String(e));
       setSummary(null);
       setReview(null);
+    } finally {
+      if (isCurrent()) {
+        setDiffLoading(false);
+      }
     }
   }
 
@@ -200,8 +216,18 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     let cancelled = false;
     const vt: Target = { ...review.target, mode: "commit", commit: commitOid };
     void api.computeDiff(vt).then(
-      (s) => { if (!cancelled) setCommitSummary(s); },
-      (e) => { if (!cancelled) setError(String(e)); },
+      (s) => {
+        if (!cancelled) {
+          setCommitSummary(s);
+          setLoadedCommitOid(commitOid);
+        }
+      },
+      (e) => {
+        if (!cancelled) {
+          setError(String(e));
+          setLoadedCommitOid(commitOid);
+        }
+      },
     );
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -422,6 +448,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     [review, inCommitMode, commitOid],
   );
   const viewSummary = inCommitMode ? commitSummary : summary;
+  const busy = diffLoading || (inCommitMode && loadedCommitOid !== commitOid);
   // Each mode-context shows its own comments: the current commit's in commit mode, the
   // untagged ones otherwise. The index + Copy still see everything (allComments).
   const comments = useMemo(
@@ -583,6 +610,11 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                 <span className="ml-2 font-mono tabular-nums text-[11px] text-muted-foreground">{stepIndex + 1}/{commits.length}</span>
               </div>
             )}
+            {busy && (
+              <span role="status" className="ml-1 inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" /> Computing delta…
+              </span>
+            )}
             <div className="ml-auto flex items-center gap-3">
               <CliInstallButton />
               {pendingRefresh && (
@@ -660,7 +692,12 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       {error && (
         <div className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[12px] text-destructive">{error}</div>
       )}
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
+        {busy && viewSummary && (
+          <div aria-hidden className="absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden">
+            <div className="absolute inset-y-0 left-0 w-1/3 bg-primary/70 [animation:delta-indeterminate_1.1s_ease-in-out_infinite]" />
+          </div>
+        )}
         {viewSummary && review ? (
           orderedFiles.length === 0 ? (
             <NothingToReview
@@ -682,7 +719,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
               />
               <PaneResizer edge="right" label="Resize file panel" {...fileResize} />
             </aside>
-            <main className="min-h-0 min-w-0 flex-1 -ml-1.5">
+            <main aria-busy={busy} className="min-h-0 min-w-0 flex-1 -ml-1.5 transition-opacity aria-busy:pointer-events-none aria-busy:opacity-50">
               <VirtualDiffPane
                 target={viewTarget!}
                 files={orderedFiles}
