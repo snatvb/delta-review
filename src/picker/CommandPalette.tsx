@@ -6,6 +6,7 @@ import { ReviewPicker } from "./ReviewPicker";
 import { addRepo } from "./pickerActions";
 import { api } from "../api";
 import { getPickerOpenMode } from "../windowMode";
+import { openTarget } from "../lib/openTarget";
 import type { DiffMode, PickerWorktree, ReviewEntry, Target } from "../types";
 
 async function deleteReview(r: ReviewEntry) {
@@ -32,7 +33,7 @@ async function openTargetFrom(repoPath: string, mode: DiffMode, base?: string): 
     window.location.assign(u.toString());
     return;
   }
-  await api.openTarget(repoPath, mode, base);
+  await openTarget(repoPath, mode, base);
 }
 
 export function CommandPalette({ onClose, current }: { onClose: () => void; current?: Target }) {
