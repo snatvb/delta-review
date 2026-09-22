@@ -3,6 +3,7 @@ import type {
   Target,
   DiffSummary,
   FileDiff,
+  BinaryFileDiff,
   Review,
   ReviewSession,
   Registry,
@@ -34,6 +35,10 @@ export const api = {
     invokeImpl("compute_diff", { target }),
   getFileDiff: (target: Target, path: string): Promise<FileDiff> =>
     invokeImpl("get_file_diff", { target, path }),
+  // Binary card (#binary): byte sizes always; base64 previews only when
+  // `includeData` (image extensions — oversized sides are capped server-side).
+  getBinaryFileDiff: (target: Target, path: string, includeData: boolean): Promise<BinaryFileDiff> =>
+    invokeImpl("get_binary_file_diff", { target, path, includeData }),
   listCommits: (target: Target): Promise<CommitMeta[]> =>
     invokeImpl("list_commits", { target }),
   openReview: (target: Target): Promise<ReviewSession> =>

@@ -305,6 +305,17 @@
   letter-spacing: normal !important;
 }
 
+/* Checkerboard behind binary image previews (#binary): transparency in a PNG/GIF
+   must read as transparent, not as the card's flat code background. A foreground-
+   tinted alpha keeps it subtle in both themes. */
+.delta-checker {
+  background-image:
+    linear-gradient(45deg, color-mix(in oklch, var(--foreground) 6%, transparent) 25%, transparent 25%, transparent 75%, color-mix(in oklch, var(--foreground) 6%, transparent) 75%),
+    linear-gradient(45deg, color-mix(in oklch, var(--foreground) 6%, transparent) 25%, transparent 25%, transparent 75%, color-mix(in oklch, var(--foreground) 6%, transparent) 75%);
+  background-position: 0 0, 10px 10px;
+  background-size: 20px 20px;
+}
+
 /* git-diff-view ships the muted GitHub-Light syntax palette: strings are a near-
    black navy (#032f62) and the hues are low-saturation, so light-mode code reads
    washed out. Override with a punchier, higher-contrast palette (strings green,

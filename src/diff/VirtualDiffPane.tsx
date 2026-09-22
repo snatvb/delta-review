@@ -36,7 +36,10 @@ import { DiffFind } from "./DiffFind";
 import { findPrefillFromSelection } from "./findSelection";
 import { isWorkingTreeTarget, unifiedRowEdit, splitRowEdit } from "./lineEdit";
 import { FileEditorOverlay } from "./FileEditorOverlay";
-import type { Anchor, Comment, DiffMode, FileDiff, FileEntry, Side, Target } from "../types";
+import { BinaryImageDiff } from "./BinaryImageDiff";
+import { formatBytes, imageMimeFor, isImagePath } from "./binaryFile";
+import { useBinaryFile } from "./useBinaryFile";
+import type { Anchor, BinaryFileDiff, Comment, DiffMode, FileDiff, FileEntry, FileStatus, Side, Target } from "../types";
 import type { DiffLayout } from "./useDiffLayout";
 import { useFileDiffCache } from "./useFileDiffCache";
 import { wrapsByDefault, paneColsFor, visualLinesForCols, buildRowOffsets } from "./wrap";
@@ -63,6 +66,7 @@ const GIANT_CHANGED_LINES = 500;
 const EST_BLOCK_H = 96; // placeholder height for a comment thread before it measures
 const EST_PREVIEW_H = 240; // placeholder body height for a markdown preview before it measures (#preview)
 const PLACEHOLDER_BODY_H = 72; // fixed body height for binary / deleted placeholders (#11, shared layout #5, padding #8)
+const IMAGE_BODY_H = 340; // fixed body height for a binary image compare (#binary) — images scale to fit, never size the card
 const CONTEXT = 3; // unchanged lines kept around each change before folding (#10)
 const EXPAND_STEP = 25; // lines revealed per fold expand click (#2)
 // Card layout: each file's diff is a rounded card inset from the pane edges by
@@ -102,11 +106,29 @@ const estBodyH = (e: FileEntry, rowH: number) => Math.max(1, Math.round((e.addit
 // status+counts (not oldPath) so this and the render branch below can't diverge. (#rename)
 const isRenameOnly = (e: FileEntry) => e.status === "renamed" && e.additions === 0 && e.deletions === 0;
 // Binary, deleted, and (un-revealed) giant files render a fixed-height placeholder
-// instead of a model — so their reserved height is KNOWN, not estimated. Using this
-// (not estBodyH) as the offset fallback keeps them exact even after a bodyHeights
-// reset (layout flip), when a placeholder section can't re-report (its effect deps
-// don't change) — and for a revealed giant, its reported body height overrides this. (#9)
-const estReserved = (e: FileEntry, rowH: number) => (e.binary || e.status === "deleted" || isGiant(e) || isRenameOnly(e) ? PLACEHOLDER_BODY_H : estBodyH(e, rowH));
+// instead of a model — so their reserved height is KNOWN, not estimated. Binary
+// images get the taller compare card (extension-keyed, same test as the render
+// branch below). Using this (not estBodyH) as the offset fallback keeps them exact
+// even after a bodyHeights reset (layout flip), when a placeholder section can't
+// re-report (its effect deps don't change) — and for a revealed giant, its reported
+// body height overrides this. (#9)
+const estReserved = (e: FileEntry, rowH: number) =>
+  e.binary
+    ? isImagePath(e.path) ? IMAGE_BODY_H : PLACEHOLDER_BODY_H
+    : e.status === "deleted" || isGiant(e) || isRenameOnly(e) ? PLACEHOLDER_BODY_H
+    : estBodyH(e, rowH);
+
+// The centered binary placeholder's message (#binary): "Binary file — 1.2 MB", or
+// "Binary file — 980 B → 1.2 MB" when both sides exist. Sizes follow the change:
+// an added file has only a new size, a deletion only old. Plain "Binary file"
+// until the fetch lands (non-image binaries fetch sizes only).
+function binarySizeNote(binary: BinaryFileDiff | undefined, status: FileStatus): string {
+  const fmt = (n: number | null | undefined) => (n == null ? null : formatBytes(n));
+  const oldSize = status === "added" ? null : fmt(binary?.oldSize);
+  const newSize = status === "deleted" ? null : fmt(binary?.newSize);
+  const sizes = oldSize && newSize ? `${oldSize} → ${newSize}` : (newSize ?? oldSize ?? "");
+  return sizes ? `Binary file — ${sizes}` : "Binary file";
+}
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -422,12 +444,13 @@ function PreviewBody({ content, onHeight }: { content: string; onHeight: (h: num
 interface Block { id: string; index: number; comments: Comment[] }
 
 const VFileSection = memo(function VFileSection({
-  entry, theme, layout, cache, collapsed, viewed, previewing, onSetPreview, headerSolo, repoPath, mode, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onOpenFileEditor, onToggleCollapse, onToggleViewed, wrap, onToggleWrap, view, paneW, rowH, chPx, query, caseSensitive, wholeWord, activeMatch, onMatches, forceModel, comments, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, reportBodyHeight,
+  entry, theme, layout, cache, collapsed, viewed, previewing, onSetPreview, headerSolo, target, repoPath, mode, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onOpenFileEditor, onToggleCollapse, onToggleViewed, wrap, onToggleWrap, view, paneW, rowH, chPx, query, caseSensitive, wholeWord, activeMatch, onMatches, forceModel, comments, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, reportBodyHeight,
 }: {
   entry: FileEntry; theme: "light" | "dark"; layout: DiffLayout;
   cache: ReturnType<typeof useFileDiffCache>;
   collapsed: boolean; viewed: boolean;
   headerSolo: boolean; // body fully scrolled under the stuck header → round its bottom corners (#6)
+  target: Target; // the review target — scopes the binary card's data fetch (#binary)
   repoPath: string; // absolute repo/worktree root — joined with entry.path to open in an editor (#editor)
   mode: DiffMode;
   rowEdit: RowEditState | null;
@@ -483,6 +506,11 @@ const VFileSection = memo(function VFileSection({
   // — restoring the classic pane's treatment that the virtual refactor dropped. (#11)
   const isBinary = entry.binary;
   const isDeleted = entry.status === "deleted";
+  // Binary image (by extension) → the GitHub-style compare card instead of the
+  // one-line placeholder. Its sizes/previews load only while the card is on
+  // screen, like a text file's diff model. (#binary)
+  const isImageCard = isBinary && isImagePath(entry.path);
+  const binary = useBinaryFile(target, cache, entry.path, !collapsed && !previewing && isBinary && view != null);
   const [revealed, setRevealed] = useState(false);
   // Rendered markdown preview: added/modified markdown files only (deleted has no
   // new content; binary has none). `previewing` is held by the pane (survives the
@@ -731,7 +759,7 @@ const VFileSection = memo(function VFileSection({
     : previewing
       ? (previewH || EST_PREVIEW_H)
       : showPlaceholder
-        ? PLACEHOLDER_BODY_H
+        ? isImageCard ? IMAGE_BODY_H : PLACEHOLDER_BODY_H
         : rowTops[visualCount] + totalCommentH;
   // Report a definite height once it's known — model built, or a fixed-height
   // placeholder shown — so the parent's offsets are exact. (#10/#11)
@@ -1017,10 +1045,21 @@ const VFileSection = memo(function VFileSection({
               </div>
             )
           ) : isBinary ? (
-            <div className="delta-ui-font flex h-full items-center gap-3 pl-5 pr-3 text-[13px] text-muted-foreground">
-              <FileQuestion className="size-4 shrink-0 opacity-70" />
-              <span>Unsupported file — binary or non-text content.</span>
-            </div>
+            isImageCard ? (
+              <BinaryImageDiff
+                binary={binary}
+                status={entry.status}
+                mime={imageMimeFor(entry.path)}
+                oldMime={entry.oldPath ? imageMimeFor(entry.oldPath) : null}
+              />
+            ) : (
+              // Terminal placeholder (no reveal action like deleted/giant): centered,
+              // with the exact byte size(s) once the binary fetch lands. (#binary)
+              <div className="delta-ui-font flex h-full items-center justify-center gap-3 px-3 text-[13px] text-muted-foreground">
+                <FileQuestion className="size-4 shrink-0 opacity-70" />
+                <span>{binarySizeNote(binary, entry.status)}</span>
+              </div>
+            )
           ) : isDeleted && !revealed ? (
             <div className="delta-ui-font flex h-full items-center gap-3 pl-5 pr-3 text-[13px] text-muted-foreground">
               <FileX className="size-4 shrink-0 text-rose-500/80" />
@@ -1666,6 +1705,7 @@ export function VirtualDiffPane({
                 collapsed={collapsed} viewed={viewedFiles.has(entry.path)}
                 previewing={previewingFiles.has(entry.path)} onSetPreview={setFilePreview}
                 headerSolo={headerSolo}
+                target={target}
                 repoPath={target.repoPath}
                 mode={target.mode}
                 rowEdit={editing && editing.file === entry.path ? editing : null}

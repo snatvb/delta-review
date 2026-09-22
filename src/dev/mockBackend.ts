@@ -23,7 +23,12 @@ const SUMMARY: DiffSummary = {
     { path: "src/core/http.ts", oldPath: "src/api/client.ts", status: "renamed", additions: 3, deletions: 1, binary: false },
     { path: "src/legacy/cache.ts", status: "deleted", additions: 0, deletions: 9, binary: false },
     { path: "README.md", status: "added", additions: 15, deletions: 0, binary: false },
+    // Binary images → the GitHub-style compare card (#binary): added (new side
+    // only) and modified (old | new side by side).
     { path: "assets/logo.png", status: "added", additions: 0, deletions: 0, binary: true },
+    { path: "assets/banner.png", status: "modified", additions: 0, deletions: 0, binary: true },
+    // A NON-image binary → the centered size-only placeholder (no compare card). (#binary)
+    { path: "assets/model.bin", status: "modified", additions: 0, deletions: 0, binary: true },
   ],
 };
 
@@ -154,6 +159,24 @@ const FILES: Record<string, FileDiff> = {
     oldFileName: null,
     newFileName: "assets/logo.png",
     status: "added",
+    binary: true,
+    oldContent: null,
+    newContent: null,
+  },
+  // Modified binary image: the compare card shows old | new side by side. (#binary)
+  "assets/banner.png": {
+    oldFileName: "assets/banner.png",
+    newFileName: "assets/banner.png",
+    status: "modified",
+    binary: true,
+    oldContent: null,
+    newContent: null,
+  },
+  // Non-image binary: sizes only, rendered as the centered placeholder. (#binary)
+  "assets/model.bin": {
+    oldFileName: "assets/model.bin",
+    newFileName: "assets/model.bin",
+    status: "modified",
     binary: true,
     oldContent: null,
     newContent: null,
@@ -354,6 +377,39 @@ export function installMockBackend(): void {
       }
       case "get_file_diff":
         return ds.files[(args?.path as string) ?? ""] as T;
+      case "get_binary_file_diff": {
+        // Binary card data (#binary). Images get real (canvas-drawn) PNGs so the
+        // compare card shows something visible in browser dev; other binaries get
+        // sizes only, like a non-image card.
+        const path = (args?.path as string) ?? "";
+        const include = Boolean(args?.includeData);
+        const png = (w: number, h: number, color: string): string => {
+          try {
+            const c = document.createElement("canvas");
+            c.width = w;
+            c.height = h;
+            const ctx = c.getContext("2d");
+            if (!ctx) throw new Error("no 2d context");
+            ctx.fillStyle = color;
+            ctx.fillRect(0, 0, w, h);
+            return c.toDataURL("image/png").replace("data:image/png;base64,", "");
+          } catch {
+            // 1×1 PNG fallback for canvas-less environments.
+            return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+          }
+        };
+        const isImage = /\.(png|jpe?g|gif|webp|bmp|ico|avif|svg)$/i.test(path);
+        const modified = path === "assets/banner.png";
+        const oldB64 = modified ? png(120, 80, "#38bdf8") : null;
+        const newB64 = png(modified ? 160 : 128, modified ? 90 : 128, modified ? "#f472b6" : "#34d399");
+        return {
+          // model.bin is modified too, so the placeholder exercises "old → new".
+          oldSize: modified ? oldB64!.length * 3 : path === "assets/model.bin" ? 2464 : null,
+          newSize: newB64.length * 3,
+          oldData: include && isImage && oldB64 ? oldB64 : null,
+          newData: include && isImage ? newB64 : null,
+        } as T;
+      }
       case "list_commits":
         return COMMITS as T;
       case "open_review":

@@ -37,6 +37,16 @@ export interface FileDiff {
   binary: boolean;
 }
 
+/** Binary card data (#binary): exact byte sizes per side (null = side absent or
+ *  unreadable), plus base64 of each side when asked — server-capped, and only
+ *  requested for image extensions so the webview can render `<img>` data URLs. */
+export interface BinaryFileDiff {
+  oldSize: number | null;
+  newSize: number | null;
+  oldData: string | null;
+  newData: string | null;
+}
+
 export interface DiffSummary {
   files: FileEntry[];
   baseLabel: string;

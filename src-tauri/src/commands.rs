@@ -1,6 +1,6 @@
 use crate::export::export_markdown;
 use crate::git::cache::DiffCache;
-use crate::git::diff::{DiffSummary, FileDiff};
+use crate::git::diff::{BinaryFileDiff, DiffSummary, FileDiff};
 use crate::git::log::{list_commits as engine_list_commits, CommitMeta};
 use crate::git::model::{DiffMode, Target};
 use crate::git::{open_repo, resolve_worktree};
@@ -222,6 +222,17 @@ pub async fn get_file_diff(target: Target, path: String, cache: tauri::State<'_,
     tauri::async_runtime::spawn_blocking(move || cache.file(&target, &path))
         .await
         .map_err(|e| format!("get_file_diff task: {e}"))?
+}
+
+/// Binary card data (#binary): exact byte sizes per side, plus base64 previews for
+/// image extensions when `include_data` (oversized sides are capped server-side).
+/// Not served from the snapshot — the snapshot drops binary content, and this is a
+/// rare, card-visible fetch, so a one-off diff is fine.
+#[tauri::command]
+pub async fn get_binary_file_diff(target: Target, path: String, include_data: bool) -> Result<BinaryFileDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::git::diff::get_binary_file_diff(&target, &path, include_data))
+        .await
+        .map_err(|e| format!("get_binary_file_diff task: {e}"))?
 }
 
 #[tauri::command]
