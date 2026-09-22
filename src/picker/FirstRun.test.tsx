@@ -20,8 +20,9 @@ describe("FirstRun", () => {
     mockCli(true); // CLI installed → promo shows the quiet ready state; ignored here
     render(<FirstRun onOpenRepo={() => {}} />);
     expect(screen.getByText("Open a repository")).toBeInTheDocument();
-    // The Kbd splits the shortcut into per-key spans, so match the kbd's text.
-    expect(screen.getByText((_, el) => el?.tagName === "KBD" && el.textContent === "⌘O")).toBeInTheDocument();
+    // Modifiers render as icons, so the kbd's text carries the letter alone.
+    const hint = screen.getByText((_, el) => el?.tagName === "KBD" && el.textContent === "O");
+    expect(hint.querySelector("svg")).toBeInTheDocument();
   });
 
   it("invokes onOpenRepo when the action is clicked", () => {
