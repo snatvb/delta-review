@@ -142,6 +142,38 @@ pub(crate) fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8000).any(|&b| b == 0)
 }
 
+/// Whether git stores this repo's text files with LF while the working copy holds
+/// CRLF (`core.autocrlf=true|input`, the Windows default). The diff libgit2 reports
+/// is filtered, so the content we hand the UI has to be filtered the same way — a
+/// raw CRLF working file against an LF blob renders every line as changed.
+fn normalizes_crlf(repo: &Repository) -> bool {
+    repo.config()
+        .and_then(|c| c.get_string("core.autocrlf"))
+        .map(|v| v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("input"))
+        .unwrap_or(false)
+}
+
+fn strip_cr(bytes: Vec<u8>) -> Vec<u8> {
+    if !bytes.windows(2).any(|w| w == b"\r\n") {
+        return bytes;
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut prev_cr = false;
+    for b in bytes {
+        if prev_cr && b != b'\n' {
+            out.push(b'\r');
+        }
+        prev_cr = b == b'\r';
+        if !prev_cr {
+            out.push(b);
+        }
+    }
+    if prev_cr {
+        out.push(b'\r');
+    }
+    out
+}
+
 /// Extract one file's content + metadata from an already-built delta, given the
 /// resolved endpoints. Shared by `get_file_diff` (locate one file) and
 /// `compute_diff_full` (every file in a single pass) so callers never re-run the
@@ -174,7 +206,7 @@ fn extract_file_diff(repo: &Repository, ep: &Endpoints, delta: &DiffDelta) -> Re
     let new_bytes: Option<Vec<u8>> = match (&ep.right, &new_path) {
         (RightSide::WorkTree, Some(np)) => {
             let wd = repo.workdir().ok_or("no working directory")?;
-            fs::read(wd.join(np)).ok()
+            fs::read(wd.join(np)).ok().map(|b| if normalizes_crlf(repo) { strip_cr(b) } else { b })
         }
         (RightSide::Tree(_), Some(_np)) => {
             let blob_id = delta.new_file().id();
@@ -293,6 +325,29 @@ mod tests {
         ).unwrap();
         assert_eq!(fd.old_content.as_deref(), Some("line1\nline2\n"));
         assert_eq!(fd.new_content.as_deref(), Some("line1\nCHANGED\nline2\n"));
+    }
+
+    #[test]
+    fn crlf_working_copy_is_normalized_when_git_stores_lf() {
+        let (dir, repo) = repo_with_commit();
+        repo.config().unwrap().set_str("core.autocrlf", "true").unwrap();
+        write(dir.path(), "file.txt", "line1\r\nCHANGED\r\n");
+
+        let fd = get_file_diff(&target(dir.path().to_str().unwrap(), DiffMode::Uncommitted), "file.txt").unwrap();
+
+        assert_eq!(fd.old_content.as_deref(), Some("line1\nline2\n"));
+        assert_eq!(fd.new_content.as_deref(), Some("line1\nCHANGED\n"));
+    }
+
+    #[test]
+    fn crlf_working_copy_is_kept_when_git_stores_it_verbatim() {
+        let (dir, repo) = repo_with_commit();
+        repo.config().unwrap().set_str("core.autocrlf", "false").unwrap();
+        write(dir.path(), "file.txt", "line1\r\nCHANGED\r\n");
+
+        let fd = get_file_diff(&target(dir.path().to_str().unwrap(), DiffMode::Uncommitted), "file.txt").unwrap();
+
+        assert_eq!(fd.new_content.as_deref(), Some("line1\r\nCHANGED\r\n"));
     }
 
     #[test]
