@@ -102,6 +102,8 @@ pub fn run() {
             commands::cli_status,
             commands::open_in_editor,
             commands::edit_file_line,
+            commands::read_file_text,
+            commands::write_file_text,
             commands::updater_try_acquire,
             commands::telemetry_allowed
         ])

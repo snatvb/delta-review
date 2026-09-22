@@ -471,6 +471,16 @@ pub fn edit_file_line(target: Target, path: String, line: u32, expected: String,
     crate::edit::edit_file_line(&target, &path, line, &expected, &replacement)
 }
 
+#[tauri::command]
+pub fn read_file_text(target: Target, path: String) -> Result<crate::edit::FileText, String> {
+    crate::edit::read_file_text(&target, &path)
+}
+
+#[tauri::command]
+pub fn write_file_text(target: Target, path: String, expected_hash: String, content: String) -> Result<crate::edit::FileText, String> {
+    crate::edit::write_file_text(&target, &path, &expected_hash, &content)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -341,6 +341,7 @@ export function installMockBackend(): void {
     : largeParam
       ? genLarge(Math.max(1, Math.min(2000, parseInt(largeParam, 10) || 80)))
       : { summary: SUMMARY, files: FILES, review: REVIEW };
+  const editConflictFired = new Set<string>();
   __setInvokeForDev(async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
     switch (cmd) {
       case "compute_diff": {
@@ -463,9 +464,35 @@ export function installMockBackend(): void {
         const a = args as { path: string; line: number; expected: string; replacement: string };
         const fd = ds.files[a.path];
         if (!fd || fd.newContent == null) throw new Error(`${a.path}: not found`);
-        fd.newContent = replaceLine(fd.newContent, a.line, a.expected, a.replacement);
+        // A fresh object (not a mutation of `fd`) — the diff pane's per-file model
+        // cache is keyed by FileDiff identity, exactly like the real IPC round-trip
+        // (which always deserializes a new object), so the refreshed diff re-parses.
+        ds.files[a.path] = { ...fd, newContent: replaceLine(fd.newContent, a.line, a.expected, a.replacement) };
         console.info("[delta mock] edit_file_line", a);
         return undefined as T;
+      }
+      case "read_file_text": {
+        const p = (args?.path as string) ?? "";
+        const fd = ds.files[p];
+        if (!fd || fd.newContent == null) throw new Error(`${p}: not found`);
+        return { content: fd.newContent, hash: fd.newContent } as T;
+      }
+      case "write_file_text": {
+        const a = args as { path: string; expectedHash: string; content: string };
+        const fd = ds.files[a.path];
+        if (!fd || fd.newContent == null) throw new Error(`${a.path}: not found`);
+        // `?editConflict=1` simulates a concurrent external edit: the FIRST save
+        // attempt on each file is refused (mirroring the real stale-write check),
+        // so the overlay's conflict UI is exercisable headlessly in mock mode.
+        if (params.get("editConflict") === "1" && !editConflictFired.has(a.path)) {
+          editConflictFired.add(a.path);
+          ds.files[a.path] = { ...fd, newContent: `${fd.newContent}// external edit\n` };
+          throw new Error("file changed on disk — refusing to overwrite");
+        }
+        if (fd.newContent !== a.expectedHash) throw new Error("file changed on disk — refusing to overwrite");
+        ds.files[a.path] = { ...fd, newContent: a.content };
+        console.info("[delta mock] write_file_text", a.path);
+        return { content: a.content, hash: a.content } as T;
       }
       case "updater_try_acquire":
         // Never reached in mock mode (useUpdater bails on !isTauri), but keep the
