@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { rankReviews, rankWorktrees } from "./fuzzy";
 import { usePickerData } from "./usePickerData";
 import { relTime, worktreeIdentity, worktreeMeta } from "./pickerUi";
-import { MessageSquare, TriangleAlert, Check, FolderPlus } from "lucide-react";
+import { MessageSquare, TriangleAlert, Check, FolderPlus, Trash2 } from "lucide-react";
 import { Kbd } from "@/components/ui/kbd";
 import type { PickerWorktree, ReviewEntry, Target } from "../types";
 
@@ -16,7 +16,7 @@ export interface ReviewPickerProps {
   onOpenReview: (r: ReviewEntry) => void;
   onOpenWorktree: (w: PickerWorktree) => void;
   onAddRepo: () => void;
-  onDeleteReview: (r: ReviewEntry) => void;
+  onDeleteReview: (r: ReviewEntry) => Promise<boolean>;
 }
 
 type Group = "recent" | "worktree";
@@ -82,6 +82,14 @@ export function ReviewPicker({ current, onOpenReview, onOpenWorktree, onAddRepo,
   // Last real pointer position — ignore scroll-induced mousemove (same coords) so
   // it can't hijack keyboard selection when a row scrolls under a still cursor.
   const lastPointer = useRef<{ x: number; y: number } | null>(null);
+  const [deletedIds, setDeletedIds] = useState<ReadonlySet<string>>(() => new Set());
+
+  async function deleteRecent(r: ReviewEntry) {
+    if (await onDeleteReview(r)) {
+      setDeletedIds((prev) => new Set(prev).add(r.id));
+    }
+    inputRef.current?.focus();
+  }
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -92,11 +100,11 @@ export function ReviewPicker({ current, onOpenReview, onOpenWorktree, onAddRepo,
   // make the current review reappear in the picker.
   const isCurrentWorktree = (path: string) => current != null && path === current.repoPath;
 
-  const recents = data ? rankReviews(data.recents.filter((r) => !isCurrentWorktree(r.target.repoPath)), query) : [];
+  const recents = data ? rankReviews(data.recents.filter((r) => !isCurrentWorktree(r.target.repoPath) && !deletedIds.has(r.id)), query) : [];
   const worktrees = data ? rankWorktrees(data.worktrees.filter((w) => !isCurrentWorktree(w.path)), query) : [];
 
   const rows: Row[] = [
-    ...recents.map((r): Row => ({ key: `rev-${r.id}`, group: "recent", node: recentNode(r), onActivate: () => onOpenReview(r), onDelete: () => onDeleteReview(r) })),
+    ...recents.map((r): Row => ({ key: `rev-${r.id}`, group: "recent", node: recentNode(r), onActivate: () => onOpenReview(r), onDelete: () => void deleteRecent(r) })),
     ...worktrees.map((w): Row => ({ key: `wt-${w.path}`, group: "worktree", node: worktreeNode(w), onActivate: () => onOpenWorktree(w) })),
   ];
   const labels = rows.map((row, i) => (i === 0 || rows[i - 1].group !== row.group ? groupLabel(row.group) : null));
@@ -216,16 +224,32 @@ export function ReviewPicker({ current, onOpenReview, onOpenWorktree, onAddRepo,
                   {c.text}
                 </div>
               ) : (
-                <button
+                <div
                   key={c.key}
                   data-index={c.i}
                   style={{ position: "absolute", top: c.top, height: c.height, left: PAD, right: PAD }}
-                  className={`flex items-center gap-2.5 rounded-md px-3 text-left ${c.i === clampedSel ? "bg-accent text-accent-foreground" : "hover:bg-muted/60"}`}
+                  className={`group flex items-center rounded-md ${c.i === clampedSel ? "bg-accent text-accent-foreground" : "hover:bg-muted/60"}`}
                   onMouseMove={(e) => onItemMouseMove(e, c.i)}
-                  onClick={() => rows[c.i].onActivate()}
                 >
-                  {rows[c.i].node}
-                </button>
+                  <button
+                    type="button"
+                    className="flex h-full min-w-0 flex-1 items-center gap-2.5 px-3 text-left outline-none"
+                    onClick={() => rows[c.i].onActivate()}
+                  >
+                    {rows[c.i].node}
+                  </button>
+                  {rows[c.i].onDelete && (
+                    <button
+                      type="button"
+                      title="Delete review (⌘⌫)"
+                      aria-label="Delete review"
+                      onClick={rows[c.i].onDelete}
+                      className={`mr-2 inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus:outline-none focus-visible:ring-1 focus-visible:ring-ring ${c.i === clampedSel ? "visible" : "invisible group-hover:visible"}`}
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  )}
+                </div>
               ),
             )}
           </div>

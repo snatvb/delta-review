@@ -9,10 +9,12 @@ import { getPickerOpenMode } from "../windowMode";
 import { openTarget } from "../lib/openTarget";
 import type { DiffMode, PickerWorktree, ReviewEntry, Target } from "../types";
 
-async function deleteReview(r: ReviewEntry) {
-  if (confirm(`Delete this review of ${r.repoName} · ${r.target.worktree ?? ""}?`)) {
-    await api.deleteReview(r.id);
+async function deleteReview(r: ReviewEntry): Promise<boolean> {
+  if (!confirm(`Delete this review of ${r.repoName} · ${r.target.worktree ?? ""}?`)) {
+    return false;
   }
+  await api.deleteReview(r.id);
+  return true;
 }
 
 // Open a target in a new review window (default) or by REPLACING the current one

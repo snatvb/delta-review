@@ -16,10 +16,12 @@ import type { PickerWorktree, ReviewEntry } from "./types";
 const openReview = (r: ReviewEntry) => void api.openTarget(r.target.repoPath, r.target.mode, r.target.base ?? undefined);
 const openWorktree = (w: PickerWorktree) => void openTarget(w.path, "uncommitted");
 
-async function deleteReview(r: ReviewEntry) {
-  if (confirm(`Delete this review of ${r.repoName} · ${r.target.worktree ?? ""}?`)) {
-    await api.deleteReview(r.id);
+async function deleteReview(r: ReviewEntry): Promise<boolean> {
+  if (!confirm(`Delete this review of ${r.repoName} · ${r.target.worktree ?? ""}?`)) {
+    return false;
   }
+  await api.deleteReview(r.id);
+  return true;
 }
 
 export function Home({ onOpenSettings }: { onOpenSettings?: () => void }) {
