@@ -32,6 +32,6 @@ describe("addRepo", () => {
     await addRepo();
     off();
     expect(notices).toHaveLength(0);
-    expect(calls.find(([c]) => c === "open_target")?.[1]).toEqual({ repoPath: "/r", mode: "all-changes", base: undefined });
+    expect(calls.find(([c]) => c === "open_target")?.[1]).toEqual({ repoPath: "/r", mode: "uncommitted", base: undefined });
   });
 });

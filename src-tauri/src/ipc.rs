@@ -79,7 +79,7 @@ pub fn start(app: &AppHandle) {
 /// switches in place instead of ignoring it.
 fn handle_request(app: &AppHandle, req: CliRequest) {
     let explicit = req.mode;
-    let mode = req.mode.unwrap_or(DiffMode::AllChanges);
+    let mode = req.mode.unwrap_or(DiffMode::Uncommitted);
     if let Ok(crate::launch::Opened::Focused(label)) =
         crate::launch::open_target_window(app, &req.repo, mode, None)
     {

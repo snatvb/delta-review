@@ -15,7 +15,7 @@ export async function addRepo(): Promise<void> {
     if (!repo) return;
     const wts = await api.listWorktrees(repo.root);
     const main = wts.find((w) => w.isMain) ?? wts[0];
-    if (main) void api.openTarget(main.path, "all-changes");
+    if (main) void api.openTarget(main.path, "uncommitted");
   } catch (e) {
     // Tauri rejects a command's Err(String) with the bare string; tests/mocks may
     // throw an Error. Unwrap both to the clean message (no "Error:" prefix).

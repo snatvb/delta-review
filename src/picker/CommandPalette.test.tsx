@@ -37,13 +37,13 @@ describe("CommandPalette", () => {
     expect(closed).toBe(true);
   });
 
-  it("opens an other-worktree with all-changes", async () => {
+  it("opens an other-worktree with its uncommitted changes", async () => {
     render(<CommandPalette onClose={() => {}} />);
     await waitFor(() => expect(screen.getByText("spike/idea")).toBeInTheDocument());
     fireEvent.click(screen.getByText("spike/idea"));
     await waitFor(() => {
       const call = calls.find((c) => c.cmd === "open_target");
-      expect(call?.args).toMatchObject({ repoPath: "/r/demo-spike", mode: "all-changes" });
+      expect(call?.args).toMatchObject({ repoPath: "/r/demo-spike", mode: "uncommitted" });
     });
   });
 

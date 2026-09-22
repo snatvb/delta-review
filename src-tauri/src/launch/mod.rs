@@ -285,7 +285,7 @@ pub fn open_home_window(app: &AppHandle) -> Result<(), String> {
 pub fn route_launch(app: &AppHandle, args: &[String], cwd: &Path) {
     let launch = parse_launch(args, cwd);
     let path = launch.repo_path.to_string_lossy().to_string();
-    let mode = launch.mode.unwrap_or(DiffMode::AllChanges);
+    let mode = launch.mode.unwrap_or(DiffMode::Uncommitted);
     let opened = open_repo(&path).is_ok() && open_target_window(app, &path, mode, None).is_ok();
     if !opened {
         let _ = open_home_window(app);

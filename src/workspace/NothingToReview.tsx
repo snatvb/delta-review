@@ -67,7 +67,7 @@ export function NothingToReview({ target, repoName, modeLabel }: { target: Targe
                   <button
                     key={w.path}
                     type="button"
-                    onClick={() => void api.openTarget(w.path, "all-changes")}
+                    onClick={() => void api.openTarget(w.path, "uncommitted")}
                     className="flex items-center gap-2.5 rounded-md px-3 py-2 text-left transition-colors hover:bg-muted/60 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
                     {worktreeIdentity(repoName, w.path, w.branch)}

@@ -41,7 +41,7 @@ export function CommandPalette({ onClose, current }: { onClose: () => void; curr
     onClose();
   };
   const openWorktree = (w: PickerWorktree) => {
-    void openTargetFrom(w.path, "all-changes");
+    void openTargetFrom(w.path, "uncommitted");
     onClose();
   };
   const onAddRepo = () => {

@@ -34,7 +34,7 @@ describe("NothingToReview", () => {
     expect(screen.getByRole("button", { name: /demo-main/i })).toBeInTheDocument();
 
     fireEvent.click(spike);
-    expect(calls).toContainEqual(["open_target", { repoPath: "/r/demo-spike", mode: "all-changes", base: undefined }]);
+    expect(calls).toContainEqual(["open_target", { repoPath: "/r/demo-spike", mode: "uncommitted", base: undefined }]);
   });
 
   it("shows the placeholder when there are no other worktrees", async () => {
