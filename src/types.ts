@@ -155,7 +155,14 @@ export type InstallOutcome =
   | { kind: "linkedPathUpdated"; path: string; shells: string[] }
   | { kind: "manualNeeded"; command: string; reason: string };
 
+export interface FileTextResult {
+  content: string;
+  hash: string;
+}
+
 export interface CliStatus {
+  /** False where the shim can't exist (Windows) � every CLI affordance is dropped. */
+  supported: boolean;
   installed: boolean;
   path: string | null;
 }

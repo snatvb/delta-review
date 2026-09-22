@@ -24,7 +24,7 @@ USAGE:
 ARGS:
     PATH    Repository or worktree to open (default: current directory)
 
-MODE (default: all changes):
+MODE (default: uncommitted changes):
     --all            All changes vs the base branch
     --uncommitted    Uncommitted working-tree changes
     --last-commit    The most recent commit

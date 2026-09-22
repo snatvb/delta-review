@@ -82,6 +82,15 @@
     /* The code/diff surface. In light it's white — same as `card` — so each file
        diff floats on the soft gray canvas. In dark (below) the relationship flips. */
     --code: oklch(1 0 0);
+    /* Full-file editor (CodeMirror) syntax colors — mirror the diff pane's own
+       light-mode hljs override (see .hljs-keyword etc. below) so the two
+       surfaces read as one system. */
+    --cm-keyword: #cf222e;
+    --cm-entity: #8250df;
+    --cm-string: #0a7d33;
+    --cm-constant: #0550ae;
+    --cm-type: #953800;
+    --cm-comment: #6e7781;
     --popover: oklch(1 0 0);
     --popover-foreground: oklch(0.145 0 0);
     --primary: oklch(0.55 0.21 256);
@@ -127,6 +136,13 @@
        just under the canvas (0.208) so it still reads as a sunken well without
        being a near-black pit. (#6) */
     --code: oklch(0.188 0 0);
+    /* Mirrors the diff pane's dark hljs palette (GitHub Dark, unmodified below). */
+    --cm-keyword: #ff7b72;
+    --cm-entity: #d2a8ff;
+    --cm-string: #a5d6ff;
+    --cm-constant: #79c0ff;
+    --cm-type: #ff7b72;
+    --cm-comment: #8b949e;
     --popover: oklch(0.225 0 0);
     --popover-foreground: oklch(0.985 0 0);
     --primary: oklch(0.62 0.19 256);

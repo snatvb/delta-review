@@ -21,7 +21,7 @@ import { useReview } from "../review/useReview";
 import { useResolvedTheme } from "../theme";
 import { useDiffLayout } from "../diff/useDiffLayout";
 import { useResizableWidth, usePaneResize, PaneResizer, FILE_PANE } from "../lib/resizablePane";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Columns2, Copy, ExternalLink, GitBranch, MessageSquare, RefreshCw, Rows2, Search, Settings } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Columns2, Copy, ExternalLink, GitBranch, Loader2, MessageSquare, RefreshCw, Rows2, Search, Settings } from "lucide-react";
 import { getEditorPref } from "../editor";
 import { worktreeName } from "../lib/utils";
 import {
@@ -89,6 +89,9 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   const [commitOid, setCommitOid] = useState<string | null>(target.commit ?? null);
   const [commits, setCommits] = useState<CommitMeta[]>([]);
   const [commitSummary, setCommitSummary] = useState<DiffSummary | null>(null);
+  const [loadedCommitOid, setLoadedCommitOid] = useState<string | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const openSeq = useRef(0);
   const [summary, setSummary] = useState<DiffSummary | null>(null);
   const [repoName, setRepoName] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -120,6 +123,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // paths and surface a Refresh button. Applying it is always explicit. (#12)
   const pendingRef = useRef<{ session: ReviewSession; paths: string[] | null } | null>(null);
   const [pendingRefresh, setPendingRefresh] = useState(false);
+  const selfEditedRef = useRef<Set<string>>(new Set());
   // Keep reviewRef/summaryRef current via an effect (not during render — the
   // compiler forbids ref writes in render, and the listener only reads them on
   // fs events).
@@ -135,9 +139,15 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   }, []);
 
   async function open() {
+    const seq = ++openSeq.current;
+    const isCurrent = () => seq === openSeq.current;
+    setDiffLoading(true);
     try {
       setError(null);
       const session = await api.openReview({ repoPath: target.repoPath, mode: diffMode, base: target.base });
+      if (!isCurrent()) {
+        return;
+      }
       setReview(session.review);
       setSummary(session.summary);
       track("review_opened", { file_count_bucket: fileCountBucket(session.summary.files.length) });
@@ -146,9 +156,16 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       pendingRef.current = null;
       setPendingRefresh(false);
     } catch (e) {
+      if (!isCurrent()) {
+        return;
+      }
       setError(String(e));
       setSummary(null);
       setReview(null);
+    } finally {
+      if (isCurrent()) {
+        setDiffLoading(false);
+      }
     }
   }
 
@@ -199,8 +216,18 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     let cancelled = false;
     const vt: Target = { ...review.target, mode: "commit", commit: commitOid };
     void api.computeDiff(vt).then(
-      (s) => { if (!cancelled) setCommitSummary(s); },
-      (e) => { if (!cancelled) setError(String(e)); },
+      (s) => {
+        if (!cancelled) {
+          setCommitSummary(s);
+          setLoadedCommitOid(commitOid);
+        }
+      },
+      (e) => {
+        if (!cancelled) {
+          setError(String(e));
+          setLoadedCommitOid(commitOid);
+        }
+      },
     );
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -222,11 +249,13 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       // running `git status`) rewrites it with the diff unchanged, whereas a real
       // commit/checkout moves oids or files and so still changes `sig`. Forcing a
       // refresh on gitMeta would resurface the button on that no-op churn. (#12)
-      const touches = paths.some((p) => shown.has(p));
-      if (sig === sigRef.current && !touches) return; // nothing we display changed
+      // A file we just wrote ourselves is already on screen (the edit force-refreshed
+      // it), so its own watcher event must not resurface the button. (#edit)
+      const external = paths.filter((p) => shown.has(p) && !selfEditedRef.current.delete(p));
+      if (sig === sigRef.current && external.length === 0) return; // nothing we display changed
       // Merge the changed scope with any already-pending one (null === reload all).
       const prev = pendingRef.current?.paths;
-      const incoming: string[] | null = gitMeta ? null : paths.filter((p) => shown.has(p));
+      const incoming: string[] | null = gitMeta ? null : external;
       const merged: string[] | null =
         prev === null || incoming === null ? null : Array.from(new Set([...(prev ?? []), ...incoming]));
       pendingRef.current = { session, paths: merged };
@@ -273,6 +302,14 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       setError(String(e));
     }
   }
+
+  // An inline edit the user just made: their own write is not a change "under
+  // them", so it applies immediately instead of waiting behind the button. (#edit)
+  const onFileEdited = useCallback((file: string) => {
+    selfEditedRef.current.add(file);
+    void forceRefresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // The backend watches this worktree and emits `fs:changed` with the changed
   // paths (or a git-meta flag). We never mutate the displayed diff under the
@@ -411,6 +448,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     [review, inCommitMode, commitOid],
   );
   const viewSummary = inCommitMode ? commitSummary : summary;
+  const busy = diffLoading || (inCommitMode && loadedCommitOid !== commitOid);
   // Each mode-context shows its own comments: the current commit's in commit mode, the
   // untagged ones otherwise. The index + Copy still see everything (allComments).
   const comments = useMemo(
@@ -572,6 +610,11 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                 <span className="ml-2 font-mono tabular-nums text-[11px] text-muted-foreground">{stepIndex + 1}/{commits.length}</span>
               </div>
             )}
+            {busy && (
+              <span role="status" className="ml-1 inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" /> Computing delta…
+              </span>
+            )}
             <div className="ml-auto flex items-center gap-3">
               <CliInstallButton />
               {pendingRefresh && (
@@ -649,7 +692,12 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       {error && (
         <div className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[12px] text-destructive">{error}</div>
       )}
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
+        {busy && viewSummary && (
+          <div aria-hidden className="absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden">
+            <div className="absolute inset-y-0 left-0 w-1/3 bg-primary/70 [animation:delta-indeterminate_1.1s_ease-in-out_infinite]" />
+          </div>
+        )}
         {viewSummary && review ? (
           orderedFiles.length === 0 ? (
             <NothingToReview
@@ -671,7 +719,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
               />
               <PaneResizer edge="right" label="Resize file panel" {...fileResize} />
             </aside>
-            <main className="min-h-0 min-w-0 flex-1 -ml-1.5">
+            <main aria-busy={busy} className="min-h-0 min-w-0 flex-1 -ml-1.5 transition-opacity aria-busy:pointer-events-none aria-busy:opacity-50">
               <VirtualDiffPane
                 target={viewTarget!}
                 files={orderedFiles}
@@ -689,6 +737,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                 onEditComment={updateCommentBody}
                 onDeleteComment={deleteComment}
                 onToggleResolvedComment={toggleResolved}
+                onFileEdited={onFileEdited}
               />
             </main>
             <CommentIndex

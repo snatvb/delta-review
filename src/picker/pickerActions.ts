@@ -1,5 +1,6 @@
 import { api } from "../api";
 import { notify } from "../lib/notify";
+import { openTarget } from "../lib/openTarget";
 
 /**
  * Open the folder picker to import a repo, then open its main worktree for review.
@@ -15,7 +16,7 @@ export async function addRepo(): Promise<void> {
     if (!repo) return;
     const wts = await api.listWorktrees(repo.root);
     const main = wts.find((w) => w.isMain) ?? wts[0];
-    if (main) void api.openTarget(main.path, "all-changes");
+    if (main) await openTarget(main.path, "uncommitted");
   } catch (e) {
     // Tauri rejects a command's Err(String) with the bare string; tests/mocks may
     // throw an Error. Unwrap both to the clean message (no "Error:" prefix).

@@ -13,6 +13,7 @@ import type {
   CliStatus,
   DiffMode,
   CommitMeta,
+  FileTextResult,
 } from "./types";
 
 // Transport indirection: a dev-only fixture backend (VITE_MOCK_IPC) can replace
@@ -62,6 +63,18 @@ export const api = {
   // `line` jumps there where the editor's CLI supports it. (#editor)
   openInEditor: (editor: string, repoPath: string, file?: string, line?: number): Promise<void> =>
     invokeImpl("open_in_editor", { editor, repoPath, file, line }),
+  // `expected` must match the line's on-disk text or the backend refuses the write.
+  editFileLine: (target: Target, path: string, line: number, expected: string, replacement: string): Promise<void> =>
+    invokeImpl("edit_file_line", { target, path, line, expected, replacement }),
+  // Full-file editor (Phase 2): content is LF-normalized regardless of the
+  // file's actual line endings; `hash` fingerprints the on-disk bytes so a
+  // later write can detect an external change.
+  readFileText: (target: Target, path: string): Promise<FileTextResult> =>
+    invokeImpl("read_file_text", { target, path }),
+  // `expectedHash` must match the file's current on-disk hash or the backend
+  // refuses the write (and leaves the file untouched).
+  writeFileText: (target: Target, path: string, expectedHash: string, content: string): Promise<FileTextResult> =>
+    invokeImpl("write_file_text", { target, path, expectedHash, content }),
   // Process-wide updater leader election: the first window to call this gets
   // `true` and runs the check/download; other windows get `false` and stay idle,
   // so we never run concurrent downloads or .app replacements. (#updater-race)

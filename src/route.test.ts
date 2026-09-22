@@ -21,10 +21,10 @@ describe("resolveRoute", () => {
     expect(r).toEqual({ kind: "review", target: { repoPath: "/r", mode: "commit", base: undefined, commit: "a1b2c3d" } });
   });
 
-  it("falls back to all-changes for an unknown mode", () => {
+  it("falls back to uncommitted for an unknown mode", () => {
     const r = resolveRoute("review-x", "?repo=%2Fr&mode=bogus");
     expect(r.kind).toBe("review");
-    if (r.kind === "review") expect(r.target.mode).toBe("all-changes");
+    if (r.kind === "review") expect(r.target.mode).toBe("uncommitted");
   });
 
   it("defaults to home with no label and no params", () => {

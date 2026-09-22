@@ -22,7 +22,7 @@ vi.mock("../api", () => ({
     listWorktrees: vi.fn().mockResolvedValue([]),
     showPicker: vi.fn(),
     // Already-installed → the header CLI CTA hides itself, keeping these tests focused.
-    cliStatus: vi.fn().mockResolvedValue({ installed: true, path: "/usr/local/bin/delta" }),
+    cliStatus: vi.fn().mockResolvedValue({ supported: true, installed: true, path: "/usr/local/bin/delta" }),
     installCli: vi.fn(),
   },
 }));

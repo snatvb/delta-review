@@ -6,12 +6,15 @@ import { ReviewPicker } from "./ReviewPicker";
 import { addRepo } from "./pickerActions";
 import { api } from "../api";
 import { getPickerOpenMode } from "../windowMode";
+import { openTarget } from "../lib/openTarget";
 import type { DiffMode, PickerWorktree, ReviewEntry, Target } from "../types";
 
-async function deleteReview(r: ReviewEntry) {
-  if (confirm(`Delete this review of ${r.repoName} · ${r.target.worktree ?? ""}?`)) {
-    await api.deleteReview(r.id);
+async function deleteReview(r: ReviewEntry): Promise<boolean> {
+  if (!confirm(`Delete this review of ${r.repoName} · ${r.target.worktree ?? ""}?`)) {
+    return false;
   }
+  await api.deleteReview(r.id);
+  return true;
 }
 
 // Open a target in a new review window (default) or by REPLACING the current one
@@ -32,7 +35,7 @@ async function openTargetFrom(repoPath: string, mode: DiffMode, base?: string): 
     window.location.assign(u.toString());
     return;
   }
-  await api.openTarget(repoPath, mode, base);
+  await openTarget(repoPath, mode, base);
 }
 
 export function CommandPalette({ onClose, current }: { onClose: () => void; current?: Target }) {
@@ -41,7 +44,7 @@ export function CommandPalette({ onClose, current }: { onClose: () => void; curr
     onClose();
   };
   const openWorktree = (w: PickerWorktree) => {
-    void openTargetFrom(w.path, "all-changes");
+    void openTargetFrom(w.path, "uncommitted");
     onClose();
   };
   const onAddRepo = () => {

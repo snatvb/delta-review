@@ -35,6 +35,7 @@ impl DiffMode {
     }
 
     /// The CLI flag that selects this mode (inverse of `parse_launch`).
+    #[cfg(any(unix, test))] // only the CLI shim renders a mode back as a flag
     pub fn flag(&self) -> &'static str {
         match self {
             DiffMode::AllChanges => "--all",

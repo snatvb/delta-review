@@ -390,8 +390,13 @@ pub async fn import_repo(app: tauri::AppHandle) -> Result<Option<RepoEntry>, Str
 }
 
 #[tauri::command]
-pub fn open_target(app: tauri::AppHandle, repo_path: String, mode: DiffMode, base: Option<String>) -> Result<(), String> {
-    open_target_window(&app, &repo_path, mode, base).map(|_| ())
+// Async on purpose: Tauri runs a synchronous command on the main thread, and creating
+// a window there deadlocks — the builder waits for an event loop that is busy running
+// this very command, and every later IPC call queues behind it forever.
+pub async fn open_target(app: tauri::AppHandle, repo_path: String, mode: DiffMode, base: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || open_target_window(&app, &repo_path, mode, base).map(|_| ()))
+        .await
+        .map_err(|e| format!("open target task: {e}"))?
 }
 
 /// Re-point the calling window's fs watcher at `repo_path`'s worktree — used when
@@ -464,6 +469,21 @@ pub fn open_in_editor(editor: String, repo_path: String, file: Option<String>, l
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("launch {editor}: {e}"))
+}
+
+#[tauri::command]
+pub fn edit_file_line(target: Target, path: String, line: u32, expected: String, replacement: String) -> Result<(), String> {
+    crate::edit::edit_file_line(&target, &path, line, &expected, &replacement)
+}
+
+#[tauri::command]
+pub fn read_file_text(target: Target, path: String) -> Result<crate::edit::FileText, String> {
+    crate::edit::read_file_text(&target, &path)
+}
+
+#[tauri::command]
+pub fn write_file_text(target: Target, path: String, expected_hash: String, content: String) -> Result<crate::edit::FileText, String> {
+    crate::edit::write_file_text(&target, &path, &expected_hash, &content)
 }
 
 #[cfg(test)]

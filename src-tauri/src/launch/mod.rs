@@ -59,6 +59,7 @@ pub fn parse_launch(args: &[String], cwd: &Path) -> Launch {
 /// True when a CLI launch points at a path that isn't inside a git repo — the case a
 /// terminal invocation should reject (warn + do nothing) instead of falling back to the
 /// launcher. `open_repo` discovers upward, so a subdir of a repo still counts as valid.
+#[cfg(any(unix, test))] // the CLI shim is the only caller; it does not exist on Windows
 pub fn launch_targets_non_repo(launch: &Launch) -> bool {
     open_repo(&launch.repo_path.to_string_lossy()).is_err()
 }
@@ -284,7 +285,7 @@ pub fn open_home_window(app: &AppHandle) -> Result<(), String> {
 pub fn route_launch(app: &AppHandle, args: &[String], cwd: &Path) {
     let launch = parse_launch(args, cwd);
     let path = launch.repo_path.to_string_lossy().to_string();
-    let mode = launch.mode.unwrap_or(DiffMode::AllChanges);
+    let mode = launch.mode.unwrap_or(DiffMode::Uncommitted);
     let opened = open_repo(&path).is_ok() && open_target_window(app, &path, mode, None).is_ok();
     if !opened {
         let _ = open_home_window(app);
@@ -307,6 +308,9 @@ pub enum InstallOutcome {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CliStatus {
+    /// False where the shim can't exist at all (no unix socket, no `open -b`), so
+    /// the UI drops every CLI affordance instead of offering an install that fails.
+    pub supported: bool,
     pub installed: bool,
     pub path: Option<String>,
 }
@@ -395,6 +399,7 @@ pub fn install_cli() -> Result<InstallOutcome, String> {
 
 /// Best-effort check for an installed `delta` shim in the dirs we (or a manual
 /// install) would use, so the UI can stop offering to install it.
+#[cfg(unix)]
 pub fn cli_status() -> CliStatus {
     let mut dirs = preferred_bin_dirs();
     if let Ok(home) = std::env::var("HOME") {
@@ -406,10 +411,16 @@ pub fn cli_status() -> CliStatus {
     for dir in dirs {
         let link = dir.join(CLI_NAME);
         if fs::symlink_metadata(&link).is_ok() {
-            return CliStatus { installed: true, path: Some(link.display().to_string()) };
+            return CliStatus { supported: true, installed: true, path: Some(link.display().to_string()) };
         }
     }
-    CliStatus { installed: false, path: None }
+    CliStatus { supported: true, installed: false, path: None }
+}
+
+/// The shim rides a unix socket and `open -b`, so it can't exist on Windows.
+#[cfg(not(unix))]
+pub fn cli_status() -> CliStatus {
+    CliStatus { supported: false, installed: false, path: None }
 }
 
 /// Tags the block we append to a shell config so re-running install is idempotent.

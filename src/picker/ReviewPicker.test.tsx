@@ -29,7 +29,7 @@ describe("ReviewPicker", () => {
     mock(DATA);
     const opened: PickerWorktree[] = [];
     render(
-      <ReviewPicker onOpenReview={() => {}} onOpenWorktree={(w) => opened.push(w)} onAddRepo={() => {}} onDeleteReview={() => {}} />,
+      <ReviewPicker onOpenReview={() => {}} onOpenWorktree={(w) => opened.push(w)} onAddRepo={() => {}} onDeleteReview={async () => false} />,
     );
     await waitFor(() => expect(screen.getByText("feat/auth")).toBeInTheDocument());
     expect(screen.getByText("spike/idea")).toBeInTheDocument();
@@ -37,9 +37,38 @@ describe("ReviewPicker", () => {
     expect(opened.map((w) => w.branch)).toEqual(["spike/idea"]);
   });
 
+  it("deletes a recent from its row button and drops it from the list", async () => {
+    mock(DATA);
+    const deleted: string[] = [];
+    render(
+      <ReviewPicker
+        onOpenReview={() => {}}
+        onOpenWorktree={() => {}}
+        onAddRepo={() => {}}
+        onDeleteReview={async (r) => {
+          deleted.push(r.id);
+          return true;
+        }}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("feat/auth")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Delete review" }));
+    await waitFor(() => expect(screen.queryByText("feat/auth")).not.toBeInTheDocument());
+    expect(deleted).toEqual(["rev1"]);
+  });
+
+  it("keeps a recent whose deletion was cancelled", async () => {
+    mock(DATA);
+    render(<ReviewPicker onOpenReview={() => {}} onOpenWorktree={() => {}} onAddRepo={() => {}} onDeleteReview={async () => false} />);
+    await waitFor(() => expect(screen.getByText("feat/auth")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Delete review" }));
+    await Promise.resolve();
+    expect(screen.getByText("feat/auth")).toBeInTheDocument();
+  });
+
   it("filters the list as you type", async () => {
     mock(DATA);
-    render(<ReviewPicker onOpenReview={() => {}} onOpenWorktree={() => {}} onAddRepo={() => {}} onDeleteReview={() => {}} />);
+    render(<ReviewPicker onOpenReview={() => {}} onOpenWorktree={() => {}} onAddRepo={() => {}} onDeleteReview={async () => false} />);
     await waitFor(() => expect(screen.getByText("feat/auth")).toBeInTheDocument());
     fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: "spike" } });
     await waitFor(() => expect(screen.queryByText("feat/auth")).not.toBeInTheDocument());
@@ -54,7 +83,7 @@ describe("ReviewPicker", () => {
         onOpenReview={() => {}}
         onOpenWorktree={() => {}}
         onAddRepo={() => {}}
-        onDeleteReview={() => {}}
+        onDeleteReview={async () => false}
       />,
     );
     await waitFor(() => expect(screen.getByText("spike/idea")).toBeInTheDocument());
@@ -64,7 +93,7 @@ describe("ReviewPicker", () => {
 
   it("shows an add-repo affordance and a hint when there are no known repos", async () => {
     mock({ recents: [], worktrees: [] });
-    render(<ReviewPicker onOpenReview={() => {}} onOpenWorktree={() => {}} onAddRepo={() => {}} onDeleteReview={() => {}} />);
+    render(<ReviewPicker onOpenReview={() => {}} onOpenWorktree={() => {}} onAddRepo={() => {}} onDeleteReview={async () => false} />);
     await waitFor(() => expect(screen.getByText(/no repos yet/i)).toBeInTheDocument());
     expect(screen.getByRole("button", { name: /add a repo/i })).toBeInTheDocument();
   });
@@ -85,7 +114,7 @@ describe("ReviewPicker", () => {
       calls += 1;
       return structuredClone(calls === 1 ? DATA : WITH_NEW) as never;
     });
-    render(<ReviewPicker onOpenReview={() => {}} onOpenWorktree={() => {}} onAddRepo={() => {}} onDeleteReview={() => {}} />);
+    render(<ReviewPicker onOpenReview={() => {}} onOpenWorktree={() => {}} onAddRepo={() => {}} onDeleteReview={async () => false} />);
     await waitFor(() => expect(screen.getByText("spike/idea")).toBeInTheDocument());
     expect(screen.queryByText("fresh/wt")).not.toBeInTheDocument();
 
