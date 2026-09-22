@@ -43,7 +43,9 @@ pub struct DiffSummary {
 
 pub fn build_diff<'r>(repo: &'r Repository, ep: &Endpoints) -> Result<Diff<'r>, GitError> {
     let mut opts = DiffOptions::new();
-    opts.include_untracked(true).recurse_untracked_dirs(true);
+    // Without show_untracked_content libgit2 reports an untracked file as a delta it
+    // never diffs, so the file lands in the summary with no line stats at all.
+    opts.include_untracked(true).recurse_untracked_dirs(true).show_untracked_content(true);
 
     // ep.from_tree and RightSide::Tree carry tree OIDs (not commit OIDs),
     // as produced by tree_of() in resolve_endpoints.
@@ -408,6 +410,19 @@ mod tests {
             compute_diff(&target(dir.path().to_str().unwrap(), DiffMode::Uncommitted)).unwrap();
         let new_file = summary.files.iter().find(|f| f.path == "new.txt").unwrap();
         assert_eq!(new_file.status, FileStatus::Added);
+        assert_eq!((new_file.additions, new_file.deletions), (1, 0));
+    }
+
+    #[test]
+    fn untracked_file_carries_its_line_stats() {
+        let (dir, _repo) = repo_with_commit();
+        write(dir.path(), "fresh.ts", "const a = 1\nconst b = 2\nconst c = 3\n");
+
+        let summary =
+            compute_diff(&target(dir.path().to_str().unwrap(), DiffMode::Uncommitted)).unwrap();
+
+        let fresh = summary.files.iter().find(|f| f.path == "fresh.ts").unwrap();
+        assert_eq!((fresh.additions, fresh.deletions), (3, 0));
     }
 
     #[test]
