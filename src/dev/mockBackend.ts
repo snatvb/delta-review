@@ -438,8 +438,10 @@ export function installMockBackend(): void {
         return { kind: "linked", path: "/usr/local/bin/delta" } as T;
       }
       case "cli_status":
-        // Default: not installed so the header CTA shows. `?cli=installed` hides it.
+        // Default: not installed so the header CTA shows. `?cli=installed` hides it,
+        // `?cli=unsupported` mimics a platform without the shim (Windows).
         return {
+          supported: params.get("cli") !== "unsupported",
           installed: params.get("cli") === "installed",
           path: params.get("cli") === "installed" ? "/usr/local/bin/delta" : null,
         } as T;

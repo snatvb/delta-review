@@ -1,8 +1,11 @@
 mod anchor;
+#[cfg(unix)]
 mod cli;
 mod commands;
+mod edit;
 mod export;
 mod git;
+#[cfg(unix)]
 mod ipc;
 mod launch;
 mod registry;
@@ -15,7 +18,19 @@ mod devbridge;
 
 use tauri::Manager;
 
+#[cfg(unix)]
 pub use cli::{cli_main, invoked_as_cli};
+
+// The `delta` shim talks to the app over a unix-domain socket and cold-launches it
+// with `open -b`; neither exists on Windows, so the app there is GUI-only.
+#[cfg(not(unix))]
+pub fn invoked_as_cli() -> bool {
+    false
+}
+#[cfg(not(unix))]
+pub fn cli_main() -> i32 {
+    0
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -86,6 +101,7 @@ pub fn run() {
             commands::install_cli,
             commands::cli_status,
             commands::open_in_editor,
+            commands::edit_file_line,
             commands::updater_try_acquire,
             commands::telemetry_allowed
         ])
@@ -93,6 +109,7 @@ pub fn run() {
             let args: Vec<String> = std::env::args().skip(1).collect();
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             crate::launch::route_launch(app.handle(), &args, &cwd);
+            #[cfg(unix)]
             crate::ipc::start(app.handle());
             #[cfg(debug_assertions)]
             crate::devbridge::start(app.handle().clone());

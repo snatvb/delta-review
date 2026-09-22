@@ -5,7 +5,7 @@ import { __setInvokeForDev } from "../api";
 
 function mockCli(installed: boolean) {
   __setInvokeForDev(async (cmd: string) => {
-    if (cmd === "cli_status") return { installed, path: installed ? "/usr/local/bin/delta" : null } as never;
+    if (cmd === "cli_status") return { supported: true, installed, path: installed ? "/usr/local/bin/delta" : null } as never;
     if (cmd === "install_cli") return { kind: "linked", path: "/usr/local/bin/delta" } as never;
     throw new Error(`unexpected ${cmd}`);
   });

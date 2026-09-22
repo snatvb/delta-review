@@ -40,7 +40,7 @@ export function useCliInstall(): CliInstall {
     let cancelled = false;
     void api
       .cliStatus()
-      .then((s) => !cancelled && setPhase(s.installed ? "installed" : "idle"))
+      .then((s) => !cancelled && setPhase(!s.supported ? "hidden" : s.installed ? "installed" : "idle"))
       .catch(() => !cancelled && setPhase("idle"));
     return () => {
       cancelled = true;
