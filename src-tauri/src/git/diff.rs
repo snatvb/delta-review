@@ -138,7 +138,7 @@ pub struct FileDiff {
 /// Git's binary heuristic: a NUL byte within the first 8000 bytes means binary.
 /// git2's `is_binary()` flag isn't reliably set during delta iteration, so we
 /// also inspect the content ourselves — otherwise PNGs etc. render as garbage.
-fn looks_binary(bytes: &[u8]) -> bool {
+pub(crate) fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8000).any(|&b| b == 0)
 }
 

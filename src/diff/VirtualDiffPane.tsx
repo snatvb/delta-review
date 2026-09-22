@@ -34,7 +34,8 @@ import { markdownComponents } from "@/lib/markdownLink";
 import { isMarkdownPath } from "./isMarkdownPath";
 import { DiffFind } from "./DiffFind";
 import { findPrefillFromSelection } from "./findSelection";
-import type { Anchor, Comment, FileDiff, FileEntry, Side, Target } from "../types";
+import { unifiedRowEdit, splitRowEdit } from "./lineEdit";
+import type { Anchor, Comment, DiffMode, FileDiff, FileEntry, Side, Target } from "../types";
 import type { DiffLayout } from "./useDiffLayout";
 import { useFileDiffCache } from "./useFileDiffCache";
 import { wrapsByDefault, paneColsFor, visualLinesForCols, buildRowOffsets } from "./wrap";
@@ -153,16 +154,16 @@ function occurrencesOf(re: RegExp, text: string): { col: number; len: number }[]
 // The code area: highlighted line + a brighter tint over exactly the changed
 // characters (word-level diff). Monospace ⇒ char N is at N`ch`, so the overlay
 // lines up without splitting tokens.
-function Code({ html, range, changeBg, marks, wrap }: { html: string; range: ChangeRange; changeBg: string; marks?: Mark[]; wrap?: boolean }) {
+function Code({ html, range, changeBg, marks, wrap, onDoubleClick }: { html: string; range: ChangeRange; changeBg: string; marks?: Mark[]; wrap?: boolean; onDoubleClick?: () => void }) {
   if (wrap) {
     return (
-      <code className="diff-line-syntax-raw relative flex-1 whitespace-pre-wrap break-all pr-3">
+      <code onDoubleClick={onDoubleClick} className="diff-line-syntax-raw relative flex-1 whitespace-pre-wrap break-all pr-3">
         <span className="relative whitespace-pre-wrap break-all" dangerouslySetInnerHTML={{ __html: html }} />
       </code>
     );
   }
   return (
-    <code className="diff-line-syntax-raw relative flex-1 whitespace-pre pr-3">
+    <code onDoubleClick={onDoubleClick} className="diff-line-syntax-raw relative flex-1 whitespace-pre pr-3">
       {range && range.length > 0 && (
         <span aria-hidden className={`pointer-events-none absolute inset-y-[2.5px] rounded ${changeBg}`} style={{ left: `${range.location}ch`, width: `${range.length}ch` }} />
       )}
@@ -173,6 +174,40 @@ function Code({ html, range, changeBg, marks, wrap }: { html: string; range: Cha
       ))}
       <span className="relative whitespace-pre" dangerouslySetInnerHTML={{ __html: html }} />
     </code>
+  );
+}
+
+interface RowEditState { line: number; text: string; saving: boolean; error: string | null }
+
+function LineEditInput({ state, onSave, onCancel }: { state: RowEditState; onSave: (next: string) => void; onCancel: () => void }) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    ref.current?.focus();
+    ref.current?.select();
+  }, []);
+  return (
+    <span className="relative flex-1">
+      <input
+        ref={ref}
+        type="text"
+        defaultValue={state.text}
+        disabled={state.saving}
+        spellCheck={false}
+        autoCapitalize="off"
+        autoCorrect="off"
+        className="h-full w-full border-0 bg-transparent px-0 font-mono text-[length:var(--code-fs,13px)] leading-[var(--code-lh,22px)] text-foreground caret-primary outline-none"
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); onSave(e.currentTarget.value); }
+          else if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+        }}
+        onBlur={() => { if (!state.saving) onCancel(); }}
+      />
+      {state.error && (
+        <div className="delta-comment-ui absolute left-0 top-full z-20 mt-1 max-w-md truncate rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-[12px] text-destructive shadow-md" title={state.error}>
+          {state.error}
+        </div>
+      )}
+    </span>
   );
 }
 
@@ -192,11 +227,13 @@ const railBg = (tint: string | null) => (tint ? `linear-gradient(${tint}, ${tint
 const mix = (color: string, pct: number) => `color-mix(in oklch, ${color} ${pct}%, transparent)`;
 
 // Unified row: old# · new# · marker · code, hover `+` to comment, gutters drag-select.
-function Row({ model, index, top, height, wrap, selected, highlighted, onComment, marks }: { model: Model; index: number; top: number; height: number; wrap: boolean; selected: boolean; highlighted: boolean; onComment: (side: Side, line: number) => void; marks?: RowMark[] }) {
+function Row({ model, index, top, height, wrap, selected, highlighted, onComment, marks, mode, rowEdit, onStartEdit, onSaveEdit, onCancelEdit }: { model: Model; index: number; top: number; height: number; wrap: boolean; selected: boolean; highlighted: boolean; onComment: (side: Side, line: number) => void; marks?: RowMark[]; mode: DiffMode; rowEdit: RowEditState | null; onStartEdit: (line: number, text: string) => void; onSaveEdit: (line: number, expected: string, replacement: string) => void; onCancelEdit: () => void }) {
   const line = model.getUnifiedLine(index);
   const hasOld = line.oldLineNumber != null, hasNew = line.newLineNumber != null;
   const kind = hasOld && hasNew ? "ctx" : hasNew ? "add" : hasOld ? "del" : "hunk";
   const side: Side = hasNew ? "new" : "old";
+  const editable = unifiedRowEdit(mode, line);
+  const isEditingThis = rowEdit != null && editable != null && rowEdit.line === editable.line;
   const html = kind === "hunk" ? escapeHtml(line.value ?? "") : syntaxHtml(model, side, (hasNew ? line.newLineNumber : line.oldLineNumber)!, line.value);
   const range = kind === "add" || kind === "del" ? changeRangeOf(line.diff) : undefined;
   const marker = kind === "add" ? "+" : kind === "del" ? "−" : "";
@@ -230,7 +267,11 @@ function Row({ model, index, top, height, wrap, selected, highlighted, onComment
           </button>
         )}
       </div>
-      <Code html={html} range={kind === "hunk" ? undefined : range} changeBg={kind === "add" ? "bg-emerald-400/25" : "bg-rose-400/25"} marks={marks} wrap={wrap} />
+      {isEditingThis && rowEdit ? (
+        <LineEditInput state={rowEdit} onSave={(next) => onSaveEdit(rowEdit.line, rowEdit.text, next)} onCancel={onCancelEdit} />
+      ) : (
+        <Code html={html} range={kind === "hunk" ? undefined : range} changeBg={kind === "add" ? "bg-emerald-400/25" : "bg-rose-400/25"} marks={marks} wrap={wrap} onDoubleClick={editable ? () => onStartEdit(editable.line, editable.text) : undefined} />
+      )}
     </div>
   );
 }
@@ -239,11 +280,13 @@ function Row({ model, index, top, height, wrap, selected, highlighted, onComment
 // gutter is a sticky rail (like the unified row) so it stays pinned and masks the
 // code that scrolls under it on horizontal scroll. The two columns are separate
 // scroll containers (synced), so each side scrolls within its own half. (#2/#10)
-function SplitColCell({ model, side, index, top, height, wrap, changed, highlighted, selected, onComment, marks }: { model: Model; side: Side; index: number; top: number; height: number; wrap: boolean; changed: boolean; highlighted: boolean; selected: boolean; onComment: (side: Side, line: number) => void; marks?: RowMark[] }) {
+function SplitColCell({ model, side, index, top, height, wrap, changed, highlighted, selected, onComment, marks, mode, rowEdit, onStartEdit, onSaveEdit, onCancelEdit }: { model: Model; side: Side; index: number; top: number; height: number; wrap: boolean; changed: boolean; highlighted: boolean; selected: boolean; onComment: (side: Side, line: number) => void; marks?: RowMark[]; mode: DiffMode; rowEdit: RowEditState | null; onStartEdit: (line: number, text: string) => void; onSaveEdit: (line: number, expected: string, replacement: string) => void; onCancelEdit: () => void }) {
   const line = side === "old" ? model.getSplitLeftLine(index) : model.getSplitRightLine(index);
   const has = line.lineNumber != null;
   const ln = line.lineNumber!;
   const html = has ? syntaxHtml(model, side, ln, line.value) : "";
+  const editable = splitRowEdit(mode, side, line);
+  const isEditingThis = rowEdit != null && editable != null && rowEdit.line === editable.line;
   // No line here → the change is on the other side; tint the whole empty row
   // (gutter included) a neutral "void" so it reads as absent, not context. (#2)
   // Otherwise: selected / changed (red old, green new) / commented, as a
@@ -265,7 +308,13 @@ function SplitColCell({ model, side, index, top, height, wrap, changed, highligh
           </button>
         )}
       </div>
-      {has ? <Code html={html} range={range} changeBg={side === "old" ? "bg-rose-400/25" : "bg-emerald-400/25"} marks={marks} wrap={wrap} /> : <span className="flex-1" />}
+      {isEditingThis && rowEdit ? (
+        <LineEditInput state={rowEdit} onSave={(next) => onSaveEdit(rowEdit.line, rowEdit.text, next)} onCancel={onCancelEdit} />
+      ) : has ? (
+        <Code html={html} range={range} changeBg={side === "old" ? "bg-rose-400/25" : "bg-emerald-400/25"} marks={marks} wrap={wrap} onDoubleClick={editable ? () => onStartEdit(editable.line, editable.text) : undefined} />
+      ) : (
+        <span className="flex-1" />
+      )}
     </div>
   );
 }
@@ -360,13 +409,18 @@ function PreviewBody({ content, onHeight }: { content: string; onHeight: (h: num
 interface Block { id: string; index: number; comments: Comment[] }
 
 const VFileSection = memo(function VFileSection({
-  entry, theme, layout, cache, collapsed, viewed, previewing, onSetPreview, headerSolo, repoPath, onToggleCollapse, onToggleViewed, wrap, onToggleWrap, view, paneW, rowH, chPx, query, caseSensitive, wholeWord, activeMatch, onMatches, forceModel, comments, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, reportBodyHeight,
+  entry, theme, layout, cache, collapsed, viewed, previewing, onSetPreview, headerSolo, repoPath, mode, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onToggleCollapse, onToggleViewed, wrap, onToggleWrap, view, paneW, rowH, chPx, query, caseSensitive, wholeWord, activeMatch, onMatches, forceModel, comments, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, reportBodyHeight,
 }: {
   entry: FileEntry; theme: "light" | "dark"; layout: DiffLayout;
   cache: ReturnType<typeof useFileDiffCache>;
   collapsed: boolean; viewed: boolean;
   headerSolo: boolean; // body fully scrolled under the stuck header → round its bottom corners (#6)
   repoPath: string; // absolute repo/worktree root — joined with entry.path to open in an editor (#editor)
+  mode: DiffMode;
+  rowEdit: RowEditState | null;
+  onStartEdit: (file: string, line: number, text: string) => void;
+  onSaveEdit: (file: string, line: number, expected: string, replacement: string) => void;
+  onCancelEdit: () => void;
   previewing: boolean; // rendered markdown preview instead of the diff (state lifted to the pane so it survives scroll-unmount) (#preview)
   onSetPreview: (path: string, on: boolean) => void;
   onToggleCollapse: (path: string) => void;
@@ -675,6 +729,9 @@ const VFileSection = memo(function VFileSection({
     onAddComment({ file: entry.path, side, startLine: lineNumber, endLine: null, snippet }, "");
   }, [fd, entry.path, onAddComment]);
 
+  const startEditRow = useCallback((line: number, text: string) => onStartEdit(entry.path, line, text), [entry.path, onStartEdit]);
+  const saveEditRow = useCallback((line: number, expected: string, replacement: string) => onSaveEdit(entry.path, line, expected, replacement), [entry.path, onSaveEdit]);
+
   // Drag the line-number gutter → range comment.
   const [sel, setSel] = useState<{ a: number; b: number } | null>(null);
   const onGutterPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
@@ -759,6 +816,7 @@ const VFileSection = memo(function VFileSection({
             key={idx} model={model} side={side} index={idx} top={visualRowTop(v)} height={rowPxOf(v)} wrap={wrap}
             changed={changed} highlighted={rangeRows.has(idx)} selected={idx >= selLo && idx <= selHi}
             onComment={commentLine} marks={rowMarks(idx)?.filter((m) => m.side === side)}
+            mode={mode} rowEdit={rowEdit} onStartEdit={startEditRow} onSaveEdit={saveEditRow} onCancelEdit={onCancelEdit}
           />
         );
       })}
@@ -1008,7 +1066,7 @@ const VFileSection = memo(function VFileSection({
                     const vr = visualRows[v];
                     if (vr.kind !== "line") return null;
                     const hl = rangeRows.has(vr.index);
-                    return <Row key={vr.index} model={model} index={vr.index} top={visualRowTop(v)} height={rowPxOf(v)} wrap={wrap} selected={vr.index >= selLo && vr.index <= selHi} highlighted={hl} onComment={commentLine} marks={rowMarks(vr.index)} />;
+                    return <Row key={vr.index} model={model} index={vr.index} top={visualRowTop(v)} height={rowPxOf(v)} wrap={wrap} selected={vr.index >= selLo && vr.index <= selHi} highlighted={hl} onComment={commentLine} marks={rowMarks(vr.index)} mode={mode} rowEdit={rowEdit} onStartEdit={startEditRow} onSaveEdit={saveEditRow} onCancelEdit={onCancelEdit} />;
                   })}
                 </div>
               ))}
@@ -1046,7 +1104,7 @@ function useFileDiffCacheEntry(cache: ReturnType<typeof useFileDiffCache>, path:
 }
 
 export function VirtualDiffPane({
-  target, files, theme, layout, viewedFiles, comments, jump, prefetch, invalidate, onVisibleFileChange, onToggleViewed, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment,
+  target, files, theme, layout, viewedFiles, comments, jump, prefetch, invalidate, onVisibleFileChange, onToggleViewed, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, onFileEdited,
 }: {
   target: Target; files: FileEntry[]; theme: "light" | "dark"; layout: DiffLayout;
   viewedFiles: Set<string>; comments: Comment[];
@@ -1064,6 +1122,7 @@ export function VirtualDiffPane({
   onEditComment: (id: string, body: string) => void;
   onDeleteComment: (id: string) => void;
   onToggleResolvedComment: (id: string) => void;
+  onFileEdited?: (file: string) => void;
 }) {
   const cache = useFileDiffCache(target);
 
@@ -1233,6 +1292,22 @@ export function VirtualDiffPane({
     return m;
   }, [comments]);
   const noComments = useMemo<Comment[]>(() => [], []);
+
+  const [editing, setEditing] = useState<(RowEditState & { file: string }) | null>(null);
+  const startEdit = useCallback((file: string, line: number, text: string) => {
+    setEditing({ file, line, text, saving: false, error: null });
+  }, []);
+  const cancelEdit = useCallback(() => setEditing(null), []);
+  const saveEdit = useCallback((file: string, line: number, expected: string, replacement: string) => {
+    setEditing((prev) => (prev && prev.file === file && prev.line === line ? { ...prev, saving: true, error: null } : prev));
+    void api.editFileLine(target, file, line, expected, replacement).then(
+      () => {
+        setEditing((prev) => (prev && prev.file === file && prev.line === line ? null : prev));
+        onFileEdited?.(file);
+      },
+      (e: unknown) => setEditing((prev) => (prev && prev.file === file && prev.line === line ? { ...prev, saving: false, error: e instanceof Error ? e.message : String(e) } : prev)),
+    );
+  }, [target, onFileEdited]);
 
   const { offsets, total } = useMemo(() => {
     const offs: number[] = [];
@@ -1551,6 +1626,9 @@ export function VirtualDiffPane({
                 previewing={previewingFiles.has(entry.path)} onSetPreview={setFilePreview}
                 headerSolo={headerSolo}
                 repoPath={target.repoPath}
+                mode={target.mode}
+                rowEdit={editing && editing.file === entry.path ? editing : null}
+                onStartEdit={startEdit} onSaveEdit={saveEdit} onCancelEdit={cancelEdit}
                 onToggleCollapse={toggleCollapse} onToggleViewed={onToggleViewed}
                 wrap={wrapFor(entry)} onToggleWrap={toggleWrap}
                 view={view} paneW={viewportW} rowH={rowH} chPx={chPx}

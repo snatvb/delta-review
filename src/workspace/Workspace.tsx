@@ -120,6 +120,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // paths and surface a Refresh button. Applying it is always explicit. (#12)
   const pendingRef = useRef<{ session: ReviewSession; paths: string[] | null } | null>(null);
   const [pendingRefresh, setPendingRefresh] = useState(false);
+  const selfEditedRef = useRef<Set<string>>(new Set());
   // Keep reviewRef/summaryRef current via an effect (not during render — the
   // compiler forbids ref writes in render, and the listener only reads them on
   // fs events).
@@ -222,11 +223,13 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       // running `git status`) rewrites it with the diff unchanged, whereas a real
       // commit/checkout moves oids or files and so still changes `sig`. Forcing a
       // refresh on gitMeta would resurface the button on that no-op churn. (#12)
-      const touches = paths.some((p) => shown.has(p));
-      if (sig === sigRef.current && !touches) return; // nothing we display changed
+      // A file we just wrote ourselves is already on screen (the edit force-refreshed
+      // it), so its own watcher event must not resurface the button. (#edit)
+      const external = paths.filter((p) => shown.has(p) && !selfEditedRef.current.delete(p));
+      if (sig === sigRef.current && external.length === 0) return; // nothing we display changed
       // Merge the changed scope with any already-pending one (null === reload all).
       const prev = pendingRef.current?.paths;
-      const incoming: string[] | null = gitMeta ? null : paths.filter((p) => shown.has(p));
+      const incoming: string[] | null = gitMeta ? null : external;
       const merged: string[] | null =
         prev === null || incoming === null ? null : Array.from(new Set([...(prev ?? []), ...incoming]));
       pendingRef.current = { session, paths: merged };
@@ -273,6 +276,14 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       setError(String(e));
     }
   }
+
+  // An inline edit the user just made: their own write is not a change "under
+  // them", so it applies immediately instead of waiting behind the button. (#edit)
+  const onFileEdited = useCallback((file: string) => {
+    selfEditedRef.current.add(file);
+    void forceRefresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // The backend watches this worktree and emits `fs:changed` with the changed
   // paths (or a git-meta flag). We never mutate the displayed diff under the
@@ -689,6 +700,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                 onEditComment={updateCommentBody}
                 onDeleteComment={deleteComment}
                 onToggleResolvedComment={toggleResolved}
+                onFileEdited={onFileEdited}
               />
             </main>
             <CommentIndex

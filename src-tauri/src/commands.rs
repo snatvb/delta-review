@@ -466,6 +466,11 @@ pub fn open_in_editor(editor: String, repo_path: String, file: Option<String>, l
         .map_err(|e| format!("launch {editor}: {e}"))
 }
 
+#[tauri::command]
+pub fn edit_file_line(target: Target, path: String, line: u32, expected: String, replacement: String) -> Result<(), String> {
+    crate::edit::edit_file_line(&target, &path, line, &expected, &replacement)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -62,6 +62,9 @@ export const api = {
   // `line` jumps there where the editor's CLI supports it. (#editor)
   openInEditor: (editor: string, repoPath: string, file?: string, line?: number): Promise<void> =>
     invokeImpl("open_in_editor", { editor, repoPath, file, line }),
+  // `expected` must match the line's on-disk text or the backend refuses the write.
+  editFileLine: (target: Target, path: string, line: number, expected: string, replacement: string): Promise<void> =>
+    invokeImpl("edit_file_line", { target, path, line, expected, replacement }),
   // Process-wide updater leader election: the first window to call this gets
   // `true` and runs the check/download; other windows get `false` and stay idle,
   // so we never run concurrent downloads or .app replacements. (#updater-race)

@@ -316,6 +316,17 @@ function genLarge(fileCount: number): { summary: DiffSummary; files: Record<stri
   };
 }
 
+function replaceLine(content: string, line: number, expected: string, replacement: string): string {
+  const segments = content.length ? content.split(/(?<=\n)/) : [];
+  const segment = segments[line - 1];
+  if (segment == null) throw new Error(`line ${line} is out of range`);
+  const terminator = segment.endsWith("\r\n") ? "\r\n" : segment.endsWith("\n") ? "\n" : "";
+  const current = terminator ? segment.slice(0, -terminator.length) : segment;
+  if (current !== expected) throw new Error("file changed on disk — refusing to overwrite");
+  segments[line - 1] = `${replacement}${terminator}`;
+  return segments.join("");
+}
+
 export function installMockBackend(): void {
   const params = typeof location !== "undefined" ? new URLSearchParams(location.search) : new URLSearchParams();
   const largeParam = params.get("large");
@@ -448,6 +459,14 @@ export function installMockBackend(): void {
       case "open_in_editor":
         console.info("[delta mock] open_in_editor", args);
         return undefined as T;
+      case "edit_file_line": {
+        const a = args as { path: string; line: number; expected: string; replacement: string };
+        const fd = ds.files[a.path];
+        if (!fd || fd.newContent == null) throw new Error(`${a.path}: not found`);
+        fd.newContent = replaceLine(fd.newContent, a.line, a.expected, a.replacement);
+        console.info("[delta mock] edit_file_line", a);
+        return undefined as T;
+      }
       case "updater_try_acquire":
         // Never reached in mock mode (useUpdater bails on !isTauri), but keep the
         // IPC surface mirrored. The sole caller always wins the gate.
