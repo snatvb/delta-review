@@ -12,6 +12,7 @@ use crate::launch::{
 use crate::registry::model::{Registry, RepoEntry, ReviewEntry, WorktreeEntry};
 use crate::review::model::{review_id, Review, Snapshot};
 use crate::review::reconcile::{adopt_persisted_viewed_hashes, reconcile, restore_persisted_comments, stamp_viewed_baselines, ReviewSession};
+use crate::settings::Settings;
 use crate::storage::{JsonRegistryStore, JsonStorage, RegistryStore, Storage};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -418,6 +419,16 @@ pub async fn open_target(app: tauri::AppHandle, repo_path: String, mode: DiffMod
 #[tauri::command]
 pub fn rewatch_window(window: tauri::WebviewWindow, app: tauri::AppHandle, repo_path: String) -> Result<(), String> {
     rewatch_target(&app, window.label(), &repo_path)
+}
+
+#[tauri::command]
+pub fn get_settings(app: tauri::AppHandle) -> Settings {
+    crate::settings::load(&app)
+}
+
+#[tauri::command]
+pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), String> {
+    crate::settings::save(&app, &settings)
 }
 
 #[tauri::command]

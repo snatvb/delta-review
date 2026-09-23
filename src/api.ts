@@ -16,6 +16,7 @@ import type {
   DiffMode,
   CommitPage,
   FileTextResult,
+  AppSettings,
 } from "./types";
 
 // Transport indirection: a dev-only fixture backend (VITE_MOCK_IPC) can replace
@@ -76,6 +77,8 @@ export const api = {
   // auto-refresh follows the new repo. (#replace)
   rewatchWindow: (repoPath: string): Promise<void> =>
     invokeImpl("rewatch_window", { repoPath }),
+  getSettings: (): Promise<AppSettings> => invokeImpl("get_settings"),
+  setSettings: (settings: AppSettings): Promise<void> => invokeImpl("set_settings", { settings }),
   deleteReview: (id: string): Promise<void> => invokeImpl("delete_review", { id }),
   installCli: (): Promise<InstallOutcome> => invokeImpl("install_cli"),
   cliStatus: (): Promise<CliStatus> => invokeImpl("cli_status"),

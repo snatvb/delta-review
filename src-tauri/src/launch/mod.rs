@@ -6,7 +6,11 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+
+/// Tells a reused review window to reopen its review, since its worktree may have
+/// moved to another branch since the window opened.
+const REOPEN_EVENT: &str = "review:reopen";
 
 /// CLI shim name. The debug build installs as `delta-dev` so it never clobbers the
 /// installed release's `delta`; the two coexist on PATH and never hijack each other.
@@ -207,10 +211,20 @@ pub fn open_target_window(app: &AppHandle, repo_path: &str, mode: DiffMode, base
     let worktree = resolve_worktree(&repo)?;
     let id = review_id(&canonical, &worktree);
     let label = format!("review-{id}");
-    if let Some(w) = app.get_webview_window(&label) {
+    let one_window_per_worktree = !crate::settings::load(app).window_per_branch;
+    let existing = app.get_webview_window(&label).or_else(|| {
+        one_window_per_worktree
+            .then(|| crate::watch::window_watching(app, Path::new(&canonical)))
+            .flatten()
+            .and_then(|l| app.get_webview_window(&l))
+    });
+    if let Some(w) = existing {
         let _ = w.show();
         let _ = w.set_focus();
-        return Ok(Opened::Focused(label));
+        if one_window_per_worktree {
+            let _ = w.emit(REOPEN_EVENT, ());
+        }
+        return Ok(Opened::Focused(w.label().to_string()));
     }
     let mut url = format!("index.html?repo={}&mode={}", enc(&canonical), mode.as_str());
     if let Some(b) = base.as_deref() {

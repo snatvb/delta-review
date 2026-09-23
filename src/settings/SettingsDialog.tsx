@@ -6,6 +6,8 @@ import { useTelemetryPref } from "../analytics";
 import { useEditorPref, EDITORS, type EditorId } from "../editor";
 import { useCodeFont, setCodeFontFamily, setCodeFontSize, installedMonoFonts, SIZE_OPTIONS } from "../codeFont";
 import { usePickerOpenMode, type PickerOpenMode } from "../windowMode";
+import { reloadWindowPerBranch, useWindowPerBranch } from "../windowPerBranch";
+import { useChangeDetection } from "../changeDetection";
 
 const THEMES: { value: ThemePref; label: string; Icon: typeof Monitor }[] = [
   { value: "system", label: "System", Icon: Monitor },
@@ -39,6 +41,8 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   const [telemetry, setTelemetry] = useTelemetryPref();
   const [editor, setEditor] = useEditorPref();
   const [openMode, setOpenMode] = usePickerOpenMode();
+  const [windowPerBranch, setWindowPerBranch] = useWindowPerBranch();
+  const [changeDetection, setChangeDetection] = useChangeDetection();
   const { family: fontFamily, size: fontSize } = useCodeFont();
   // Installed mono families (probed once) → "System Mono" default + whatever the
   // machine actually has. Keep the current pick listed even if it's not detected.
@@ -50,6 +54,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
   useEffect(() => {
     if (!open) return;
+    reloadWindowPerBranch();
     cardRef.current?.focus();
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") {
@@ -85,7 +90,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
         <div className="flex items-start justify-between border-b border-border/70 px-5 py-4">
           <div>
             <h2 id="settings-title" className="font-heading text-[15px] font-medium leading-none">Settings</h2>
-            <p className="mt-1.5 text-[12px] text-muted-foreground">Appearance, editor, and privacy preferences.</p>
+            <p className="mt-1.5 text-[12px] text-muted-foreground">Appearance, windows, editor, and privacy preferences.</p>
           </div>
           <button
             type="button"
@@ -171,6 +176,43 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           <div className="h-px bg-border/50" />
 
           <Row
+            label="Other branch, same folder"
+            hint="When the folder's window is already open."
+            control={
+              <div className="relative">
+                <select
+                  aria-label="Other branch, same folder"
+                  value={windowPerBranch ? "new-window" : "same-window"}
+                  onChange={(e) => setWindowPerBranch(e.target.value === "new-window")}
+                  className={selectClass}
+                >
+                  <option value="new-window">New window</option>
+                  <option value="same-window">Same window</option>
+                </select>
+                <Chevron />
+              </div>
+            }
+          />
+
+          <div className="h-px bg-border/50" />
+
+          <Row
+            label="Detect changes"
+            hint="Re-diff in the background when files change."
+            control={
+              <OnOffToggle
+                label="Detect changes"
+                value={changeDetection}
+                onChange={setChangeDetection}
+                onTitle="Offer Refresh when files change"
+                offTitle="Refresh manually only"
+              />
+            }
+          />
+
+          <div className="h-px bg-border/50" />
+
+          <Row
             label="Code font"
             hint="Font family for diffs and code."
             control={
@@ -219,35 +261,53 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
             label="Usage analytics"
             hint="Anonymous feature usage only."
             control={
-              <ToggleGroup
-                type="single"
-                size="sm"
+              <OnOffToggle
+                label="Usage analytics"
                 value={telemetry}
-                onValueChange={(v) => v && setTelemetry(v as "on" | "off")}
-                className="gap-0.5 rounded-lg bg-muted/70 p-0.5"
-              >
-                <ToggleGroupItem
-                  value="on"
-                  aria-label="On"
-                  title="Share anonymous usage stats"
-                  className="h-7 gap-1.5 rounded-md border-0 px-2.5 text-[12px] text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm"
-                >
-                  On
-                </ToggleGroupItem>
-                <ToggleGroupItem
-                  value="off"
-                  aria-label="Off"
-                  title="Disable usage stats"
-                  className="h-7 gap-1.5 rounded-md border-0 px-2.5 text-[12px] text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm"
-                >
-                  Off
-                </ToggleGroupItem>
-              </ToggleGroup>
+                onChange={setTelemetry}
+                onTitle="Share anonymous usage stats"
+                offTitle="Disable usage stats"
+              />
             }
           />
         </div>
       </div>
     </div>
+  );
+}
+
+const toggleItemClass =
+  "h-7 gap-1.5 rounded-md border-0 px-2.5 text-[12px] text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm";
+
+function OnOffToggle({
+  label,
+  value,
+  onChange,
+  onTitle,
+  offTitle,
+}: {
+  label: string;
+  value: "on" | "off";
+  onChange: (v: "on" | "off") => void;
+  onTitle: string;
+  offTitle: string;
+}) {
+  return (
+    <ToggleGroup
+      type="single"
+      size="sm"
+      aria-label={label}
+      value={value}
+      onValueChange={(v) => v && onChange(v as "on" | "off")}
+      className="gap-0.5 rounded-lg bg-muted/70 p-0.5"
+    >
+      <ToggleGroupItem value="on" aria-label="On" title={onTitle} className={toggleItemClass}>
+        On
+      </ToggleGroupItem>
+      <ToggleGroupItem value="off" aria-label="Off" title={offTitle} className={toggleItemClass}>
+        Off
+      </ToggleGroupItem>
+    </ToggleGroup>
   );
 }
 

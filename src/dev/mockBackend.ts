@@ -5,7 +5,7 @@
 // Keep fixtures realistic but small. As Plan 2 adds commands (open_review,
 // refresh_review, save_review, export_review) extend the switch + fixtures here.
 import { __setBlobUrlForDev, __setInvokeForDev } from "../api";
-import type { DiffSummary, FileDiff, PickerData, Registry, Review, ReviewSession } from "../types";
+import type { AppSettings, DiffSummary, FileDiff, PickerData, Registry, Review, ReviewSession } from "../types";
 
 // Canvas-drawn PNG data URL so an image compare card shows something in browser dev.
 function mockPng(w: number, h: number, color: string): string {
@@ -242,6 +242,8 @@ const REVIEW: Review = {
   lastOpenedAt: "2026-06-25T18:54:00Z",
 };
 
+let mockSettings: AppSettings = { windowPerBranch: true };
+
 const REGISTRY: Registry = {
   version: 1,
   home: "/Users/me",
@@ -471,6 +473,11 @@ export function installMockBackend(): void {
         // No real fs watcher in the browser mock — the in-place navigation does
         // the visible work. (#replace)
         console.info("[delta mock] rewatch_window", args);
+        return undefined as T;
+      case "get_settings":
+        return { ...mockSettings } as T;
+      case "set_settings":
+        mockSettings = (args as { settings: AppSettings }).settings;
         return undefined as T;
       case "list_registry":
         return structuredClone(REGISTRY) as T;

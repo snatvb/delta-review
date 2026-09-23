@@ -11,6 +11,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri } from "@tauri-apps/api/core";
 import { api } from "../api";
+import { getChangeDetection } from "../changeDetection";
 import { FilesPanel } from "../files/FilesPanel";
 import { reviewOrder } from "../files/buildTree";
 import { VirtualDiffPane } from "../diff/VirtualDiffPane";
@@ -262,7 +263,9 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // it and flip on the Refresh button. Genuine no-ops are ignored. (#12)
   async function onFsChanged(paths: string[], gitMeta: boolean) {
     const cur = reviewRef.current;
-    if (!cur) return;
+    if (!cur || getChangeDetection() === "off") {
+      return;
+    }
     setRefreshing(true);
     try {
       const session = await api.refreshReview(cur);
@@ -276,17 +279,20 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       // A file we just wrote ourselves is already on screen (the edit force-refreshed
       // it), so its own watcher event must not resurface the button. (#edit)
       const external = paths.filter((p) => shown.has(p) && !selfEditedRef.current.delete(p));
-      if (sig === sigRef.current && external.length === 0) return; // nothing we display changed
-      // Merge the changed scope with any already-pending one (null === reload all).
-      const prev = pendingRef.current?.paths;
-      const incoming: string[] | null = gitMeta ? null : external;
-      const merged: string[] | null =
-        prev === null || incoming === null ? null : Array.from(new Set([...(prev ?? []), ...incoming]));
-      pendingRef.current = { session, paths: merged };
-      setPendingRefresh(true);
+      const displayedChanged = sig !== sigRef.current || external.length > 0;
+      if (displayedChanged) {
+        // Merge the changed scope with any already-pending one (null === reload all).
+        const prev = pendingRef.current?.paths;
+        const incoming: string[] | null = gitMeta ? null : external;
+        const merged: string[] | null =
+          prev === null || incoming === null ? null : Array.from(new Set([...(prev ?? []), ...incoming]));
+        pendingRef.current = { session, paths: merged };
+        setPendingRefresh(true);
+      }
     } catch (e) {
       setError(String(e));
     }
+    setRefreshing(false);
   }
 
   // Apply the stashed change: swap in the re-diffed session and reload the
@@ -384,6 +390,28 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // With one window per folder, opening this folder on another branch reuses this
+  // window instead of spawning one, so reload the review for the current HEAD.
+  useEffect(() => {
+    if (import.meta.env.VITE_MOCK_IPC) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const un = await listen("review:reopen", () => void open());
+        if (cancelled) un();
+        else unlisten = un;
+      } catch {
+        /* not running under Tauri */
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target.repoPath, diffMode, target.base]);
 
   function flashCopy(state: "ok" | "err") {
     setCopyState(state);

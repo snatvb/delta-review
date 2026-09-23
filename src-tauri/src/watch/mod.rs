@@ -6,7 +6,7 @@
 //! fires) and `.git` object/lock noise, while still catching commits, checkouts
 //! and staging via `.git/HEAD`, `.git/refs/*` and `.git/index`.
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -19,7 +19,7 @@ use tauri::{AppHandle, Emitter, EventTarget, Manager};
 /// Live watchers keyed by window label. Dropping a watcher (on window close)
 /// disconnects its channel, which ends the paired debounce thread.
 #[derive(Default)]
-pub struct Watchers(Mutex<HashMap<String, RecommendedWatcher>>);
+pub struct Watchers(Mutex<HashMap<String, (PathBuf, RecommendedWatcher)>>);
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,6 +83,7 @@ pub fn start(app: &AppHandle, label: &str, worktree: &Path) {
         return;
     }
 
+    let watched_root = root.clone();
     let app = app.clone();
     let label_str = label.to_string();
     std::thread::spawn(move || loop {
@@ -129,7 +130,17 @@ pub fn start(app: &AppHandle, label: &str, worktree: &Path) {
         }
     });
 
-    state.0.lock().unwrap().insert(label.to_string(), watcher);
+    state.0.lock().unwrap().insert(label.to_string(), (watched_root, watcher));
+}
+
+/// The review window showing `worktree`, whichever branch it was opened on.
+pub fn window_watching(app: &AppHandle, worktree: &Path) -> Option<String> {
+    let state = app.try_state::<Watchers>()?;
+    let watchers = state.0.lock().unwrap();
+    watchers
+        .iter()
+        .find(|(_, (root, _))| root == worktree)
+        .map(|(label, _)| label.clone())
 }
 
 /// Stop watching for `label` (drops the watcher → ends its debounce thread).

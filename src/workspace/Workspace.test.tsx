@@ -30,15 +30,18 @@ vi.mock("../api", () => ({
 // Capture the event handlers the Workspace registers so tests can fire them.
 let fsChanged: ((e: { payload: { paths: string[]; gitMeta: boolean } }) => void) | null = null;
 let setMode: ((e: { payload: string }) => void) | null = null;
+let reopen: (() => void) | null = null;
 vi.mock("@tauri-apps/api/event", () => ({
   listen: (name: string, cb: (e: { payload: never }) => void) => {
     if (name === "fs:changed") fsChanged = cb as never;
     if (name === "cli:set-mode") setMode = cb as never;
+    if (name === "review:reopen") reopen = cb as never;
     return Promise.resolve(() => {});
   },
 }));
 
 import { Workspace } from "./Workspace";
+import { setChangeDetection } from "../changeDetection";
 import type { Target } from "../types";
 
 const target: Target = { repoPath: "/r", mode: "all-changes" };
@@ -66,6 +69,8 @@ describe("Workspace", () => {
     computeDiff.mockReset().mockResolvedValue({ files: [], baseLabel: "p", headLabel: "c" });
     fsChanged = null;
     setMode = null;
+    reopen = null;
+    setChangeDetection("on");
   });
 
   it("opens the review for its target on mount", async () => {
@@ -203,6 +208,30 @@ describe("Workspace", () => {
     // accessible name is "Refresh ⌘R", so an anchored matcher would spuriously
     // pass by never matching even when the button is present.)
     expect(screen.queryByRole("button", { name: /refresh/i })).toBeNull();
+    await waitFor(() => expect(screen.getByRole("button", { name: /re-diff now/i })).toBeEnabled());
+  });
+
+  it("skips the background re-diff when change detection is off", async () => {
+    openReview.mockResolvedValue(fileSession);
+    setChangeDetection("off");
+    render(<Workspace target={target} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /copy for agents/i })).toBeInTheDocument());
+
+    await act(async () => {
+      fsChanged?.({ payload: { paths: ["src/a.ts"], gitMeta: true } });
+    });
+    expect(refreshReview).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /re-diff now/i })).toBeEnabled();
+  });
+
+  it("reopens the review when the backend reuses this window for another branch", async () => {
+    openReview.mockResolvedValue(minimalSession);
+    render(<Workspace target={target} />);
+    await waitFor(() => expect(reopen).not.toBeNull());
+    openReview.mockClear();
+
+    act(() => reopen?.());
+    await waitFor(() => expect(openReview).toHaveBeenCalledWith({ repoPath: "/r", mode: "all-changes", base: undefined }));
   });
 
   it("still surfaces Refresh on a git-meta event that moves the diff (commit/checkout) (#12)", async () => {

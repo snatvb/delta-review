@@ -17,6 +17,10 @@ export interface CommitMeta {
   time: number;
 }
 
+export interface AppSettings {
+  windowPerBranch: boolean;
+}
+
 export interface CommitPage {
   commits: CommitMeta[];
   hasMore: boolean;

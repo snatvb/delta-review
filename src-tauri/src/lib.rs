@@ -11,6 +11,7 @@ mod ipc;
 mod launch;
 mod registry;
 mod review;
+mod settings;
 mod storage;
 mod watch;
 
@@ -96,6 +97,8 @@ pub fn run() {
             commands::export_review,
             commands::open_target,
             commands::rewatch_window,
+            commands::get_settings,
+            commands::set_settings,
             commands::list_registry,
             commands::list_picker,
             commands::list_worktrees,
