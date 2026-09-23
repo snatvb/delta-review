@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatBytes, imageDataUrl, imageMimeFor, isImagePath } from "./binaryFile";
+import { formatBytes, imageMimeFor, isImagePath } from "./binaryFile";
 
 describe("imageMimeFor / isImagePath", () => {
   it("maps image extensions to their MIME, case-insensitively", () => {
@@ -21,12 +21,6 @@ describe("imageMimeFor / isImagePath", () => {
   it("ignores dots in directory names", () => {
     expect(imageMimeFor("v1.2.3/logo/png")).toBeNull();
     expect(imageMimeFor("v1.2.3/logo.png")).toBe("image/png");
-  });
-});
-
-describe("imageDataUrl", () => {
-  it("wraps base64 in a data URL", () => {
-    expect(imageDataUrl("image/png", "AAAA")).toBe("data:image/png;base64,AAAA");
   });
 });
 

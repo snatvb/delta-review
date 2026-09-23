@@ -1,9 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type {
   Target,
   DiffSummary,
   FileDiff,
   BinaryFileDiff,
+  BlobSide,
   Review,
   ReviewSession,
   Registry,
@@ -30,15 +31,29 @@ export function __setInvokeForDev(fn: InvokeFn): void {
   invokeImpl = fn;
 }
 
+export type BlobUrlFn = (target: Target, path: string, side: BlobSide, mime: string, rev: number) => string;
+
+let blobUrlImpl: BlobUrlFn = (target, path, side, mime, rev) => {
+  const query = new URLSearchParams({ target: JSON.stringify(target), path, side, mime, rev: String(rev) });
+  return `${convertFileSrc("", "delta-blob")}?${query}`;
+};
+
+/** Dev-only: swap how binary blob URLs are built (no URI scheme outside Tauri). */
+export function __setBlobUrlForDev(fn: BlobUrlFn): void {
+  blobUrlImpl = fn;
+}
+
 export const api = {
   computeDiff: (target: Target): Promise<DiffSummary> =>
     invokeImpl("compute_diff", { target }),
   getFileDiff: (target: Target, path: string): Promise<FileDiff> =>
     invokeImpl("get_file_diff", { target, path }),
-  // Binary card (#binary): byte sizes always; base64 previews only when
-  // `includeData` (image extensions — oversized sides are capped server-side).
-  getBinaryFileDiff: (target: Target, path: string, includeData: boolean): Promise<BinaryFileDiff> =>
-    invokeImpl("get_binary_file_diff", { target, path, includeData }),
+  getBinaryFileDiff: (target: Target, path: string): Promise<BinaryFileDiff> =>
+    invokeImpl("get_binary_file_diff", { target, path }),
+  // Image bytes load straight into <img> over the `delta-blob` URI scheme; `rev`
+  // changes on every sizes refetch so a refreshed file never hits a cached image.
+  binaryBlobUrl: (target: Target, path: string, side: BlobSide, mime: string, rev: number): string =>
+    blobUrlImpl(target, path, side, mime, rev),
   listCommits: (target: Target): Promise<CommitMeta[]> =>
     invokeImpl("list_commits", { target }),
   openReview: (target: Target): Promise<ReviewSession> =>

@@ -1,4 +1,5 @@
 mod anchor;
+mod blob_scheme;
 #[cfg(unix)]
 mod cli;
 mod commands;
@@ -83,6 +84,7 @@ pub fn run() {
         .manage(crate::watch::Watchers::default())
         .manage(crate::commands::UpdaterGate::default())
         .manage(crate::git::cache::DiffCache::default())
+        .register_asynchronous_uri_scheme_protocol(blob_scheme::SCHEME, blob_scheme::handle)
         .invoke_handler(tauri::generate_handler![
             commands::compute_diff,
             commands::get_file_diff,

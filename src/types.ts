@@ -43,9 +43,9 @@ export interface FileDiff {
 export interface BinaryFileDiff {
   oldSize: number | null;
   newSize: number | null;
-  oldData: string | null;
-  newData: string | null;
 }
+
+export type BlobSide = "old" | "new";
 
 export interface DiffSummary {
   files: FileEntry[];

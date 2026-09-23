@@ -1050,6 +1050,7 @@ const VFileSection = memo(function VFileSection({
                 status={entry.status}
                 mime={imageMimeFor(entry.path)}
                 oldMime={entry.oldPath ? imageMimeFor(entry.oldPath) : null}
+                srcOf={(side, mime) => api.binaryBlobUrl(target, entry.path, side, mime, binary?.rev ?? 0)}
               />
             ) : (
               // Terminal placeholder (no reveal action like deleted/giant): centered,

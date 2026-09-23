@@ -2,19 +2,20 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { api } from "../api";
 import type { BinaryFileDiff, Target } from "../types";
-import { isImagePath } from "./binaryFile";
 import type { FileDiffStore } from "./useFileDiffCache";
 
 // Binary card data (#binary), fetched from get_binary_file_diff: exact sizes per
-// side, plus base64 previews when the path is an image (the includeData flag —
-// oversized sides are capped server-side, non-image binaries never ask for data).
+// side. Image bytes load separately via `api.binaryBlobUrl`, keyed by `rev`.
 //
 // Module-level cache keyed by target identity + path, so a card re-mounting on
-// scroll doesn't refetch its bytes. Entries are dropped by the same per-path
+// scroll doesn't refetch its sizes or bust its image URL. Entries are dropped by the same per-path
 // invalidation that drops the text-diff store (Refresh / fs-change auto-refresh):
 // the hook subscribes to the store's per-path notifications, deletes its entry,
 // and wakes its own subscribers so the load effect refetches.
-const cache = new Map<string, BinaryFileDiff>();
+export type BinaryCard = BinaryFileDiff & { rev: number };
+
+const cache = new Map<string, BinaryCard>();
+let revSeq = Date.now();
 const inflight = new Set<string>();
 const listeners = new Map<string, Set<() => void>>();
 
@@ -27,9 +28,9 @@ function load(target: Target, path: string, key: string) {
   if (cache.has(key) || inflight.has(key)) return;
   inflight.add(key);
   api
-    .getBinaryFileDiff(target, path, isImagePath(path))
+    .getBinaryFileDiff(target, path)
     .then((bd) => {
-      cache.set(key, bd);
+      cache.set(key, { ...bd, rev: ++revSeq });
       notify(key);
     })
     .catch((e) => console.error("binary file diff:", e))
@@ -44,10 +45,10 @@ export function resetBinaryFileCache(): void {
 }
 
 /**
- * One binary file's sizes (+ image previews), loaded once the card asks for it
+ * One binary file's sizes, loaded once the card asks for it
  * (`want` — on screen), cached, and invalidated with the text diff.
  */
-export function useBinaryFile(target: Target, store: FileDiffStore, path: string, want: boolean): BinaryFileDiff | undefined {
+export function useBinaryFile(target: Target, store: FileDiffStore, path: string, want: boolean): BinaryCard | undefined {
   const key = keyOf(target, path);
   const subscribe = useCallback(
     (cb: () => void) => {

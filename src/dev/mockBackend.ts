@@ -4,8 +4,24 @@
 //
 // Keep fixtures realistic but small. As Plan 2 adds commands (open_review,
 // refresh_review, save_review, export_review) extend the switch + fixtures here.
-import { __setInvokeForDev } from "../api";
+import { __setBlobUrlForDev, __setInvokeForDev } from "../api";
 import type { DiffSummary, FileDiff, PickerData, Registry, Review, ReviewSession } from "../types";
+
+// Canvas-drawn PNG data URL so an image compare card shows something in browser dev.
+function mockPng(w: number, h: number, color: string): string {
+  try {
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext("2d");
+    if (!ctx) throw new Error("no 2d context");
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, w, h);
+    return c.toDataURL("image/png");
+  } catch {
+    return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  }
+}
 
 const SUMMARY: DiffSummary = {
   baseLabel: "main",
@@ -365,6 +381,11 @@ export function installMockBackend(): void {
       ? genLarge(Math.max(1, Math.min(2000, parseInt(largeParam, 10) || 80)))
       : { summary: SUMMARY, files: FILES, review: REVIEW };
   const editConflictFired = new Set<string>();
+  __setBlobUrlForDev((_target, path, side) => {
+    const modified = path === "assets/banner.png";
+    if (!modified) return mockPng(128, 128, "#34d399");
+    return side === "old" ? mockPng(120, 80, "#38bdf8") : mockPng(160, 90, "#f472b6");
+  });
   __setInvokeForDev(async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
     switch (cmd) {
       case "compute_diff": {
@@ -378,36 +399,12 @@ export function installMockBackend(): void {
       case "get_file_diff":
         return ds.files[(args?.path as string) ?? ""] as T;
       case "get_binary_file_diff": {
-        // Binary card data (#binary). Images get real (canvas-drawn) PNGs so the
-        // compare card shows something visible in browser dev; other binaries get
-        // sizes only, like a non-image card.
         const path = (args?.path as string) ?? "";
-        const include = Boolean(args?.includeData);
-        const png = (w: number, h: number, color: string): string => {
-          try {
-            const c = document.createElement("canvas");
-            c.width = w;
-            c.height = h;
-            const ctx = c.getContext("2d");
-            if (!ctx) throw new Error("no 2d context");
-            ctx.fillStyle = color;
-            ctx.fillRect(0, 0, w, h);
-            return c.toDataURL("image/png").replace("data:image/png;base64,", "");
-          } catch {
-            // 1×1 PNG fallback for canvas-less environments.
-            return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-          }
-        };
-        const isImage = /\.(png|jpe?g|gif|webp|bmp|ico|avif|svg)$/i.test(path);
         const modified = path === "assets/banner.png";
-        const oldB64 = modified ? png(120, 80, "#38bdf8") : null;
-        const newB64 = png(modified ? 160 : 128, modified ? 90 : 128, modified ? "#f472b6" : "#34d399");
         return {
           // model.bin is modified too, so the placeholder exercises "old → new".
-          oldSize: modified ? oldB64!.length * 3 : path === "assets/model.bin" ? 2464 : null,
-          newSize: newB64.length * 3,
-          oldData: include && isImage && oldB64 ? oldB64 : null,
-          newData: include && isImage ? newB64 : null,
+          oldSize: modified ? 1840 : path === "assets/model.bin" ? 2464 : null,
+          newSize: modified ? 2210 : 3120,
         } as T;
       }
       case "list_commits":

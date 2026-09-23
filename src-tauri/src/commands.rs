@@ -224,18 +224,16 @@ pub async fn get_file_diff(target: Target, path: String, cache: tauri::State<'_,
         .map_err(|e| format!("get_file_diff task: {e}"))?
 }
 
-/// Binary card data (#binary): exact byte sizes per side, plus base64 previews for
-/// image extensions when `include_data` (oversized sides are capped server-side).
-/// Bytes are read on demand from the sources the snapshot resolved — no per-card diff.
+/// Binary card data (#binary): exact byte sizes per side, resolved from the snapshot.
+/// Image bytes are served separately by the `delta-blob` URI scheme.
 #[tauri::command]
 pub async fn get_binary_file_diff(
     target: Target,
     path: String,
-    include_data: bool,
     cache: tauri::State<'_, DiffCache>,
 ) -> Result<BinaryFileDiff, String> {
     let cache = cache.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || cache.binary(&target, &path, include_data))
+    tauri::async_runtime::spawn_blocking(move || cache.with_sources(&target, &path, crate::git::diff::binary_sizes))
         .await
         .map_err(|e| format!("get_binary_file_diff task: {e}"))?
 }

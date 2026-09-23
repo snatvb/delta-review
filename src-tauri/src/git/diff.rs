@@ -1,7 +1,5 @@
 use crate::git::model::Target;
 use crate::git::{open_repo, resolve_endpoints, Endpoints, GitError, RightSide};
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine as _;
 use git2::{Diff, DiffDelta, DiffFindOptions, DiffOptions, Oid, Repository};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -230,17 +228,39 @@ fn delta_sources(repo: &Repository, ep: &Endpoints, delta: &DiffDelta) -> Result
     Ok(FileSources { old, new })
 }
 
-/// Raw bytes, untouched: CRLF normalization is the caller's job, since stripping CR
-/// pairs from an image corrupts it.
-fn read_sources(repo: &Repository, sources: &FileSources) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
-    let blob = |oid: Oid| repo.find_blob(oid).ok().map(|b| b.content().to_vec());
-    let old = sources.old.and_then(blob);
-    let new = match &sources.new {
-        NewSide::WorkTree(path) => fs::read(path).ok(),
-        NewSide::Blob(oid) => blob(*oid),
-        NewSide::Absent => None,
-    };
-    (old, new)
+impl FileSources {
+    /// Raw bytes, untouched: CRLF normalization is the caller's job, since stripping
+    /// CR pairs from an image corrupts it.
+    pub fn read(&self, repo: &Repository, side: BlobSide) -> Option<Vec<u8>> {
+        let blob = |oid: Oid| repo.find_blob(oid).ok().map(|b| b.content().to_vec());
+        match side {
+            BlobSide::Old => self.old.and_then(blob),
+            BlobSide::New => match &self.new {
+                NewSide::WorkTree(path) => fs::read(path).ok(),
+                NewSide::Blob(oid) => blob(*oid),
+                NewSide::Absent => None,
+            },
+        }
+    }
+
+    fn size(&self, repo: &Repository, side: BlobSide) -> Option<u64> {
+        let blob_size = |oid: Oid| repo.odb().ok()?.read_header(oid).ok().map(|(size, _)| size as u64);
+        match side {
+            BlobSide::Old => self.old.and_then(blob_size),
+            BlobSide::New => match &self.new {
+                NewSide::WorkTree(path) => fs::metadata(path).ok().map(|m| m.len()),
+                NewSide::Blob(oid) => blob_size(*oid),
+                NewSide::Absent => None,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BlobSide {
+    Old,
+    New,
 }
 
 /// Extract one file's content + metadata from an already-built delta. Shared by
@@ -258,11 +278,12 @@ fn extract_file_diff(repo: &Repository, delta: &DiffDelta, sources: &FileSources
         .path()
         .map(|p| p.to_string_lossy().to_string());
 
-    let (old_bytes, new_bytes_raw) = read_sources(repo, sources);
+    let old_bytes = sources.read(repo, BlobSide::Old);
+    let new_bytes_raw = sources.read(repo, BlobSide::New);
     // The working copy is CRLF-normalized for text comparison when git filters to
     // LF (`core.autocrlf=true|input`, the Windows default) — otherwise a raw CRLF
     // working file against an LF blob renders every line as changed. Raw bytes are
-    // left alone for the binary path (see `read_sources`).
+    // left alone for the binary path (see `FileSources::read`).
     let new_bytes = match new_bytes_raw {
         Some(b) if normalizes_crlf(repo) => Some(strip_cr(b)),
         other => other,
@@ -298,62 +319,38 @@ pub fn get_file_diff(target: &Target, path: &str) -> Result<FileDiff, GitError> 
     extract_file_diff(&repo, &delta, &sources)
 }
 
-/// One binary file's two sides for the UI's binary/image card: exact byte sizes
-/// (the delta's recorded size can read 0 for working-tree files, so lengths come
-/// from the bytes we actually read) and, when `include_data` is asked and the side
-/// is small enough, base64 of the raw bytes so the webview can render an `<img>`
-/// from a data URL.
+/// Exact byte sizes of one binary file's two sides for the UI's binary/image card.
+/// The delta's recorded size can read 0 for working-tree files, so sizes come from
+/// the blob header / file metadata. Image bytes themselves travel over the
+/// `delta-blob` URI scheme, never through IPC.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BinaryFileDiff {
     pub old_size: Option<u64>,
     pub new_size: Option<u64>,
-    pub old_data: Option<String>,
-    pub new_data: Option<String>,
 }
 
-/// Sides above this are not embedded: a multi-MB base64 string across IPC and into
-/// a data URL is wasted work the webview renders poorly anyway. The size is still
-/// reported, so the UI can say "too large to preview". Far above any screenshot a
-/// review needs to see inline.
-pub(crate) const MAX_IMAGE_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
+pub fn binary_sizes(repo: &Repository, sources: &FileSources) -> BinaryFileDiff {
+    BinaryFileDiff {
+        old_size: sources.size(repo, BlobSide::Old),
+        new_size: sources.size(repo, BlobSide::New),
+    }
+}
 
-pub fn get_binary_file_diff(target: &Target, path: &str, include_data: bool) -> Result<BinaryFileDiff, GitError> {
+/// Run `f` on `path`'s sources resolved by a one-off whole-repo diff — the fallback
+/// when no cached snapshot has them.
+pub fn with_fresh_sources<T>(
+    target: &Target,
+    path: &str,
+    f: impl FnOnce(&Repository, &FileSources) -> T,
+) -> Result<T, GitError> {
     let repo = open_repo(&target.repo_path)?;
     let ep = resolve_endpoints(&repo, target)?;
     let diff = build_diff(&repo, &ep)?;
 
     let delta = delta_for_path(&diff, path).ok_or_else(|| format!("file not in diff: {path}"))?;
     let sources = delta_sources(&repo, &ep, &delta)?;
-
-    Ok(binary_file_diff(&repo, &sources, include_data))
-}
-
-/// `get_binary_file_diff` for sources already resolved by `compute_diff_full` — just
-/// the blob/file reads, no whole-repo diff.
-pub fn binary_file_diff_from_sources(
-    repo_path: &str,
-    sources: &FileSources,
-    include_data: bool,
-) -> Result<BinaryFileDiff, GitError> {
-    let repo = open_repo(repo_path)?;
-    Ok(binary_file_diff(&repo, sources, include_data))
-}
-
-fn binary_file_diff(repo: &Repository, sources: &FileSources, include_data: bool) -> BinaryFileDiff {
-    let (old_bytes, new_bytes) = read_sources(repo, sources);
-    let embed = |b: &Option<Vec<u8>>| match b {
-        Some(bytes) if include_data && bytes.len() <= MAX_IMAGE_PREVIEW_BYTES => {
-            Some(BASE64.encode(bytes))
-        }
-        _ => None,
-    };
-    BinaryFileDiff {
-        old_size: old_bytes.as_ref().map(|b| b.len() as u64),
-        new_size: new_bytes.as_ref().map(|b| b.len() as u64),
-        old_data: embed(&old_bytes),
-        new_data: embed(&new_bytes),
-    }
+    Ok(f(&repo, &sources))
 }
 
 pub struct FullDiff {
@@ -497,21 +494,26 @@ mod tests {
         assert!(fd.new_content.is_none(), "binary content must be omitted");
     }
 
+    fn get_binary_file_diff(t: &Target, path: &str) -> Result<BinaryFileDiff, GitError> {
+        with_fresh_sources(t, path, binary_sizes)
+    }
+
+    fn read_side(t: &Target, path: &str, side: BlobSide) -> Option<Vec<u8>> {
+        with_fresh_sources(t, path, |repo, s| s.read(repo, side)).unwrap()
+    }
+
     #[test]
-    fn binary_file_diff_reports_sizes_and_base64_when_asked() {
+    fn binary_file_diff_reports_an_added_files_new_side_only() {
         let (dir, _repo) = repo_with_commit();
         let png = [0x89u8, b'P', b'N', b'G', 0x00, 0x01, 0x02, 0x00];
         std::fs::write(dir.path().join("logo.png"), png).unwrap();
         let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
 
-        let bd = get_binary_file_diff(&t, "logo.png", true).unwrap();
+        let bd = get_binary_file_diff(&t, "logo.png").unwrap();
         assert_eq!(bd.old_size, None, "added file: no old side");
         assert_eq!(bd.new_size, Some(png.len() as u64));
-        assert_eq!(bd.new_data.as_deref(), Some(BASE64.encode(png).as_str()), "data follows the include flag");
-
-        let bd = get_binary_file_diff(&t, "logo.png", false).unwrap();
-        assert_eq!(bd.new_size, Some(png.len() as u64), "size is reported regardless");
-        assert_eq!(bd.new_data, None, "data only when asked");
+        assert_eq!(read_side(&t, "logo.png", BlobSide::New).as_deref(), Some(&png[..]));
+        assert_eq!(read_side(&t, "logo.png", BlobSide::Old), None);
     }
 
     #[test]
@@ -522,33 +524,14 @@ mod tests {
         commit_all(&repo, "add binary logo");
         let new_png = [0x89u8, b'N', b'E', b'W', 0x00, 0x02, 0x03];
         std::fs::write(dir.path().join("logo.png"), new_png).unwrap();
+        let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
 
-        let bd = get_binary_file_diff(
-            &target(dir.path().to_str().unwrap(), DiffMode::Uncommitted),
-            "logo.png",
-            true,
-        )
-        .unwrap();
+        let bd = get_binary_file_diff(&t, "logo.png").unwrap();
 
         assert_eq!(bd.old_size, Some(old_png.len() as u64), "old side read from HEAD's blob");
         assert_eq!(bd.new_size, Some(new_png.len() as u64));
-        assert_eq!(bd.old_data.as_deref(), Some(BASE64.encode(old_png).as_str()));
-        assert_eq!(bd.new_data.as_deref(), Some(BASE64.encode(new_png).as_str()));
-    }
-
-    #[test]
-    fn binary_file_diff_keeps_size_but_drops_data_over_the_preview_cap() {
-        let (dir, _repo) = repo_with_commit();
-        let big: Vec<u8> = std::iter::once(0u8)
-            .chain(std::iter::repeat_n(b'x', MAX_IMAGE_PREVIEW_BYTES))
-            .collect();
-        std::fs::write(dir.path().join("big.bin"), &big).unwrap();
-        let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
-
-        let bd = get_binary_file_diff(&t, "big.bin", true).unwrap();
-
-        assert_eq!(bd.new_size, Some(big.len() as u64), "size is exact even over the cap");
-        assert_eq!(bd.new_data, None, "oversized data is never embedded");
+        assert_eq!(read_side(&t, "logo.png", BlobSide::Old).as_deref(), Some(&old_png[..]));
+        assert_eq!(read_side(&t, "logo.png", BlobSide::New).as_deref(), Some(&new_png[..]));
     }
 
     #[test]
@@ -558,18 +541,26 @@ mod tests {
         std::fs::write(dir.path().join("gone.png"), png).unwrap();
         commit_all(&repo, "add gone.png");
         std::fs::remove_file(dir.path().join("gone.png")).unwrap();
+        let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
 
-        let bd = get_binary_file_diff(
-            &target(dir.path().to_str().unwrap(), DiffMode::Uncommitted),
-            "gone.png",
-            true,
-        )
-        .unwrap();
+        let bd = get_binary_file_diff(&t, "gone.png").unwrap();
 
         assert_eq!(bd.old_size, Some(png.len() as u64));
         assert_eq!(bd.new_size, None, "deleted: no new side");
-        assert_eq!(bd.old_data.as_deref(), Some(BASE64.encode(png).as_str()));
-        assert_eq!(bd.new_data, None);
+        assert_eq!(read_side(&t, "gone.png", BlobSide::Old).as_deref(), Some(&png[..]));
+        assert_eq!(read_side(&t, "gone.png", BlobSide::New), None);
+    }
+
+    #[test]
+    fn binary_sides_read_from_trees_in_commit_mode() {
+        let (dir, repo) = repo_with_commit();
+        let png = [0x89u8, b'C', b'M', b'T', 0x00];
+        std::fs::write(dir.path().join("logo.png"), png).unwrap();
+        commit_all(&repo, "add logo");
+        let t = target(dir.path().to_str().unwrap(), DiffMode::LastCommit);
+
+        assert_eq!(get_binary_file_diff(&t, "logo.png").unwrap().new_size, Some(png.len() as u64));
+        assert_eq!(read_side(&t, "logo.png", BlobSide::New).as_deref(), Some(&png[..]));
     }
 
     #[test]

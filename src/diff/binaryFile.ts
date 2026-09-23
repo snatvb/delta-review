@@ -26,10 +26,6 @@ export function imageMimeFor(path: string): string | null {
 
 export const isImagePath = (path: string): boolean => imageMimeFor(path) != null;
 
-export function imageDataUrl(mime: string, base64: string): string {
-  return `data:${mime};base64,${base64}`;
-}
-
 /** "45 KB" · "1.2 MB" — 1024-based; one decimal only below 10 units. */
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;

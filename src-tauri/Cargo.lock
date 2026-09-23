@@ -723,7 +723,6 @@ dependencies = [
 name = "delta"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "chrono",
  "git2",
  "ignore",

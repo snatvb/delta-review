@@ -13,10 +13,10 @@
 //! invalidated. (#perf)
 use std::sync::{Arc, Mutex};
 
-use crate::git::diff::{
-    binary_file_diff_from_sources, compute_diff_full, get_binary_file_diff, get_file_diff, BinaryFileDiff, DiffSummary,
-    FileDiff, FullDiff,
-};
+use git2::Repository;
+
+use crate::git::diff::{compute_diff_full, get_file_diff, with_fresh_sources, DiffSummary, FileDiff, FileSources, FullDiff};
+use crate::git::open_repo;
 use crate::git::model::{DiffMode, Target};
 use crate::git::GitError;
 
@@ -109,14 +109,19 @@ impl DiffCache {
         get_file_diff(target, path)
     }
 
-    /// One binary file's sizes (+ image data), read straight from the snapshot's
-    /// resolved sources. A whole-repo diff per image card exhausted memory on huge
-    /// repos when a screenful of images fetched at once.
-    pub fn binary(&self, target: &Target, path: &str, include_data: bool) -> Result<BinaryFileDiff, GitError> {
+    /// Run `f` on `path`'s byte sources from the snapshot, so a binary card's reads
+    /// need no whole-repo diff of their own — per-card diffs exhausted memory on huge
+    /// repos when a screenful of images loaded at once.
+    pub fn with_sources<T>(
+        &self,
+        target: &Target,
+        path: &str,
+        f: impl FnOnce(&Repository, &FileSources) -> T,
+    ) -> Result<T, GitError> {
         let snap = self.snapshot(target)?;
         match snap.diff.sources.get(path) {
-            Some(sources) => binary_file_diff_from_sources(&target.repo_path, sources, include_data),
-            None => get_binary_file_diff(target, path, include_data),
+            Some(sources) => Ok(f(&open_repo(&target.repo_path)?, sources)),
+            None => with_fresh_sources(target, path, f),
         }
     }
 
@@ -131,7 +136,7 @@ impl DiffCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::diff::MAX_CACHED_FILE_BYTES;
+    use crate::git::diff::{binary_sizes, MAX_CACHED_FILE_BYTES};
     use crate::git::model::{DiffMode, Target};
     use crate::git::test_support::*;
 
@@ -198,9 +203,10 @@ mod tests {
         let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
         let cache = DiffCache::default();
 
-        assert_eq!(cache.binary(&t, "logo.png", false).unwrap().new_size, Some(4));
+        let sizes = |cache: &DiffCache| cache.with_sources(&t, "logo.png", binary_sizes).unwrap().new_size;
+        assert_eq!(sizes(&cache), Some(4));
         std::fs::write(dir.path().join("logo.png"), [0x89u8, b'P', 0x00, 0x01, 0x02, 0x03]).unwrap();
-        assert_eq!(cache.binary(&t, "logo.png", false).unwrap().new_size, Some(6));
+        assert_eq!(sizes(&cache), Some(6));
     }
 
     #[test]
