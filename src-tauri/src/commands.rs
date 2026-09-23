@@ -103,7 +103,7 @@ pub fn open_review_impl(storage: &dyn Storage, input: Target) -> Result<ReviewSe
     Ok(session)
 }
 
-pub fn refresh_review_impl(storage: &dyn Storage, mut review: Review) -> Result<ReviewSession, String> {
+pub fn refresh_review_impl(cache: &DiffCache, storage: &dyn Storage, mut review: Review) -> Result<ReviewSession, String> {
     // The FE's in-memory viewed entries may still carry empty hashes from a
     // just-made toggle; save_review already stamped the real baselines to disk.
     // Adopt them so a file changed since it was viewed is correctly un-viewed here.
@@ -111,6 +111,12 @@ pub fn refresh_review_impl(storage: &dyn Storage, mut review: Review) -> Result<
         adopt_persisted_viewed_hashes(&mut review, &persisted);
         restore_persisted_comments(&mut review, &persisted);
     }
+    // A toggle whose save lost the race to this refresh (fs-change fires it
+    // concurrently) still carries an empty hash with nothing on disk to adopt.
+    // Stamp it from the served snapshot — the version on screen — before
+    // reconcile, or its lazy stamp would baseline current disk and keep the
+    // mark alive on a file that changed under the toggle.
+    stamp_viewed_baselines(cache, &mut review);
     let session = reconcile(review)?;
     storage.save(&session.review)?;
     Ok(session)
@@ -187,8 +193,8 @@ pub fn open_review_impl_with_registry(storage: &dyn Storage, reg_store: &dyn Reg
     Ok(session)
 }
 
-pub fn refresh_review_impl_with_registry(storage: &dyn Storage, reg_store: &dyn RegistryStore, review: Review) -> Result<ReviewSession, String> {
-    let mut session = refresh_review_impl(storage, review)?;
+pub fn refresh_review_impl_with_registry(cache: &DiffCache, storage: &dyn Storage, reg_store: &dyn RegistryStore, review: Review) -> Result<ReviewSession, String> {
+    let mut session = refresh_review_impl(cache, storage, review)?;
     session.repo_name = repo_display_name(&session.review.target.repo_path);
     sync_registry_after_open(reg_store, &session.review, session.summary.files.len() as u32);
     Ok(session)
@@ -260,17 +266,19 @@ pub async fn open_review(app: tauri::AppHandle, target: Target) -> Result<Review
 }
 
 #[tauri::command]
-pub async fn refresh_review(app: tauri::AppHandle, review: Review) -> Result<ReviewSession, String> {
+pub async fn refresh_review(app: tauri::AppHandle, review: Review, cache: tauri::State<'_, DiffCache>) -> Result<ReviewSession, String> {
     // A refresh means "recompute against the current state", so drop any memoized
     // diff snapshot for this worktree — the window's refetch then rebuilds fresh.
     // Covers a manual Refresh and one racing the fs watcher's debounce. (#perf)
-    app.state::<DiffCache>().invalidate(&review.target.repo_path);
+    // (The served copies survive — the viewed-baseline stamp below reads them.)
+    cache.invalidate(&review.target.repo_path);
+    let cache = cache.inner().clone();
     let reviews = reviews_dir(&app)?;
     let reg_path = registry_path(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let storage = JsonStorage::new(reviews.clone());
         let reg = JsonRegistryStore::new(reg_path, reviews);
-        refresh_review_impl_with_registry(&storage, &reg, review)
+        refresh_review_impl_with_registry(&cache, &storage, &reg, review)
     })
     .await
     .map_err(|e| format!("refresh_review task: {e}"))?
@@ -640,10 +648,47 @@ mod tests {
         let target = Target { repo_path: dir.path().to_str().unwrap().into(), worktree: None, mode: DiffMode::Uncommitted, base: None, commit: None };
         let session = open_review_impl(&storage, target).unwrap();
 
-        let refreshed = refresh_review_impl(&storage, session.review.clone()).unwrap();
+        let refreshed = refresh_review_impl(&DiffCache::default(), &storage, session.review.clone()).unwrap();
         assert!(!refreshed.summary.files.is_empty());
         let persisted = storage.load(&session.review.id).unwrap();
         assert!(persisted.is_some());
+    }
+
+    #[test]
+    fn refresh_drops_viewed_when_a_just_toggled_file_changed_under_it() {
+        use crate::review::model::ViewedEntry;
+        use crate::storage::JsonStorage;
+
+        // The unsaved-toggle race: the user toggles viewed while looking at the
+        // old diff, the agent's edit lands on disk, and the fs-change refresh
+        // reaches storage before the toggle's own save does. Refreshing must not
+        // lazily stamp the *new* content as the viewed baseline — the file changed
+        // since it was viewed, so the mark must drop.
+        let (dir, _repo) = repo_with_commit();
+        write(dir.path(), "file.txt", "line1\nAAA\nline2\n");
+        let store_dir = tempfile::TempDir::new().unwrap();
+        let storage = JsonStorage::new(store_dir.path().join("reviews"));
+        let target = Target { repo_path: dir.path().to_str().unwrap().into(), worktree: None, mode: DiffMode::Uncommitted, base: None, commit: None };
+
+        // The review the user has open. The diff pane fetched the file — the
+        // served snapshot is AAA, the version on screen.
+        let opened = open_review_impl(&storage, target).unwrap();
+        let cache = DiffCache::default();
+        cache.file(&opened.review.target, "file.txt").unwrap();
+
+        // The user toggles viewed; the toggle's save is still in flight, so disk
+        // has no viewed entry for refresh to adopt.
+        let mut fe = opened.review.clone();
+        fe.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: String::new() });
+
+        // The agent's edit lands; the watcher's refresh wins the race with the save.
+        write(dir.path(), "file.txt", "line1\nBBB\nline2\n");
+
+        let refreshed = refresh_review_impl(&cache, &storage, fe).unwrap();
+        assert_eq!(
+            refreshed.review.viewed.len(), 0,
+            "a file whose diff changed since it was viewed must lose its mark, even when the toggle's save hasn't landed",
+        );
     }
 
     #[test]
@@ -673,7 +718,7 @@ mod tests {
         let mut stale = review.clone();
         stale.comments = vec![note("c1", "first")];
 
-        let refreshed = refresh_review_impl(&storage, stale).unwrap();
+        let refreshed = refresh_review_impl(&DiffCache::default(), &storage, stale).unwrap();
 
         assert_eq!(ids(&refreshed.review.comments), vec!["c1", "c2"], "refresh must not drop a persisted comment missing from a stale FE copy");
         let persisted = storage.load(&review.id).unwrap().unwrap();
@@ -710,7 +755,7 @@ mod tests {
         let mut stale = review.clone();
         stale.comments = vec![];
 
-        let refreshed = refresh_review_impl(&storage, stale).unwrap();
+        let refreshed = refresh_review_impl(&DiffCache::default(), &storage, stale).unwrap();
 
         // Both survive on disk; the one whose file left the diff is flagged stale, not removed.
         assert_eq!(ids(&refreshed.review.comments), vec!["in-diff", "gone"], "file-scoped comments must not be dropped by a refresh");
@@ -746,7 +791,7 @@ mod tests {
         // The agent commits the reviewed work.
         let oid = commit_all(&repo, "agent work");
 
-        let refreshed = refresh_review_impl(&storage, review).unwrap();
+        let refreshed = refresh_review_impl(&DiffCache::default(), &storage, review).unwrap();
         let c = &refreshed.review.comments[0];
         assert_eq!(c.commit.as_deref(), Some(oid.to_string().as_str()), "refresh hands the comment to the commit that took its file");
         assert!(!c.stale, "the handed-off comment is fresh");
@@ -770,11 +815,15 @@ mod tests {
         let session = open_review_impl(&storage, target).unwrap();
         let mut review = session.review;
 
+        // The diff pane fetches the file — that fetch is what the user is looking at.
+        let cache = DiffCache::default();
+        cache.file(&review.target, "file.txt").unwrap();
+
         // The FE toggles "viewed" with an empty hash (it doesn't compute the baseline).
         review.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: String::new() });
-        save_review_impl(&DiffCache::default(), &storage, review.clone()).unwrap();
+        save_review_impl(&cache, &storage, review.clone()).unwrap();
 
-        // Save must have stamped the baseline from the file's current content.
+        // Save must have stamped the baseline from the served content.
         let persisted = storage.load(&review.id).unwrap().unwrap();
         assert!(!persisted.viewed[0].diff_hash.is_empty(), "save must stamp the baseline hash before persisting");
     }
@@ -793,10 +842,14 @@ mod tests {
         let session = open_review_impl(&storage, target).unwrap();
         let mut review = session.review;
 
+        // The diff pane fetched V1 — the served snapshot the user is looking at.
+        let cache = DiffCache::default();
+        cache.file(&review.target, "file.txt").unwrap();
+
         // User marks file.txt viewed. The FE persists an entry with an empty hash;
         // save runs immediately, while the file is still at V1.
         review.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: String::new() });
-        save_review_impl(&DiffCache::default(), &storage, review.clone()).unwrap();
+        save_review_impl(&cache, &storage, review.clone()).unwrap();
 
         // The file changes to V2 before the next refresh (e.g. an agent edits it).
         write(dir.path(), "file.txt", "line1\nV2\nline2\n");
@@ -804,7 +857,7 @@ mod tests {
         // Refresh reconciles the review the FE holds in memory — which still carries
         // the empty hash. It must still drop the viewed entry, because the file
         // changed since the user marked it viewed.
-        let refreshed = refresh_review_impl(&storage, review).unwrap();
+        let refreshed = refresh_review_impl(&cache, &storage, review).unwrap();
         assert_eq!(refreshed.review.viewed.len(), 0, "a file changed after being viewed must be un-viewed on refresh");
     }
 

@@ -80,7 +80,8 @@ pub fn reconcile(mut review: Review) -> Result<ReviewSession, GitError> {
     }
 
     // Reset viewed entries whose file diff changed (or vanished).
-    // If stored diff_hash is empty (toggled by FE before it knew the hash), stamp it now and keep.
+    // An empty diff_hash here is the fallback path — legacy data, or a save whose
+    // stamp found nothing served — so stamp the current content and keep.
     review.viewed = std::mem::take(&mut review.viewed)
         .into_iter()
         .filter_map(|mut v| {
@@ -201,21 +202,23 @@ fn commit_reachable_from_head(repo: &Repository, head_oid: Option<Oid>, oid: &st
 }
 
 /// Fill a content baseline into any viewed entry that lacks one, hashing the
-/// file's diff content from the cached snapshot. Called at save time — the moment
-/// the user toggles "viewed" — so the baseline reflects the version they actually
-/// saw, rather than letting `reconcile` stamp it lazily on the next refresh (which
-/// would absorb an edit landing in that window and wrongly keep the file marked
-/// viewed). Served from the `DiffCache` (a map read against the snapshot the user
-/// is looking at), not a fresh whole-repo diff per entry — the latter turned every
-/// save into O(viewed files) full re-diffs on the (synchronous) save path. A file
-/// that can't be read is left empty for `reconcile` to handle. Idempotent: a
-/// non-empty hash is never overwritten.
+/// file's diff from the cache's *served* snapshot — the last one fetched for
+/// this target, which `invalidate` does not drop — so the baseline is the
+/// version on screen, not whatever is on disk now. This matters in the
+/// agent-workflow window between a watcher invalidation and the user applying
+/// Refresh: the UI still renders the old snapshot there, and a stamp that read
+/// current disk would absorb the unseen edit — the next `reconcile` would then
+/// keep the file marked viewed across a diff the user never reviewed. Called at
+/// save time (the moment the user toggles "viewed") and from the refresh path
+/// (see `refresh_review_impl`). A target this process never fetched (or a file
+/// too large for the snapshot) leaves the hash empty for `reconcile`'s lazy
+/// stamp. Idempotent: a non-empty hash is never overwritten.
 pub fn stamp_viewed_baselines(cache: &DiffCache, review: &mut Review) {
     for v in review.viewed.iter_mut() {
         if !v.diff_hash.is_empty() {
             continue;
         }
-        if let Ok(fd) = cache.file(&review.target, &v.file) {
+        if let Some(Ok(fd)) = cache.served_file(&review.target, &v.file) {
             v.diff_hash = diff_hash(
                 fd.old_content.as_deref().unwrap_or(""),
                 fd.new_content.as_deref().unwrap_or(""),
@@ -521,6 +524,41 @@ mod tests {
         assert_eq!(
             r.viewed[0].diff_hash, seen_hash,
             "stamp must read the cached snapshot (a map read), not a fresh whole-repo diff of current disk",
+        );
+    }
+
+    #[test]
+    fn stamp_after_watcher_invalidate_still_hashes_what_the_user_saw() {
+        // The agent-workflow race the served snapshot exists for: the agent edits
+        // the file, the fs watcher invalidates the hot cache, but the UI keeps
+        // showing the old diff until the user applies Refresh (#12). A viewed
+        // toggle in that window must baseline the STILL-DISPLAYED content — a
+        // stamp that rebuilds from disk absorbs the unseen edit, and the next
+        // reconcile then keeps the file marked viewed across a diff the user
+        // never reviewed.
+        let (dir, _repo) = repo_with_commit();
+        write(dir.path(), "file.txt", "line1\nAAA\nline2\n");
+        let mut r = empty_review(dir.path().to_str().unwrap());
+        let cache = DiffCache::default();
+
+        // The diff pane fetched the file (AAA) — that is the version on screen.
+        let seen = cache.file(&r.target, "file.txt").unwrap();
+        let seen_hash = diff_hash(
+            seen.old_content.as_deref().unwrap_or(""),
+            seen.new_content.as_deref().unwrap_or(""),
+        );
+
+        // The edit lands and the watcher invalidates; the screen still shows AAA.
+        write(dir.path(), "file.txt", "line1\nBBB\nline2\n");
+        cache.invalidate(dir.path().to_str().unwrap());
+
+        // The user toggles viewed against the still-displayed AAA diff.
+        r.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: String::new() });
+        stamp_viewed_baselines(&cache, &mut r);
+
+        assert_eq!(
+            r.viewed[0].diff_hash, seen_hash,
+            "the baseline must be the displayed (pre-invalidation) content, not the edit the user hasn't applied yet",
         );
     }
 }

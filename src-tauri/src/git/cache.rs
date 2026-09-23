@@ -11,6 +11,14 @@
 //! mode's content-changing event (edit, commit, checkout, fetch) trips the watcher,
 //! so a cached snapshot is only ever served for state the watcher would not have
 //! invalidated. (#perf)
+//!
+//! The hot snapshots are only half the story. The UI never swaps its diff under
+//! the user (#12): after `invalidate` the window keeps rendering the old snapshot
+//! until Refresh is applied — so the *last served* snapshot per target (which
+//! `invalidate` deliberately keeps) is the only record of "what the user is
+//! actually looking at". The viewed-baseline stamp reads it
+//! (`served_file`), so a "viewed" toggle in that window baselines the displayed
+//! content rather than absorbing the unseen edit waiting on disk.
 use std::sync::{Arc, Mutex};
 
 use git2::Repository;
@@ -51,11 +59,32 @@ struct Snapshot {
     diff: FullDiff,
 }
 
+#[derive(Default)]
+struct Inner {
+    /// Hot snapshots — dropped by `invalidate` so the next fetch rebuilds against
+    /// current disk.
+    hot: Vec<Arc<Snapshot>>,
+    /// The last snapshot served per key — never dropped by `invalidate`. This is
+    /// the "what the user is looking at" record; see the module doc.
+    served: Vec<Arc<Snapshot>>,
+}
+
 /// Bounded LRU of recent diff snapshots. Cloning the handle is cheap (shared `Arc`)
 /// so a command can move one into `spawn_blocking` and the fs watcher can hold its
 /// own; the snapshots themselves are `Arc`-shared so reads clone content off-lock.
 #[derive(Default, Clone)]
-pub struct DiffCache(Arc<Mutex<Vec<Arc<Snapshot>>>>);
+pub struct DiffCache(Arc<Mutex<Inner>>);
+
+/// Replace (or append) the served copy for a key, bounded like the hot LRU.
+fn upsert_served(served: &mut Vec<Arc<Snapshot>>, snap: &Arc<Snapshot>) {
+    if let Some(pos) = served.iter().position(|s| s.key == snap.key) {
+        served.remove(pos);
+    }
+    served.push(snap.clone());
+    if served.len() > MAX_SNAPSHOTS {
+        served.remove(0);
+    }
+}
 
 /// Same worktree on disk? Cheap string-eq first, then a best-effort canonicalize so
 /// the watcher's canonical root still matches a target opened by a symlinked path.
@@ -70,7 +99,7 @@ fn same_worktree(a: &str, b: &str) -> bool {
 impl DiffCache {
     /// Lock the cache, recovering from a poisoned mutex instead of panicking — a
     /// panic under the guard must not brick diff fetching for the rest of the session.
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Arc<Snapshot>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -81,16 +110,18 @@ impl DiffCache {
     fn snapshot(&self, target: &Target) -> Result<Arc<Snapshot>, GitError> {
         let key = key_of(target);
         let mut cache = self.lock();
-        if let Some(pos) = cache.iter().position(|s| s.key == key) {
-            let hit = cache.remove(pos);
-            cache.push(hit.clone()); // most-recently-used at the back
+        if let Some(pos) = cache.hot.iter().position(|s| s.key == key) {
+            let hit = cache.hot.remove(pos);
+            cache.hot.push(hit.clone()); // most-recently-used at the back
+            upsert_served(&mut cache.served, &hit);
             return Ok(hit);
         }
         let snap = Arc::new(Snapshot { key, diff: compute_diff_full(target)? });
-        cache.push(snap.clone());
-        if cache.len() > MAX_SNAPSHOTS {
-            cache.remove(0); // evict least-recently-used (front)
+        cache.hot.push(snap.clone());
+        if cache.hot.len() > MAX_SNAPSHOTS {
+            cache.hot.remove(0); // evict least-recently-used (front)
         }
+        upsert_served(&mut cache.served, &snap);
         Ok(snap)
     }
 
@@ -125,11 +156,28 @@ impl DiffCache {
         }
     }
 
-    /// Drop cached snapshots for `worktree` (the path the fs watcher watches, or the
-    /// target's repo path on manual refresh) so the next fetch rebuilds against
-    /// current content. A no-op for snapshots of other worktrees.
+    /// One file's diff from the last snapshot *served* for `target` — the version
+    /// the UI is (still) rendering. Unlike `file`, this never rebuilds from disk:
+    /// after a watcher invalidation the window keeps showing the old snapshot until
+    /// Refresh is applied, so the served copy — not current disk — is "what the
+    /// user actually saw". `None` when nothing was ever served for this target. A
+    /// file too large for the cached snapshot has no served copy and falls back to
+    /// a fresh one-off read.
+    pub fn served_file(&self, target: &Target, path: &str) -> Option<Result<FileDiff, GitError>> {
+        let key = key_of(target);
+        let snap = self.lock().served.iter().rev().find(|s| s.key == key)?.clone();
+        match snap.diff.files.get(path) {
+            Some(fd) => Some(Ok(fd.clone())),
+            None => Some(get_file_diff(target, path)),
+        }
+    }
+
+    /// Drop the hot snapshots for `worktree` (the path the fs watcher watches, or
+    /// the target's repo path on manual refresh) so the next fetch rebuilds against
+    /// current content. The served copies survive — see the module doc. A no-op for
+    /// snapshots of other worktrees.
     pub fn invalidate(&self, worktree: &str) {
-        self.lock().retain(|s| !same_worktree(&s.key.repo_path, worktree));
+        self.lock().hot.retain(|s| !same_worktree(&s.key.repo_path, worktree));
     }
 }
 
@@ -180,6 +228,36 @@ mod tests {
         // The fs watcher fires → invalidate → the next read rebuilds and sees BBB.
         cache.invalidate(&repo_path);
         assert_eq!(cache.file(&t, "file.txt").unwrap().new_content.as_deref(), Some("line1\nBBB\nline2\n"));
+    }
+
+    #[test]
+    fn invalidate_keeps_the_served_snapshot_until_a_fetch_replaces_it() {
+        let (dir, _repo) = repo_with_commit();
+        write(dir.path(), "file.txt", "line1\nAAA\nline2\n");
+        let repo_path = dir.path().to_str().unwrap().to_string();
+        let t = target(&repo_path, DiffMode::Uncommitted);
+        let cache = DiffCache::default();
+
+        // Nothing fetched yet → nothing served.
+        assert!(cache.served_file(&t, "file.txt").is_none());
+
+        // The diff pane fetches the file — the served copy becomes AAA (what's on screen).
+        cache.file(&t, "file.txt").unwrap();
+        assert_eq!(cache.served_file(&t, "file.txt").unwrap().unwrap().new_content.as_deref(), Some("line1\nAAA\nline2\n"));
+
+        // The watcher invalidates on the disk edit; the served copy must keep AAA —
+        // the window is still rendering it until Refresh is applied.
+        write(dir.path(), "file.txt", "line1\nBBB\nline2\n");
+        cache.invalidate(&repo_path);
+        assert_eq!(
+            cache.served_file(&t, "file.txt").unwrap().unwrap().new_content.as_deref(),
+            Some("line1\nAAA\nline2\n"),
+            "invalidate must not drop the served (still displayed) snapshot",
+        );
+
+        // Only once a fetch actually rebuilds does the served copy advance to BBB.
+        assert_eq!(cache.file(&t, "file.txt").unwrap().new_content.as_deref(), Some("line1\nBBB\nline2\n"));
+        assert_eq!(cache.served_file(&t, "file.txt").unwrap().unwrap().new_content.as_deref(), Some("line1\nBBB\nline2\n"));
     }
 
     #[test]

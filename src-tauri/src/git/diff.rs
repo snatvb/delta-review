@@ -636,7 +636,7 @@ mod tests {
     #[test]
     fn uncommitted_in_linked_worktree_shows_modified_not_added() {
         use git2::WorktreeAddOptions;
-        let (dir, repo) = repo_with_commit(); // main: file.txt
+        let (_dir, repo) = repo_with_commit(); // main: file.txt
         // create a linked worktree on a new branch
         let wt_parent = tempfile::TempDir::new().unwrap();
         let wt_path = wt_parent.path().join("wt");
