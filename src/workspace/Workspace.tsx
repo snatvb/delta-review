@@ -33,6 +33,9 @@ import type { Anchor, Comment, CommitMeta, DiffMode, DiffSummary, Review, Review
 
 const COMMIT_PAGE = 100;
 
+const ICON_BUTTON =
+  "inline-flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-muted hover:text-foreground active:bg-muted/60 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 dark:bg-transparent dark:hover:bg-input/60 dark:active:bg-input/90";
+
 const MODES: { id: DiffMode; label: string }[] = [
   { id: "all-changes", label: "All changes" },
   { id: "uncommitted", label: "Uncommitted" },
@@ -682,7 +685,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                   disabled={refreshing}
                   title="Re-diff now (⌘R)"
                   aria-label="Re-diff now"
-                  className="inline-flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none dark:bg-transparent dark:hover:bg-input/30"
+                  className={ICON_BUTTON}
                 >
                   <RefreshCw className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
                 </button>
@@ -733,7 +736,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
           onClick={() => { void api.openInEditor(getEditorPref(), target.repoPath).catch((e) => setError(String(e))); }}
           title="Open repository in editor"
           aria-label="Open repository in editor"
-          className="inline-flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-transparent dark:hover:bg-input/30"
+          className={ICON_BUTTON}
         >
           <ExternalLink className="size-4" />
         </button>
@@ -742,7 +745,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
           onClick={onOpenSettings}
           title="Settings (⌘,)"
           aria-label="Settings"
-          className="inline-flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-transparent dark:hover:bg-input/30"
+          className={ICON_BUTTON}
         >
           <Settings className="size-4" />
         </button>

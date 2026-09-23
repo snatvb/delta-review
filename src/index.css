@@ -227,7 +227,7 @@
   }
 
   /* Native desktop feel: chrome is not text-selectable and uses the arrow
-     cursor; no tap-highlight flash; no scroll-chaining/rubber-band bounce.
+     cursor (controls get a pointer); no tap-highlight flash; no scroll-chaining/rubber-band bounce.
      Selection + I-beam are re-enabled below only on real content (code,
      comment prose) and form fields. */
   html, body { overscroll-behavior: none; }
@@ -238,6 +238,9 @@
     user-select: none;
   }
   img, svg { -webkit-user-drag: none; }
+  button:not(:disabled), [role="button"]:not([aria-disabled="true"]), [role="menuitem"]:not([data-disabled]), [role="menuitemcheckbox"]:not([data-disabled]), [role="tab"], [role="switch"], [role="checkbox"] {
+    cursor: pointer;
+  }
   input, textarea, [contenteditable="true"] {
     cursor: auto;
     -webkit-user-select: text;
