@@ -63,6 +63,7 @@ const SPLIT_COL_CHROME = 60; // one split column: gutter + pr-3
 const ADD_ACCENT = "var(--color-emerald-500)";
 const DEL_ACCENT = "var(--color-rose-500)";
 const OVERSCAN = 1500; // px of rows to render/build beyond the viewport each way
+const IMAGE_MARGIN = 200; // px beyond the viewport an image card starts loading — far tighter than OVERSCAN, images are costly to read + decode
 const EST_BLOCK_H = 96; // placeholder height for a comment thread before it measures
 const EST_PREVIEW_H = 240; // placeholder body height for a markdown preview before it measures (#preview)
 const PLACEHOLDER_BODY_H = 72; // fixed body height for binary / deleted placeholders (#11, shared layout #5, padding #8)
@@ -443,7 +444,7 @@ function PreviewBody({ content, onHeight }: { content: string; onHeight: (h: num
 interface Block { id: string; index: number; comments: Comment[] }
 
 const VFileSection = memo(function VFileSection({
-  entry, theme, layout, cache, collapsed, viewed, previewing, onSetPreview, headerSolo, target, repoPath, mode, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onOpenFileEditor, onToggleCollapse, onToggleViewed, wrap, onToggleWrap, view, paneW, rowH, chPx, query, caseSensitive, wholeWord, activeMatch, onMatches, forceModel, comments, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, reportBodyHeight,
+  entry, theme, layout, cache, collapsed, viewed, previewing, onSetPreview, headerSolo, target, repoPath, mode, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onOpenFileEditor, onToggleCollapse, onToggleViewed, wrap, onToggleWrap, view, imageNear, paneW, rowH, chPx, query, caseSensitive, wholeWord, activeMatch, onMatches, forceModel, comments, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, reportBodyHeight,
 }: {
   entry: FileEntry; theme: "light" | "dark"; layout: DiffLayout;
   cache: ReturnType<typeof useFileDiffCache>;
@@ -466,6 +467,7 @@ const VFileSection = memo(function VFileSection({
   wrap: boolean;
   onToggleWrap: (path: string) => void;
   view: [number, number] | null; // body-relative visible window [top, bottom] px, or null off-screen
+  imageNear: boolean; // a binary card's body is within IMAGE_MARGIN of the viewport
   paneW: number; // diff pane client width — decides if a file overflows → horizontal scroll (#hscroll)
   rowH: number; // code row height (px), from the font-size pref; must match the --code-lh the rows render at
   chPx: number; // ~mono char width (px) at the chosen size — only for the overflow check (#hscroll)
@@ -509,7 +511,7 @@ const VFileSection = memo(function VFileSection({
   // one-line placeholder. Its sizes/previews load only while the card is on
   // screen, like a text file's diff model. (#binary)
   const isImageCard = isBinary && isImagePath(entry.path);
-  const binary = useBinaryFile(target, cache, entry.path, !collapsed && !previewing && isBinary && view != null);
+  const binary = useBinaryFile(target, cache, entry.path, !collapsed && !previewing && isBinary && (isImageCard ? imageNear : view != null));
   const [revealed, setRevealed] = useState(false);
   // Rendered markdown preview: added/modified markdown files only (deleted has no
   // new content; binary has none). `previewing` is held by the pane (survives the
@@ -1050,6 +1052,7 @@ const VFileSection = memo(function VFileSection({
                 status={entry.status}
                 mime={imageMimeFor(entry.path)}
                 oldMime={entry.oldPath ? imageMimeFor(entry.oldPath) : null}
+                load={imageNear}
                 srcOf={(side, mime) => api.binaryBlobUrl(target, entry.path, side, mime, binary?.rev ?? 0)}
               />
             ) : (
@@ -1694,6 +1697,8 @@ export function VirtualDiffPane({
           // jump-to-comment scrolls to offsets[i] to materialize a target on demand. (#vfiles)
           if (!(onScreen || headerVisible || findActive)) return null;
           const view: [number, number] | null = onScreen ? [Math.max(0, top0 - bodyTop), Math.max(0, bot0 - bodyTop)] : null;
+          const imageNear = entry.binary && viewportH > 0 && !collapsed
+            && bodyTop + bh > scrollTop - IMAGE_MARGIN && bodyTop < scrollTop + viewportH + IMAGE_MARGIN;
           // Header is "solo" when its body has fully scrolled up under the stuck
           // header (nothing renders right below it) — round its bottom corners so
           // it doesn't read as a cut-off tab. (#6)
@@ -1713,7 +1718,7 @@ export function VirtualDiffPane({
                 onOpenFileEditor={openFileEditor}
                 onToggleCollapse={toggleCollapse} onToggleViewed={onToggleViewed}
                 wrap={wrapFor(entry)} onToggleWrap={toggleWrap}
-                view={view} paneW={viewportW} rowH={rowH} chPx={chPx}
+                view={view} imageNear={imageNear} paneW={viewportW} rowH={rowH} chPx={chPx}
                 query={findActive ? query : ""}
                 caseSensitive={caseSensitive} wholeWord={wholeWord}
                 activeMatch={activeMatch && activeMatch.file === entry.path ? { modelIndex: activeMatch.modelIndex, side: activeMatch.side, col: activeMatch.col } : null}

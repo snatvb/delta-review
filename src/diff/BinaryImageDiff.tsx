@@ -26,7 +26,8 @@ function ImagePane({ side, src }: { side: Side; src: string | null }) {
   const note =
     side.size == null ? "No preview available"
     : side.size > MAX_IMAGE_PREVIEW_BYTES ? `Too large to preview — ${formatBytes(side.size)}`
-    : "Preview failed to load";
+    : failed ? "Preview failed to load"
+    : null;
   return (
     <div data-side={side.side} className="flex min-w-0 flex-1 flex-col">
       <div className="delta-ui-font flex h-7 shrink-0 items-center justify-center gap-2 text-[11px] text-muted-foreground">
@@ -52,7 +53,7 @@ function ImagePane({ side, src }: { side: Side; src: string | null }) {
             }}
             onError={() => setFailed(true)}
           />
-        ) : (
+        ) : note && (
           <span className="delta-ui-font flex items-center gap-2 px-3 text-center text-[12px] text-muted-foreground">
             <ImageOff className="size-4 shrink-0 opacity-70" />
             {note}
@@ -68,12 +69,14 @@ export function BinaryImageDiff({
   status,
   mime,
   oldMime,
+  load,
   srcOf,
 }: {
   binary: BinaryFileDiff | undefined; // undefined while the fetch is in flight
   status: FileStatus;
   mime: string | null; // MIME for the new side, from the file's extension
   oldMime?: string | null; // old side may be a renamed extension change
+  load: boolean; // near the viewport — off-screen cards keep their frame but fetch no pixels
   srcOf: (side: BlobSide, mime: string) => string;
 }) {
   if (!binary) {
@@ -89,7 +92,7 @@ export function BinaryImageDiff({
   return (
     <div className="flex h-full items-stretch">
       {sides.map((s, i) => {
-        const previewable = s.size != null && s.size <= MAX_IMAGE_PREVIEW_BYTES && s.mime;
+        const previewable = load && s.size != null && s.size <= MAX_IMAGE_PREVIEW_BYTES && s.mime;
         const src = previewable ? srcOf(s.side, s.mime!) : null;
         return (
           <div key={s.side} className={`flex min-w-0 flex-1 ${i > 0 ? "border-l border-border/40" : ""}`}>
