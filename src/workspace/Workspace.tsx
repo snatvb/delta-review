@@ -130,6 +130,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // paths and surface a Refresh button. Applying it is always explicit. (#12)
   const pendingRef = useRef<{ session: ReviewSession; paths: string[] | null } | null>(null);
   const [pendingRefresh, setPendingRefresh] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const selfEditedRef = useRef<Set<string>>(new Set());
   // Keep reviewRef/summaryRef current via an effect (not during render — the
   // compiler forbids ref writes in render, and the listener only reads them on
@@ -259,6 +260,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   async function onFsChanged(paths: string[], gitMeta: boolean) {
     const cur = reviewRef.current;
     if (!cur) return;
+    setRefreshing(true);
     try {
       const session = await api.refreshReview(cur);
       const sig = reviewSig(session.summary, session.review);
@@ -306,6 +308,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   async function forceRefresh() {
     const cur = reviewRef.current;
     if (!cur) return;
+    setRefreshing(true);
     try {
       const session = await api.refreshReview(cur);
       sigRef.current = reviewSig(session.summary, session.review);
@@ -320,6 +323,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     } catch (e) {
       setError(String(e));
     }
+    setRefreshing(false);
   }
 
   // An inline edit the user just made: their own write is not a change "under
@@ -660,7 +664,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
             )}
             <div className="ml-auto flex items-center gap-3">
               <CliInstallButton />
-              {pendingRefresh && (
+              {pendingRefresh ? (
                 <Button
                   size="sm"
                   variant="outline"
@@ -671,6 +675,17 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                   <RefreshCw className="size-3.5" /> Refresh
                   <Kbd keys="⌘R" className="border-amber-600/30 bg-amber-500/15 text-amber-700 dark:border-amber-400/30 dark:text-amber-300" />
                 </Button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void forceRefresh()}
+                  disabled={refreshing}
+                  title="Re-diff now (⌘R)"
+                  aria-label="Re-diff now"
+                  className="inline-flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none dark:bg-transparent dark:hover:bg-input/30"
+                >
+                  <RefreshCw className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
+                </button>
               )}
               <ToggleGroup
                 type="single"

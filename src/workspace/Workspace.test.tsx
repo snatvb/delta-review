@@ -171,6 +171,17 @@ describe("Workspace", () => {
     await waitFor(() => expect(screen.queryAllByText(/zzztest\.ts/).length).toBeGreaterThan(0));
   });
 
+  it("re-diffs on demand from the icon button when nothing was detected", async () => {
+    openReview.mockResolvedValue(fileSession);
+    refreshReview.mockResolvedValue(fileSession);
+    render(<Workspace target={target} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /copy for agents/i })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /re-diff now/i }));
+    await waitFor(() => expect(refreshReview).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByRole("button", { name: /re-diff now/i })).toBeEnabled());
+  });
+
   it("ignores a git-meta event whose re-diff is unchanged — no spurious Refresh (#12)", async () => {
     // A `.git/index` stat-refresh (e.g. starting a dev server) fires git-meta with
     // no paths, but the diff is byte-identical. Returning the same session means
