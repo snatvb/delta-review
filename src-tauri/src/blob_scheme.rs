@@ -4,10 +4,14 @@ use tauri::http::{header, Request, Response, StatusCode};
 use tauri::{Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 
 use crate::git::cache::DiffCache;
-use crate::git::diff::BlobSide;
+use crate::git::diff::{BlobSide, FileSources};
 use crate::git::model::Target;
 
 pub const SCHEME: &str = "delta-blob";
+
+/// Mirrors `MAX_IMAGE_PREVIEW_BYTES` in src/diff/binaryFile.ts: the webview decodes
+/// every pixel, so a multi-hundred-MB "image" would stall it.
+const MAX_IMAGE_PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
 
 struct BlobQuery {
     target: Target,
@@ -47,13 +51,18 @@ fn respond(cache: &DiffCache, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     let Some(q) = parse(request) else {
         return status(StatusCode::BAD_REQUEST);
     };
-    match cache.with_sources(&q.target, &q.path, |repo, sources| sources.read(repo, q.side)) {
-        Ok(Some(bytes)) => Response::builder()
+    let read = |repo: &git2::Repository, sources: &FileSources| match sources.size(repo, q.side) {
+        Some(size) if size > MAX_IMAGE_PREVIEW_BYTES => Err(StatusCode::PAYLOAD_TOO_LARGE),
+        _ => Ok(sources.read(repo, q.side)),
+    };
+    match cache.with_sources(&q.target, &q.path, read) {
+        Ok(Err(code)) => status(code),
+        Ok(Ok(Some(bytes))) => Response::builder()
             .header(header::CONTENT_TYPE, q.mime)
             .header(header::CACHE_CONTROL, "max-age=31536000, immutable")
             .body(bytes)
             .unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR)),
-        Ok(None) => status(StatusCode::NOT_FOUND),
+        Ok(Ok(None)) => status(StatusCode::NOT_FOUND),
         Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }

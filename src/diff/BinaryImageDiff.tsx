@@ -10,7 +10,7 @@
 // `srcOf` (the `delta-blob` URI scheme), never as base64 over IPC.
 import { useState } from "react";
 import { ImageOff } from "lucide-react";
-import { formatBytes } from "./binaryFile";
+import { formatBytes, MAX_IMAGE_PREVIEW_BYTES } from "./binaryFile";
 import type { BinaryFileDiff, BlobSide, FileStatus } from "../types";
 
 interface Side {
@@ -23,7 +23,10 @@ interface Side {
 function ImagePane({ side, src }: { side: Side; src: string | null }) {
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
   const [failed, setFailed] = useState(false);
-  const note = side.size == null ? "No preview available" : "Preview failed to load";
+  const note =
+    side.size == null ? "No preview available"
+    : side.size > MAX_IMAGE_PREVIEW_BYTES ? `Too large to preview — ${formatBytes(side.size)}`
+    : "Preview failed to load";
   return (
     <div data-side={side.side} className="flex min-w-0 flex-1 flex-col">
       <div className="delta-ui-font flex h-7 shrink-0 items-center justify-center gap-2 text-[11px] text-muted-foreground">
@@ -86,7 +89,8 @@ export function BinaryImageDiff({
   return (
     <div className="flex h-full items-stretch">
       {sides.map((s, i) => {
-        const src = s.size != null && s.mime ? srcOf(s.side, s.mime) : null;
+        const previewable = s.size != null && s.size <= MAX_IMAGE_PREVIEW_BYTES && s.mime;
+        const src = previewable ? srcOf(s.side, s.mime!) : null;
         return (
           <div key={s.side} className={`flex min-w-0 flex-1 ${i > 0 ? "border-l border-border/40" : ""}`}>
             <ImagePane key={src} side={s} src={src} />

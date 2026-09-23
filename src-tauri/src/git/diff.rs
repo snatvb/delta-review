@@ -243,7 +243,7 @@ impl FileSources {
         }
     }
 
-    fn size(&self, repo: &Repository, side: BlobSide) -> Option<u64> {
+    pub fn size(&self, repo: &Repository, side: BlobSide) -> Option<u64> {
         let blob_size = |oid: Oid| repo.odb().ok()?.read_header(oid).ok().map(|(size, _)| size as u64);
         match side {
             BlobSide::Old => self.old.and_then(blob_size),

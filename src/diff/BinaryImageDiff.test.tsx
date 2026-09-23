@@ -29,11 +29,18 @@ describe("BinaryImageDiff", () => {
     expect(screen.queryByAltText("New version")).toBeNull();
   });
 
-  it("renders a large image instead of capping it", () => {
+  it("renders an image under the preview cap", () => {
     const big: BinaryFileDiff = { oldSize: null, newSize: 12 * 1024 * 1024 };
     render(<BinaryImageDiff binary={big} status="added" mime="image/png" srcOf={srcOf} />);
     expect(screen.getByAltText("New version")).toBeInTheDocument();
     expect(screen.getByText("12 MB")).toBeInTheDocument();
+  });
+
+  it("explains a side over the preview cap instead of loading it", () => {
+    const huge: BinaryFileDiff = { oldSize: null, newSize: 20 * 1024 * 1024 };
+    render(<BinaryImageDiff binary={huge} status="added" mime="image/png" srcOf={srcOf} />);
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(screen.getByText("Too large to preview — 20 MB")).toBeInTheDocument();
   });
 
   it("explains a side whose image fails to load", () => {

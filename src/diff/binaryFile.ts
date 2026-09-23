@@ -26,6 +26,9 @@ export function imageMimeFor(path: string): string | null {
 
 export const isImagePath = (path: string): boolean => imageMimeFor(path) != null;
 
+// Mirrors the cap in src-tauri/src/blob_scheme.rs.
+export const MAX_IMAGE_PREVIEW_BYTES = 16 * 1024 * 1024;
+
 /** "45 KB" · "1.2 MB" — 1024-based; one decimal only below 10 units. */
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
