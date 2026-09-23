@@ -12,7 +12,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri } from "@tauri-apps/api/core";
 import { api } from "../api";
 import { FilesPanel } from "../files/FilesPanel";
-import { flattenTreeFiles } from "../files/buildTree";
+import { reviewOrder } from "../files/buildTree";
 import { VirtualDiffPane } from "../diff/VirtualDiffPane";
 import { CommentIndex } from "../review/CommentIndex";
 import { prefetchPicker } from "../picker/pickerData";
@@ -474,7 +474,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // prefetch). An unstable array here churns the files tree's `visible` memo, which
   // re-fires its "keep active row in view" scroll effect and yanks the tree back to
   // the active row mid-scroll. (#jump-preload)
-  const orderedFiles = useMemo(() => flattenTreeFiles(viewSummary?.files ?? []), [viewSummary?.files]);
+  const orderedFiles = useMemo(() => reviewOrder(viewSummary?.files ?? []), [viewSummary?.files]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {

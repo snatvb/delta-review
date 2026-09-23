@@ -1,5 +1,6 @@
 // src/files/buildTree.ts
 import type { FileEntry } from "../types";
+import { isGiant } from "../diff/giant";
 
 export interface TreeNode {
   id: string; // = path; stable node identifier
@@ -51,4 +52,12 @@ export function flattenTreeFiles(files: FileEntry[]): FileEntry[] {
   };
   walk(buildTree(files));
   return out;
+}
+
+const unreviewable = (e: FileEntry) => e.binary || isGiant(e);
+
+/** Tree order, with binaries and giant diffs moved to the end so readable diffs come first. */
+export function reviewOrder(files: FileEntry[]): FileEntry[] {
+  const flat = flattenTreeFiles(files);
+  return [...flat.filter((e) => !unreviewable(e)), ...flat.filter(unreviewable)];
 }

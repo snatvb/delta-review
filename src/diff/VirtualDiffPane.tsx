@@ -45,6 +45,7 @@ import { useFileDiffCache } from "./useFileDiffCache";
 import { wrapsByDefault, paneColsFor, visualLinesForCols, buildRowOffsets } from "./wrap";
 import { splitRowChanged, splitSideChanged } from "./splitChanged";
 import { anchorScrollTopOnCollapse } from "./anchorScroll";
+import { isGiant } from "./giant";
 import { useCodeFont, rowHeightFor } from "../codeFont";
 
 const HEADER_H = 40; // sticky file header (border-box); content is vertically centered. (#card)
@@ -62,7 +63,6 @@ const SPLIT_COL_CHROME = 60; // one split column: gutter + pr-3
 const ADD_ACCENT = "var(--color-emerald-500)";
 const DEL_ACCENT = "var(--color-rose-500)";
 const OVERSCAN = 1500; // px of rows to render/build beyond the viewport each way
-const GIANT_CHANGED_LINES = 500;
 const EST_BLOCK_H = 96; // placeholder height for a comment thread before it measures
 const EST_PREVIEW_H = 240; // placeholder body height for a markdown preview before it measures (#preview)
 const PLACEHOLDER_BODY_H = 72; // fixed body height for binary / deleted placeholders (#11, shared layout #5, padding #8)
@@ -99,7 +99,6 @@ const rowCountOf = (m: Model, layout: DiffLayout) => (layout === "split" ? m.spl
 
 // Pure, change-size-only helpers — module scope so they're stable references and
 // not rebuilt every render (and safe to read inside memos without being deps).
-const isGiant = (e: FileEntry) => e.additions + e.deletions >= GIANT_CHANGED_LINES;
 const estBodyH = (e: FileEntry, rowH: number) => Math.max(1, Math.round((e.additions + e.deletions) * 1.1) + 6) * rowH;
 // A rename with no content change is shown as a placeholder (like deleted/binary), so
 // its reserved height is the fixed placeholder height, not an estimate. Keyed on
