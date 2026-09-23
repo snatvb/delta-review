@@ -2,10 +2,11 @@ use crate::git::model::Target;
 use crate::git::{open_repo, resolve_endpoints, Endpoints, GitError, RightSide};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
-use git2::{Diff, DiffDelta, DiffFindOptions, DiffOptions, Repository};
+use git2::{Diff, DiffDelta, DiffFindOptions, DiffOptions, Oid, Repository};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::path::PathBuf;
 
 /// Eager-extraction memory bounds for `compute_diff_full` (the cached path). A file
 /// whose recorded size exceeds the per-file cap is left out of the map (served by a
@@ -193,63 +194,59 @@ fn delta_for_path<'d>(diff: &'d Diff<'d>, path: &str) -> Option<DiffDelta<'d>> {
     })
 }
 
-/// Read one file's raw bytes from both sides of an already-built delta, given the
-/// resolved endpoints: old from the from-tree blob, new from the working tree
-/// (worktree modes) or the new blob (tree modes). Shared verbatim by
-/// `extract_file_diff` (text diffs) and `get_binary_file_diff` (binary sizes +
-/// base64) so the read rules can't drift. Byte-level CRLF normalization is the
-/// CALLER's job — binary consumers must get the bytes untouched (stripping CR
-/// pairs from an image corrupts it).
-fn delta_bytes(
-    repo: &Repository,
-    ep: &Endpoints,
-    delta: &DiffDelta,
-) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), GitError> {
-    let old_path = delta
-        .old_file()
-        .path()
-        .map(|p| p.to_string_lossy().to_string());
-    let new_path = delta
-        .new_file()
-        .path()
-        .map(|p| p.to_string_lossy().to_string());
-
-    // Old bytes: ep.from_tree is a tree OID (not commit OID); use find_tree directly.
-    let old_bytes: Option<Vec<u8>> = match (ep.from_tree, &old_path) {
-        (Some(tree_oid), Some(op)) => {
-            let tree = repo.find_tree(tree_oid).map_err(|e| e.to_string())?;
-            match tree.get_path(std::path::Path::new(op)) {
-                Ok(entry) => repo.find_blob(entry.id()).ok().map(|b| b.content().to_vec()),
-                Err(_) => None, // added file: not in old tree
-            }
-        }
-        _ => None,
-    };
-    // New bytes: from the working tree (worktree modes) or the new blob (tree modes).
-    let new_bytes: Option<Vec<u8>> = match (&ep.right, &new_path) {
-        (RightSide::WorkTree, Some(np)) => {
-            let wd = repo.workdir().ok_or("no working directory")?;
-            fs::read(wd.join(np)).ok()
-        }
-        (RightSide::Tree(_), Some(_np)) => {
-            let blob_id = delta.new_file().id();
-            if blob_id.is_zero() {
-                None
-            } else {
-                repo.find_blob(blob_id).ok().map(|b| b.content().to_vec())
-            }
-        }
-        _ => None,
-    };
-
-    Ok((old_bytes, new_bytes))
+/// Where one delta's two sides live: old from the from-tree blob, new from the
+/// working tree (worktree modes) or the new blob (tree modes). Resolved while the
+/// diff is built, so reading the bytes later needs no second whole-repo diff.
+#[derive(Debug, Clone)]
+pub struct FileSources {
+    old: Option<Oid>,
+    new: NewSide,
 }
 
-/// Extract one file's content + metadata from an already-built delta, given the
-/// resolved endpoints. Shared by `get_file_diff` (locate one file) and
-/// `compute_diff_full` (every file in a single pass) so callers never re-run the
-/// whole-repo diff once per file.
-fn extract_file_diff(repo: &Repository, ep: &Endpoints, delta: &DiffDelta) -> Result<FileDiff, GitError> {
+#[derive(Debug, Clone)]
+enum NewSide {
+    WorkTree(PathBuf),
+    Blob(Oid),
+    Absent,
+}
+
+fn delta_sources(repo: &Repository, ep: &Endpoints, delta: &DiffDelta) -> Result<FileSources, GitError> {
+    let old = match (ep.from_tree, delta.old_file().path()) {
+        (Some(tree_oid), Some(op)) => {
+            let tree = repo.find_tree(tree_oid).map_err(|e| e.to_string())?;
+            tree.get_path(op).ok().map(|entry| entry.id())
+        }
+        _ => None,
+    };
+    let new_blob = delta.new_file().id();
+    let new = match (&ep.right, delta.new_file().path()) {
+        (RightSide::WorkTree, Some(np)) => {
+            let wd = repo.workdir().ok_or("no working directory")?;
+            NewSide::WorkTree(wd.join(np))
+        }
+        (RightSide::Tree(_), Some(_)) if !new_blob.is_zero() => NewSide::Blob(new_blob),
+        _ => NewSide::Absent,
+    };
+    Ok(FileSources { old, new })
+}
+
+/// Raw bytes, untouched: CRLF normalization is the caller's job, since stripping CR
+/// pairs from an image corrupts it.
+fn read_sources(repo: &Repository, sources: &FileSources) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+    let blob = |oid: Oid| repo.find_blob(oid).ok().map(|b| b.content().to_vec());
+    let old = sources.old.and_then(blob);
+    let new = match &sources.new {
+        NewSide::WorkTree(path) => fs::read(path).ok(),
+        NewSide::Blob(oid) => blob(*oid),
+        NewSide::Absent => None,
+    };
+    (old, new)
+}
+
+/// Extract one file's content + metadata from an already-built delta. Shared by
+/// `get_file_diff` (locate one file) and `compute_diff_full` (every file in a single
+/// pass) so callers never re-run the whole-repo diff once per file.
+fn extract_file_diff(repo: &Repository, delta: &DiffDelta, sources: &FileSources) -> Result<FileDiff, GitError> {
     let status = map_status(delta.status());
 
     let old_path = delta
@@ -261,11 +258,11 @@ fn extract_file_diff(repo: &Repository, ep: &Endpoints, delta: &DiffDelta) -> Re
         .path()
         .map(|p| p.to_string_lossy().to_string());
 
-    let (old_bytes, new_bytes_raw) = delta_bytes(repo, ep, delta)?;
+    let (old_bytes, new_bytes_raw) = read_sources(repo, sources);
     // The working copy is CRLF-normalized for text comparison when git filters to
     // LF (`core.autocrlf=true|input`, the Windows default) — otherwise a raw CRLF
     // working file against an LF blob renders every line as changed. Raw bytes are
-    // left alone for the binary path (see `delta_bytes`).
+    // left alone for the binary path (see `read_sources`).
     let new_bytes = match new_bytes_raw {
         Some(b) if normalizes_crlf(repo) => Some(strip_cr(b)),
         other => other,
@@ -296,8 +293,9 @@ pub fn get_file_diff(target: &Target, path: &str) -> Result<FileDiff, GitError> 
     let diff = build_diff(&repo, &ep)?;
 
     let delta = delta_for_path(&diff, path).ok_or_else(|| format!("file not in diff: {path}"))?;
+    let sources = delta_sources(&repo, &ep, &delta)?;
 
-    extract_file_diff(&repo, &ep, &delta)
+    extract_file_diff(&repo, &delta, &sources)
 }
 
 /// One binary file's two sides for the UI's binary/image card: exact byte sizes
@@ -326,41 +324,67 @@ pub fn get_binary_file_diff(target: &Target, path: &str, include_data: bool) -> 
     let diff = build_diff(&repo, &ep)?;
 
     let delta = delta_for_path(&diff, path).ok_or_else(|| format!("file not in diff: {path}"))?;
-    let (old_bytes, new_bytes) = delta_bytes(&repo, &ep, &delta)?;
+    let sources = delta_sources(&repo, &ep, &delta)?;
 
-    // Raw bytes only — no CRLF normalization here, image data must survive intact.
+    Ok(binary_file_diff(&repo, &sources, include_data))
+}
+
+/// `get_binary_file_diff` for sources already resolved by `compute_diff_full` — just
+/// the blob/file reads, no whole-repo diff.
+pub fn binary_file_diff_from_sources(
+    repo_path: &str,
+    sources: &FileSources,
+    include_data: bool,
+) -> Result<BinaryFileDiff, GitError> {
+    let repo = open_repo(repo_path)?;
+    Ok(binary_file_diff(&repo, sources, include_data))
+}
+
+fn binary_file_diff(repo: &Repository, sources: &FileSources, include_data: bool) -> BinaryFileDiff {
+    let (old_bytes, new_bytes) = read_sources(repo, sources);
     let embed = |b: &Option<Vec<u8>>| match b {
         Some(bytes) if include_data && bytes.len() <= MAX_IMAGE_PREVIEW_BYTES => {
             Some(BASE64.encode(bytes))
         }
         _ => None,
     };
-    Ok(BinaryFileDiff {
+    BinaryFileDiff {
         old_size: old_bytes.as_ref().map(|b| b.len() as u64),
         new_size: new_bytes.as_ref().map(|b| b.len() as u64),
         old_data: embed(&old_bytes),
         new_data: embed(&new_bytes),
-    })
+    }
 }
 
-/// Build the whole diff ONCE and return both the file-list summary and every file's
-/// extracted content in a single pass. This is the cached path (see `git::cache`):
-/// it replaces N separate `get_file_diff` calls — each of which re-ran the full
-/// repo diff + rename detection — with one computation the cache serves per file.
+pub struct FullDiff {
+    pub summary: DiffSummary,
+    pub files: HashMap<String, FileDiff>,
+    pub sources: HashMap<String, FileSources>,
+}
+
+/// Build the whole diff ONCE and return the file-list summary, every file's
+/// extracted content, and every file's byte sources in a single pass. This is the
+/// cached path (see `git::cache`): it replaces N separate `get_file_diff` /
+/// `get_binary_file_diff` calls — each of which re-ran the full repo diff + rename
+/// detection — with one computation the cache serves per file.
 /// Content is bounded (see the MAX_CACHED_* consts); over-cap files are omitted and
 /// fall back to a one-off `get_file_diff`. (#perf)
-pub fn compute_diff_full(target: &Target) -> Result<(DiffSummary, HashMap<String, FileDiff>), GitError> {
+pub fn compute_diff_full(target: &Target) -> Result<FullDiff, GitError> {
     let repo = open_repo(&target.repo_path)?;
     let ep = resolve_endpoints(&repo, target)?;
     let diff = build_diff(&repo, &ep)?;
 
     let mut files = Vec::new();
     let mut contents: HashMap<String, FileDiff> = HashMap::new();
+    let mut all_sources: HashMap<String, FileSources> = HashMap::new();
     let mut held_bytes: usize = 0;
     for (idx, delta) in diff.deltas().enumerate() {
         let entry = summary_entry(&diff, idx, &delta);
         let path = entry.path.clone();
         files.push(entry);
+        let Ok(sources) = delta_sources(&repo, &ep, &delta) else {
+            continue;
+        };
 
         // Eagerly cache content so the per-file fetch is a map hit — but keep held
         // memory bounded: skip individually huge files, and stop once the snapshot
@@ -370,21 +394,23 @@ pub fn compute_diff_full(target: &Target) -> Result<(DiffSummary, HashMap<String
         // up before we RETAIN the content. (#perf)
         let size = delta.new_file().size().max(delta.old_file().size());
         if size <= MAX_CACHED_FILE_BYTES && held_bytes < MAX_CACHED_SNAPSHOT_BYTES {
-            if let Ok(fd) = extract_file_diff(&repo, &ep, &delta) {
+            if let Ok(fd) = extract_file_diff(&repo, &delta, &sources) {
                 let n = fd.old_content.as_deref().map_or(0, str::len)
                     + fd.new_content.as_deref().map_or(0, str::len);
                 if n as u64 <= MAX_CACHED_FILE_BYTES {
                     held_bytes += n;
-                    contents.insert(path, fd);
+                    contents.insert(path.clone(), fd);
                 }
             }
         }
+        all_sources.insert(path, sources);
     }
 
-    Ok((
-        DiffSummary { files, base_label: ep.base_label, head_label: ep.head_label },
-        contents,
-    ))
+    Ok(FullDiff {
+        summary: DiffSummary { files, base_label: ep.base_label, head_label: ep.head_label },
+        files: contents,
+        sources: all_sources,
+    })
 }
 
 #[cfg(test)]
@@ -439,7 +465,7 @@ mod tests {
         write(dir.path(), "new.ts", "export const x = 1;\n");
         let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
 
-        let (summary, files) = compute_diff_full(&t).unwrap();
+        let FullDiff { summary, files, .. } = compute_diff_full(&t).unwrap();
 
         // Summary matches compute_diff: both changed files present with line stats.
         assert_eq!(summary.files.len(), 2);

@@ -226,11 +226,16 @@ pub async fn get_file_diff(target: Target, path: String, cache: tauri::State<'_,
 
 /// Binary card data (#binary): exact byte sizes per side, plus base64 previews for
 /// image extensions when `include_data` (oversized sides are capped server-side).
-/// Not served from the snapshot — the snapshot drops binary content, and this is a
-/// rare, card-visible fetch, so a one-off diff is fine.
+/// Bytes are read on demand from the sources the snapshot resolved — no per-card diff.
 #[tauri::command]
-pub async fn get_binary_file_diff(target: Target, path: String, include_data: bool) -> Result<BinaryFileDiff, String> {
-    tauri::async_runtime::spawn_blocking(move || crate::git::diff::get_binary_file_diff(&target, &path, include_data))
+pub async fn get_binary_file_diff(
+    target: Target,
+    path: String,
+    include_data: bool,
+    cache: tauri::State<'_, DiffCache>,
+) -> Result<BinaryFileDiff, String> {
+    let cache = cache.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || cache.binary(&target, &path, include_data))
         .await
         .map_err(|e| format!("get_binary_file_diff task: {e}"))?
 }

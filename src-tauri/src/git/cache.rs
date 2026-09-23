@@ -11,10 +11,12 @@
 //! mode's content-changing event (edit, commit, checkout, fetch) trips the watcher,
 //! so a cached snapshot is only ever served for state the watcher would not have
 //! invalidated. (#perf)
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::git::diff::{compute_diff_full, get_file_diff, DiffSummary, FileDiff};
+use crate::git::diff::{
+    binary_file_diff_from_sources, compute_diff_full, get_binary_file_diff, get_file_diff, BinaryFileDiff, DiffSummary,
+    FileDiff, FullDiff,
+};
 use crate::git::model::{DiffMode, Target};
 use crate::git::GitError;
 
@@ -46,8 +48,7 @@ fn key_of(target: &Target) -> SnapshotKey {
 
 struct Snapshot {
     key: SnapshotKey,
-    summary: DiffSummary,
-    files: HashMap<String, FileDiff>,
+    diff: FullDiff,
 }
 
 /// Bounded LRU of recent diff snapshots. Cloning the handle is cheap (shared `Arc`)
@@ -85,8 +86,7 @@ impl DiffCache {
             cache.push(hit.clone()); // most-recently-used at the back
             return Ok(hit);
         }
-        let (summary, files) = compute_diff_full(target)?;
-        let snap = Arc::new(Snapshot { key, summary, files });
+        let snap = Arc::new(Snapshot { key, diff: compute_diff_full(target)? });
         cache.push(snap.clone());
         if cache.len() > MAX_SNAPSHOTS {
             cache.remove(0); // evict least-recently-used (front)
@@ -96,17 +96,28 @@ impl DiffCache {
 
     /// The file-list summary for `target` (builds + caches the snapshot on a miss).
     pub fn summary(&self, target: &Target) -> Result<DiffSummary, GitError> {
-        Ok(self.snapshot(target)?.summary.clone())
+        Ok(self.snapshot(target)?.diff.summary.clone())
     }
 
     /// One file's diff for `target` — a map read once the snapshot is built. Files
     /// too large to cache aren't in the map and fall back to a one-off `get_file_diff`.
     pub fn file(&self, target: &Target, path: &str) -> Result<FileDiff, GitError> {
         let snap = self.snapshot(target)?;
-        if let Some(fd) = snap.files.get(path) {
+        if let Some(fd) = snap.diff.files.get(path) {
             return Ok(fd.clone());
         }
         get_file_diff(target, path)
+    }
+
+    /// One binary file's sizes (+ image data), read straight from the snapshot's
+    /// resolved sources. A whole-repo diff per image card exhausted memory on huge
+    /// repos when a screenful of images fetched at once.
+    pub fn binary(&self, target: &Target, path: &str, include_data: bool) -> Result<BinaryFileDiff, GitError> {
+        let snap = self.snapshot(target)?;
+        match snap.diff.sources.get(path) {
+            Some(sources) => binary_file_diff_from_sources(&target.repo_path, sources, include_data),
+            None => get_binary_file_diff(target, path, include_data),
+        }
     }
 
     /// Drop cached snapshots for `worktree` (the path the fs watcher watches, or the
@@ -178,6 +189,18 @@ mod tests {
 
         let fd = cache.file(&t, "big.txt").unwrap();
         assert_eq!(fd.new_content.as_deref(), Some(big.as_str()));
+    }
+
+    #[test]
+    fn serves_binary_from_snapshot_sources_with_live_worktree_bytes() {
+        let (dir, _repo) = repo_with_commit();
+        std::fs::write(dir.path().join("logo.png"), [0x89u8, b'P', 0x00, 0x01]).unwrap();
+        let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
+        let cache = DiffCache::default();
+
+        assert_eq!(cache.binary(&t, "logo.png", false).unwrap().new_size, Some(4));
+        std::fs::write(dir.path().join("logo.png"), [0x89u8, b'P', 0x00, 0x01, 0x02, 0x03]).unwrap();
+        assert_eq!(cache.binary(&t, "logo.png", false).unwrap().new_size, Some(6));
     }
 
     #[test]
