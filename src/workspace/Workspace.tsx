@@ -24,6 +24,7 @@ import { useResizableWidth, usePaneResize, PaneResizer, FILE_PANE } from "../lib
 import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Columns2, Copy, ExternalLink, GitBranch, Loader2, MessageSquare, RefreshCw, Rows2, Search, Settings } from "lucide-react";
 import { getEditorPref } from "../editor";
 import { worktreeName } from "../lib/utils";
+import { isMac } from "../lib/platform";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuCheck,
@@ -508,9 +509,12 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
 
   return (
     <div data-testid="app-root" className="flex h-screen flex-col overflow-hidden bg-background text-[13px] text-foreground">
-      {/* Overlay titlebar: the macOS traffic lights float over the top-left, so
+      {/* Overlay titlebar (macOS only): the traffic lights float over the top-left, so
           inset the controls past them and make the bar a drag region. */}
-      <header data-tauri-drag-region className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border bg-card pl-24 pr-3">
+      <header
+        data-tauri-drag-region
+        className={`flex h-12 shrink-0 items-center gap-2.5 border-b border-border bg-card pr-3 ${isMac ? "pl-24" : "pl-3"}`}
+      >
         <button
           type="button"
           onClick={onOpenPalette}
