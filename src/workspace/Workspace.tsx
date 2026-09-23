@@ -1,5 +1,5 @@
 // src/workspace/Workspace.tsx
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from "react";
 import { track } from "@/analytics";
 import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -30,6 +30,8 @@ import {
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuCheck,
 } from "@/components/ui/dropdown-menu";
 import type { Anchor, Comment, CommitMeta, DiffMode, DiffSummary, Review, ReviewSession, Target } from "../types";
+
+const COMMIT_PAGE = 100;
 
 const MODES: { id: DiffMode; label: string }[] = [
   { id: "all-changes", label: "All changes" },
@@ -89,6 +91,10 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // `diffMode`. `commits` powers the submenu + stepper; `commitSummary` is the pinned diff.
   const [commitOid, setCommitOid] = useState<string | null>(target.commit ?? null);
   const [commits, setCommits] = useState<CommitMeta[]>([]);
+  const [commitsHasMore, setCommitsHasMore] = useState(false);
+  const loadedCommitCount = useRef(0);
+  const commitsGeneration = useRef(0);
+  const commitsLoadingMore = useRef(false);
   const [commitSummary, setCommitSummary] = useState<DiffSummary | null>(null);
   const [loadedCommitOid, setLoadedCommitOid] = useState<string | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
@@ -195,11 +201,23 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // The branch's commits power the "Commit ▸" submenu + the stepper. Reloaded on
   // open/refresh (snapshot move) so new commits appear. Best-effort: failure empties it.
   useEffect(() => {
+    loadedCommitCount.current = commits.length;
+  }, [commits]);
+  useEffect(() => {
     if (!review) return;
     let cancelled = false;
-    void api.listCommits(review.target).then(
-      (cs) => { if (!cancelled) setCommits(cs); },
-      () => { if (!cancelled) setCommits([]); },
+    const generation = ++commitsGeneration.current;
+    void api.listCommits(review.target, 0, Math.max(COMMIT_PAGE, loadedCommitCount.current)).then(
+      (page) => {
+        if (cancelled || generation !== commitsGeneration.current) return;
+        setCommits(page.commits);
+        setCommitsHasMore(page.hasMore);
+      },
+      () => {
+        if (cancelled) return;
+        setCommits([]);
+        setCommitsHasMore(false);
+      },
     );
     return () => { cancelled = true; };
     // capturedAt changes on every reconcile, so the submenu refreshes after a commit.
@@ -403,20 +421,38 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
 
   // Commit-mode navigation. "Last commit" is the same diff as the newest commit, so
   // it steps too (from HEAD / index 0); stepping back to the top returns to last-commit.
-  const stepCommit = useCallback((delta: 1 | -1) => {
+  const loadMoreCommits = useCallback(async (): Promise<CommitMeta[] | null> => {
+    if (!review || !commitsHasMore || commitsLoadingMore.current) return null;
+    commitsLoadingMore.current = true;
+    const generation = commitsGeneration.current;
+    const page = await api.listCommits(review.target, commits.length, COMMIT_PAGE).catch(() => null);
+    commitsLoadingMore.current = false;
+    if (!page || generation !== commitsGeneration.current) return null;
+    const next = [...commits, ...page.commits];
+    setCommits(next);
+    setCommitsHasMore(page.hasMore);
+    return next;
+  }, [review, commits, commitsHasMore]);
+  const onCommitListScroll = useCallback((e: UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 64) void loadMoreCommits();
+  }, [loadMoreCommits]);
+
+  const stepCommit = useCallback(async (delta: 1 | -1) => {
     const cur = commitOid != null
       ? commits.findIndex((c) => c.oid === commitOid)
       : (diffMode === "last-commit" ? 0 : -1);
     const next = cur + delta;
-    if (next < 0 || next >= commits.length) return;
+    const list = next >= commits.length ? await loadMoreCommits() : commits;
+    if (!list || next < 0 || next >= list.length) return;
     if (next === 0 && diffMode === "last-commit") {
       setCommitOid(null);
       syncCommitParam(null);
     } else {
-      setCommitOid(commits[next].oid);
-      syncCommitParam(commits[next].oid);
+      setCommitOid(list[next].oid);
+      syncCommitParam(list[next].oid);
     }
-  }, [commits, commitOid, diffMode]);
+  }, [commits, commitOid, diffMode, loadMoreCommits]);
   const pickCommit = useCallback((oid: string) => {
     setCommitOid(oid);
     syncCommitParam(oid);
@@ -499,7 +535,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
         const el = e.target as HTMLElement | null;
         if (el && (el.isContentEditable || el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
         e.preventDefault();
-        stepCommit(e.code === "BracketRight" || e.key === "]" ? 1 : -1);
+        void stepCommit(e.code === "BracketRight" || e.key === "]" ? 1 : -1);
       }
     }
     window.addEventListener("keydown", onKey);
@@ -581,13 +617,16 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                     <DropdownMenuCheck checked={inCommitMode} />
                     Commit
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="max-h-72 max-w-[22rem] overflow-y-auto">
+                  <DropdownMenuSubContent className="max-h-72 max-w-[22rem] overflow-y-auto" onScroll={onCommitListScroll}>
                     {commits.map((c) => (
                       <DropdownMenuItem key={c.oid} onSelect={() => pickCommit(c.oid)} className="gap-2.5">
                         <span className="font-mono text-muted-foreground">{c.shortOid}</span>
                         <span className="min-w-0 truncate">{c.subject}</span>
                       </DropdownMenuItem>
                     ))}
+                    {commitsHasMore && (
+                      <DropdownMenuItem disabled className="justify-center text-muted-foreground">Loading more…</DropdownMenuItem>
+                    )}
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
               </DropdownMenuContent>
@@ -597,21 +636,21 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                 <div className="inline-flex h-7 items-center rounded-md border border-input bg-muted/40">
                   <button
                     type="button" aria-label="Previous commit" title="Previous commit ([)" disabled={stepIndex <= 0}
-                    onClick={() => stepCommit(-1)}
+                    onClick={() => void stepCommit(-1)}
                     className="flex h-full w-7 items-center justify-center rounded-l-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
                   >
                     <ChevronLeft className="size-3.5" />
                   </button>
                   <span className="h-3.5 w-px bg-border" />
                   <button
-                    type="button" aria-label="Next commit" title="Next commit (])" disabled={stepIndex < 0 || stepIndex >= commits.length - 1}
-                    onClick={() => stepCommit(1)}
+                    type="button" aria-label="Next commit" title="Next commit (])" disabled={stepIndex < 0 || (stepIndex >= commits.length - 1 && !commitsHasMore)}
+                    onClick={() => void stepCommit(1)}
                     className="flex h-full w-7 items-center justify-center rounded-r-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
                   >
                     <ChevronRight className="size-3.5" />
                   </button>
                 </div>
-                <span className="ml-2 font-mono tabular-nums text-[11px] text-muted-foreground">{stepIndex + 1}/{commits.length}</span>
+                <span className="ml-2 font-mono tabular-nums text-[11px] text-muted-foreground">{stepIndex + 1}/{commits.length}{commitsHasMore ? "+" : ""}</span>
               </div>
             )}
             {busy && (

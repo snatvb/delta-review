@@ -17,6 +17,11 @@ export interface CommitMeta {
   time: number;
 }
 
+export interface CommitPage {
+  commits: CommitMeta[];
+  hasMore: boolean;
+}
+
 export type FileStatus = "added" | "modified" | "deleted" | "renamed";
 
 export interface FileEntry {

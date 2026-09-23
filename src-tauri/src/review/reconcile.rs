@@ -1,7 +1,7 @@
 use crate::anchor::{diff_hash, reanchor};
 use crate::git::cache::DiffCache;
 use crate::git::diff::{compute_diff, get_file_diff, DiffSummary};
-use crate::git::log::list_commits;
+use crate::git::log::branch_commit_oids;
 use crate::git::model::Target;
 use crate::git::{open_repo, resolve_endpoints, resolve_worktree, GitError, RightSide};
 use crate::review::model::{review_id, Review, Side, Snapshot};
@@ -40,11 +40,11 @@ pub fn reconcile(mut review: Review) -> Result<ReviewSession, GitError> {
     // The commits currently on the branch — a commit-tagged comment is stale iff its
     // commit is no longer here (history was rewritten). Best-effort: an empty set just
     // means tagged comments fall through to stale.
-    let present_commits: std::collections::HashSet<String> = list_commits(&target)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|c| c.oid)
-        .collect();
+    let present_commits = if review.comments.iter().any(|c| c.commit.is_some()) {
+        branch_commit_oids(&target).unwrap_or_default()
+    } else {
+        std::collections::HashSet::new()
+    };
     for comment in &mut review.comments {
         // Commit-tagged comments are frozen: the commit is immutable, so the anchor
         // never needs re-checking — it's stale only if the commit was rewritten away.

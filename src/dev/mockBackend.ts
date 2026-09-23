@@ -407,8 +407,11 @@ export function installMockBackend(): void {
           newSize: modified ? 2210 : 3120,
         } as T;
       }
-      case "list_commits":
-        return COMMITS as T;
+      case "list_commits": {
+        const skip = (args?.skip as number) ?? 0;
+        const limit = (args?.limit as number) ?? COMMITS.length;
+        return { commits: COMMITS.slice(skip, skip + limit), hasMore: skip + limit < COMMITS.length } as T;
+      }
       case "open_review":
       case "refresh_review": {
         const session: ReviewSession = { review: ds.review, summary: ds.summary, repoName: "demo" };

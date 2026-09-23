@@ -62,7 +62,7 @@ describe("Workspace", () => {
     openReview.mockReset();
     openTarget.mockReset();
     refreshReview.mockReset();
-    listCommits.mockReset().mockResolvedValue([]);
+    listCommits.mockReset().mockResolvedValue({ commits: [], hasMore: false });
     computeDiff.mockReset().mockResolvedValue({ files: [], baseLabel: "p", headLabel: "c" });
     fsChanged = null;
     setMode = null;
@@ -79,7 +79,7 @@ describe("Workspace", () => {
     // A ?mode=commit cold-start review still opens canonically (branch-vs-base);
     // commit mode is a display overlay, never the persisted review mode.
     openReview.mockResolvedValue(fileSession);
-    listCommits.mockResolvedValue(COMMITS);
+    listCommits.mockResolvedValue({ commits: COMMITS, hasMore: false });
     render(<Workspace target={commitTarget} />);
     await waitFor(() => expect(openReview).toHaveBeenCalledWith({ repoPath: "/r", mode: "branch-vs-base", base: undefined }));
     expect(openTarget).not.toHaveBeenCalled();
@@ -98,7 +98,7 @@ describe("Workspace", () => {
 
   it("renders the commit stepper in commit mode and steps to the next commit", async () => {
     openReview.mockResolvedValue(fileSession);
-    listCommits.mockResolvedValue(COMMITS);
+    listCommits.mockResolvedValue({ commits: COMMITS, hasMore: false });
     computeDiff.mockResolvedValue(fileSession.summary); // pinned commit has files → panes render
     render(<Workspace target={commitTarget} />);
 
@@ -114,9 +114,23 @@ describe("Workspace", () => {
     expect(computeDiff).toHaveBeenCalledWith(expect.objectContaining({ mode: "commit", commit: "o2" }));
   });
 
+  it("loads the next page when stepping past the last loaded commit", async () => {
+    openReview.mockResolvedValue(fileSession);
+    listCommits.mockImplementation((_t: unknown, skip: number) =>
+      Promise.resolve(skip === 0 ? { commits: COMMITS, hasMore: true } : { commits: [{ ...COMMITS[0], oid: "o3", shortOid: "o3ddddd" }], hasMore: false }),
+    );
+    computeDiff.mockResolvedValue(fileSession.summary);
+    render(<Workspace target={{ ...commitTarget, commit: "o2" }} />);
+
+    await waitFor(() => expect(screen.getByTestId("commit-stepper")).toHaveTextContent("3/3+"));
+    fireEvent.click(screen.getByRole("button", { name: /next commit/i }));
+    await waitFor(() => expect(screen.getByTestId("commit-stepper")).toHaveTextContent("4/4"));
+    expect(listCommits).toHaveBeenLastCalledWith(expect.anything(), 3, 100);
+  });
+
   it("shows the stepper in 'Last commit' mode too, anchored at the newest commit", async () => {
     openReview.mockResolvedValue(fileSession);
-    listCommits.mockResolvedValue(COMMITS);
+    listCommits.mockResolvedValue({ commits: COMMITS, hasMore: false });
     render(<Workspace target={{ repoPath: "/r", mode: "last-commit" }} />);
     // Stepper appears at HEAD (index 0 → "1/3") even though no commit is pinned.
     await waitFor(() => expect(screen.getByTestId("commit-stepper")).toHaveTextContent("1/3"));

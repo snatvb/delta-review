@@ -14,7 +14,7 @@ import type {
   InstallOutcome,
   CliStatus,
   DiffMode,
-  CommitMeta,
+  CommitPage,
   FileTextResult,
 } from "./types";
 
@@ -54,8 +54,8 @@ export const api = {
   // changes on every sizes refetch so a refreshed file never hits a cached image.
   binaryBlobUrl: (target: Target, path: string, side: BlobSide, mime: string, rev: number): string =>
     blobUrlImpl(target, path, side, mime, rev),
-  listCommits: (target: Target): Promise<CommitMeta[]> =>
-    invokeImpl("list_commits", { target }),
+  listCommits: (target: Target, skip: number, limit: number): Promise<CommitPage> =>
+    invokeImpl("list_commits", { target, skip, limit }),
   openReview: (target: Target): Promise<ReviewSession> =>
     invokeImpl("open_review", { target }),
   refreshReview: (review: Review): Promise<ReviewSession> =>

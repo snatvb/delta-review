@@ -1,7 +1,7 @@
 use crate::export::export_markdown;
 use crate::git::cache::DiffCache;
 use crate::git::diff::{BinaryFileDiff, DiffSummary, FileDiff};
-use crate::git::log::{list_commits as engine_list_commits, CommitMeta};
+use crate::git::log::{list_commits as engine_list_commits, CommitPage};
 use crate::git::model::{DiffMode, Target};
 use crate::git::{open_repo, resolve_worktree};
 use crate::launch::{
@@ -66,8 +66,8 @@ pub(crate) fn telemetry_allowed_from_env(
     !disabled
 }
 
-pub fn list_commits_impl(target: Target) -> Result<Vec<CommitMeta>, String> {
-    engine_list_commits(&target)
+pub fn list_commits_impl(target: Target, skip: usize, limit: usize) -> Result<CommitPage, String> {
+    engine_list_commits(&target, skip, limit)
 }
 
 fn reviews_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -239,8 +239,8 @@ pub async fn get_binary_file_diff(
 }
 
 #[tauri::command]
-pub async fn list_commits(target: Target) -> Result<Vec<CommitMeta>, String> {
-    tauri::async_runtime::spawn_blocking(move || list_commits_impl(target))
+pub async fn list_commits(target: Target, skip: usize, limit: usize) -> Result<CommitPage, String> {
+    tauri::async_runtime::spawn_blocking(move || list_commits_impl(target, skip, limit))
         .await
         .map_err(|e| format!("list_commits task: {e}"))?
 }
