@@ -48,6 +48,17 @@ describe("mergeRefreshedReview", () => {
     expect(merged.comments[0].stale).toBe(true);
   });
 
+  it("adopts a commit handoff from the refresh (a new commit took the file)", () => {
+    // Backend reconcile hands an untagged comment to the commit that committed
+    // its file; the merge must carry that ownership onto the live copy, else the
+    // comment stays in the working view (and the agent export) forever.
+    const prev = review([note("c1", "still editing this body")]);
+    const incoming = review([{ ...note("c1", "old body"), stale: false, commit: "abc123" }]);
+    const merged = mergeRefreshedReview(prev, incoming);
+    expect(merged.comments[0].commit).toBe("abc123");
+    expect(merged.comments[0].body).toBe("still editing this body"); // live text wins
+  });
+
   it("adopts the refreshed snapshot and other diff-derived state", () => {
     const prev = review([note("c1", "x")], {
       snapshot: { baseOid: "old", headOid: null, capturedAt: "t0" },

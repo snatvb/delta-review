@@ -157,7 +157,7 @@ mod tests {
 
     fn sample() -> Review {
         let target = Target { repo_path: "/r".into(), worktree: Some("main".into()), mode: DiffMode::AllChanges, base: None, commit: None };
-        Review::new("0123456789abcdef".into(), target, Snapshot { base_oid: "b".into(), head_oid: None, captured_at: "t".into() }, "t".into())
+        Review::new("0123456789abcdef".into(), target, Snapshot { base_oid: "b".into(), head_oid: None, head_commit: None, captured_at: "t".into() }, "t".into())
     }
 
     #[test]

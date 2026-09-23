@@ -1,11 +1,12 @@
 use crate::anchor::{diff_hash, reanchor};
 use crate::git::cache::DiffCache;
 use crate::git::diff::{compute_diff, get_file_diff, DiffSummary};
-use crate::git::log::branch_commit_oids;
 use crate::git::model::Target;
 use crate::git::{open_repo, resolve_endpoints, resolve_worktree, GitError, RightSide};
 use crate::review::model::{review_id, Review, Side, Snapshot};
+use git2::{Oid, Repository, Sort};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,24 +33,21 @@ pub fn reconcile(mut review: Review) -> Result<ReviewSession, GitError> {
     review.id = review_id(&review.target.repo_path, &worktree);
 
     let summary = compute_diff(&review.target)?;
-    let present: std::collections::HashSet<String> =
+    let present: HashSet<String> =
         summary.files.iter().map(|f| f.path.clone()).collect();
+
+    // Hand untagged comments to the commits that landed since the last snapshot
+    // (before the stale loop, so freshly-tagged comments take the frozen path).
+    let head_commit_oid = hand_off_to_new_commits(&repo, &mut review);
 
     // Re-anchor comments.
     let target = review.target.clone();
-    // The commits currently on the branch — a commit-tagged comment is stale iff its
-    // commit is no longer here (history was rewritten). Best-effort: an empty set just
-    // means tagged comments fall through to stale.
-    let present_commits = if review.comments.iter().any(|c| c.commit.is_some()) {
-        branch_commit_oids(&target).unwrap_or_default()
-    } else {
-        std::collections::HashSet::new()
-    };
     for comment in &mut review.comments {
         // Commit-tagged comments are frozen: the commit is immutable, so the anchor
-        // never needs re-checking — it's stale only if the commit was rewritten away.
+        // never needs re-checking — it's stale only if the commit is no longer
+        // reachable from HEAD (history was rewritten away).
         if let Some(oid) = comment.commit.clone() {
-            comment.stale = !present_commits.contains(&oid);
+            comment.stale = !commit_reachable_from_head(&repo, head_commit_oid, &oid);
             continue;
         }
         let Some(anchor) = comment.anchor.as_mut() else {
@@ -117,11 +115,89 @@ pub fn reconcile(mut review: Review) -> Result<ReviewSession, GitError> {
             RightSide::Tree(o) => Some(o.to_string()),
             RightSide::WorkTree => None,
         },
+        head_commit: head_commit_oid.map(|o| o.to_string()),
         captured_at: now(),
     };
     review.last_opened_at = now();
 
     Ok(ReviewSession { review, summary, repo_name: String::new() })
+}
+
+/// Hand untagged comments over to the commits that landed since the last
+/// snapshot. A comment written against the working tree belongs to the code it
+/// was written about: once that code is committed, the comment follows it into
+/// history — tagged with the newest commit that touched its file — instead of
+/// rotting as an untagged stale note on a diff that no longer contains it.
+/// Tagged comments stay reachable forever (view that commit in the picker);
+/// they also drop out of the working view and the agent export.
+///
+/// Only a linear fast-forward counts (the stored HEAD must remain an ancestor
+/// of the new HEAD). A rebase/force-push or a branch switch is not "the work
+/// got committed" — there the comments stay put and staleness decides. Returns
+/// the current HEAD commit oid for the snapshot refresh.
+fn hand_off_to_new_commits(repo: &Repository, review: &mut Review) -> Option<Oid> {
+    let head = repo.head().ok()?.peel_to_commit().ok()?;
+    let head_oid = head.id();
+    let Some(prev) = review.snapshot.head_commit.clone() else {
+        return Some(head_oid); // fresh review or pre-field data — stamp, never tag
+    };
+    let Ok(prev_oid) = Oid::from_str(&prev) else {
+        return Some(head_oid);
+    };
+    if prev_oid == head_oid {
+        return Some(head_oid); // nothing landed
+    }
+    if !repo.graph_descendant_of(head_oid, prev_oid).unwrap_or(false) {
+        return Some(head_oid); // rewritten/switched — not a plain addition
+    }
+
+    // Walk (prev, HEAD] newest-first: the first commit seen touching a file is
+    // that file's newest owner. Both delta sides are recorded so a rename's old
+    // path still hands off comments anchored to it.
+    let mut owner: HashMap<String, String> = HashMap::new();
+    if let Ok(mut walk) = repo.revwalk() {
+        let _ = walk.set_sorting(Sort::TIME);
+        if walk.push(head_oid).is_ok() && walk.hide(prev_oid).is_ok() {
+            for oid in walk.flatten() {
+                let Ok(commit) = repo.find_commit(oid) else { continue };
+                let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+                let Ok(tree) = commit.tree() else { continue };
+                if let Ok(diff) = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None) {
+                    for delta in diff.deltas() {
+                        for path in [delta.old_file().path(), delta.new_file().path()].into_iter().flatten() {
+                            owner
+                                .entry(path.to_string_lossy().into_owned())
+                                .or_insert_with(|| commit.id().to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for comment in &mut review.comments {
+        if comment.commit.is_some() {
+            continue; // already owned by a commit — never retagged
+        }
+        if let Some(oid) = comment.anchor.as_ref().and_then(|a| owner.get(&a.file)) {
+            comment.commit = Some(oid.clone());
+        }
+    }
+    Some(head_oid)
+}
+
+/// A commit-tagged comment's commit must still be reachable from HEAD (an
+/// ancestor of it, or HEAD itself). Reachability — not branch membership — so
+/// comments tagged with commits on the base branch itself (a repo reviewed on
+/// `main`) don't read as stale.
+fn commit_reachable_from_head(repo: &Repository, head_oid: Option<Oid>, oid: &str) -> bool {
+    let Some(head) = head_oid else { return false };
+    let Ok(target) = Oid::from_str(oid) else { return false };
+    if target == head {
+        return true; // libgit2 does not count a commit as its own descendant
+    }
+    let Ok(commit) = repo.find_commit(target) else { return false };
+    repo.graph_descendant_of(head, commit.id()).unwrap_or(false)
 }
 
 /// Fill a content baseline into any viewed entry that lacks one, hashing the
@@ -208,7 +284,7 @@ mod tests {
         Review::new(
             "id".into(),
             target,
-            Snapshot { base_oid: "".into(), head_oid: None, captured_at: "".into() },
+            Snapshot { base_oid: "".into(), head_oid: None, head_commit: None, captured_at: "".into() },
             "t".into(),
         )
     }
@@ -266,6 +342,84 @@ mod tests {
         r.comments.push(c);
         let session = reconcile(r).unwrap();
         assert!(session.review.comments[0].stale, "an unknown commit oid => stale");
+    }
+
+    #[test]
+    fn tagged_comment_stays_fresh_on_the_base_branch_itself() {
+        // A repo reviewed directly on `main`: the branch walk (merge-base..HEAD)
+        // is empty there, so branch-membership staleness would flag every tagged
+        // comment. Reachability from HEAD is the criterion — this stays fresh.
+        let (dir, repo) = repo_with_commit();
+        let head = repo.head().unwrap().peel_to_commit().unwrap().id();
+        let mut r = empty_review(dir.path().to_str().unwrap());
+        let mut c = line_comment("file.txt", 1, "line1");
+        c.commit = Some(head.to_string());
+        r.comments.push(c);
+        let session = reconcile(r).unwrap();
+        assert!(!session.review.comments[0].stale, "a commit reachable from HEAD is not stale, even on the base branch");
+    }
+
+    #[test]
+    fn committing_the_work_hands_untagged_comments_to_the_commit_that_took_their_file() {
+        // The review-before-commit workflow: the user comments uncommitted agent
+        // work; the agent then commits it. The comment on the committed file
+        // follows it into history; the one on a still-uncommitted file stays live.
+        let (dir, _repo) = repo_with_commit(); // main @ initial, file.txt = line1\nline2
+        write(dir.path(), "file.txt", "line1\nADDED\nline2\n"); // the work under review
+        write(dir.path(), "other.txt", "draft\n"); // stays uncommitted
+
+        // First reconcile while the work is uncommitted — stamps snapshot.head_commit.
+        let mut r = empty_review(dir.path().to_str().unwrap());
+        let mut other = line_comment("other.txt", 1, "draft");
+        other.id = "c2".into();
+        r.comments.push(line_comment("file.txt", 2, "ADDED"));
+        r.comments.push(other);
+        let first = reconcile(r).unwrap();
+        assert!(first.review.comments.iter().all(|c| c.commit.is_none()));
+
+        // The agent commits file.txt (only).
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("file.txt")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("T", "t@t").unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "agent work", &tree, &[&parent])
+            .unwrap();
+
+        let second = reconcile(first.review).unwrap();
+        let by_file = |f: &str| {
+            second.review.comments.iter().find(|c| c.anchor.as_ref().unwrap().file == f).unwrap()
+        };
+        assert_eq!(by_file("file.txt").commit, Some(oid.to_string()), "the committed file's comment is handed to that commit");
+        assert!(by_file("other.txt").commit.is_none(), "a still-uncommitted file's comment stays live");
+        assert!(!by_file("file.txt").stale, "the handed-off comment is fresh — its commit is reachable");
+        // And the snapshot advanced, so the same handoff can't fire twice.
+        assert_eq!(second.review.snapshot.head_commit.as_deref(), Some(oid.to_string().as_str()));
+    }
+
+    #[test]
+    fn a_history_rewrite_does_not_hand_off_comments() {
+        let (dir, _repo) = repo_with_commit();
+        write(dir.path(), "file.txt", "line1\nADDED\nline2\n");
+        let mut r = empty_review(dir.path().to_str().unwrap());
+        r.comments.push(line_comment("file.txt", 2, "ADDED"));
+        let first = reconcile(r).unwrap();
+
+        // A commit lands, then the branch is reset to before it (rewrite): the
+        // stored HEAD is no longer an ancestor of the new HEAD, so this is not
+        // "the work got committed" — the comment must stay untagged.
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let start = repo.head().unwrap().peel_to_commit().unwrap().id();
+        write(dir.path(), "file.txt", "line1\nADDED\nline2\nextra\n");
+        let _mid = commit_all(&repo, "to be undone");
+        let old = repo.find_commit(start).unwrap();
+        repo.reset(old.as_object(), git2::ResetType::Hard, None).unwrap();
+
+        let second = reconcile(first.review).unwrap();
+        assert!(second.review.comments[0].commit.is_none(), "a rewritten-away HEAD must not tag comments");
     }
 
     #[test]

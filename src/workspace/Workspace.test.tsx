@@ -234,6 +234,27 @@ describe("Workspace", () => {
     await waitFor(() => expect(openReview).toHaveBeenCalledWith({ repoPath: "/r", mode: "all-changes", base: undefined }));
   });
 
+  it("opens the comments pane in the nothing-to-review state (#empty-review)", async () => {
+    // The user reviews uncommitted agent work, leaves comments, the agent commits —
+    // the diff is now empty, but the comments must still be reachable: the pane is
+    // the only place a comment with no diff left can be read, resolved, or deleted.
+    openReview.mockResolvedValue({
+      ...minimalSession,
+      review: {
+        ...minimalSession.review,
+        comments: [{ id: "c1", scope: "line", anchor: { file: "src/a.ts", side: "new", startLine: 3, endLine: null, snippet: "x" }, body: "why?", stale: true, resolved: false, createdAt: "t", updatedAt: "t" }],
+      },
+    });
+    render(<Workspace target={target} />);
+    await waitFor(() => expect(screen.getByText(/nothing to review/i)).toBeInTheDocument());
+
+    // The toolbar button reflects the count and toggles the pane open.
+    expect(screen.queryByTestId("comment-index")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /comments/i }));
+    await waitFor(() => expect(screen.getByTestId("comment-index")).toBeInTheDocument());
+    expect(screen.getByText("why?")).toBeInTheDocument();
+  });
+
   it("still surfaces Refresh on a git-meta event that moves the diff (commit/checkout) (#12)", async () => {
     openReview.mockResolvedValue(fileSession);
     // A commit/checkout: the snapshot oid moved, so sig changes even though no

@@ -94,7 +94,7 @@ pub fn open_review_impl(storage: &dyn Storage, input: Target) -> Result<ReviewSe
         None => Review::new(
             id,
             target,
-            Snapshot { base_oid: String::new(), head_oid: None, captured_at: String::new() },
+            Snapshot { base_oid: String::new(), head_oid: None, head_commit: None, captured_at: String::new() },
             chrono::Utc::now().to_rfc3339(),
         ),
     };
@@ -619,7 +619,7 @@ mod tests {
         let now = chrono::Utc::now().to_rfc3339();
 
         let target = Target { repo_path: "/repo".into(), worktree: Some("main".into()), mode: DiffMode::Uncommitted, base: None, commit: None };
-        let snapshot = Snapshot { base_oid: "abc123".into(), head_oid: None, captured_at: now.clone() };
+        let snapshot = Snapshot { base_oid: "abc123".into(), head_oid: None, head_commit: None, captured_at: now.clone() };
         let review = Review::new("0123456789abcdef".into(), target, snapshot, now);
 
         save_review_impl(&DiffCache::default(), &storage, review.clone()).unwrap();
@@ -718,6 +718,43 @@ mod tests {
         assert!(!by_id("in-diff").stale, "a file-scoped comment on a file still in the diff stays fresh");
         assert!(by_id("gone").stale, "a file-scoped comment whose file left the diff is marked stale — but kept");
         assert_eq!(storage.load(&review.id).unwrap().unwrap().comments.len(), 2, "both file-scoped comments persist");
+    }
+
+    #[test]
+    fn refresh_hands_untagged_comments_to_the_commit_that_took_their_file() {
+        use crate::review::model::{Anchor, Comment, CommentScope, Side};
+        use crate::storage::{JsonStorage, Storage};
+
+        // The review-before-commit flow: open while the work is uncommitted,
+        // comment on it, the agent commits, and the fs watcher fires a refresh.
+        let (dir, repo) = repo_with_commit(); // main @ initial
+        write(dir.path(), "file.txt", "line1\nADDED\nline2\n");
+        let store_dir = tempfile::TempDir::new().unwrap();
+        let storage = JsonStorage::new(store_dir.path().join("reviews"));
+        let target = Target { repo_path: dir.path().to_str().unwrap().into(), worktree: None, mode: DiffMode::Uncommitted, base: None, commit: None };
+
+        let mut review = open_review_impl(&storage, target).unwrap().review;
+        review.comments.push(Comment {
+            id: "c1".into(),
+            scope: CommentScope::Line,
+            anchor: Some(Anchor { file: "file.txt".into(), side: Side::New, start_line: Some(2), end_line: None, snippet: Some("ADDED".into()) }),
+            body: "why?".into(), stale: false, resolved: false, commit: None,
+            created_at: "t".into(), updated_at: "t".into(),
+        });
+        save_review_impl(&DiffCache::default(), &storage, review.clone()).unwrap();
+
+        // The agent commits the reviewed work.
+        let oid = commit_all(&repo, "agent work");
+
+        let refreshed = refresh_review_impl(&storage, review).unwrap();
+        let c = &refreshed.review.comments[0];
+        assert_eq!(c.commit.as_deref(), Some(oid.to_string().as_str()), "refresh hands the comment to the commit that took its file");
+        assert!(!c.stale, "the handed-off comment is fresh");
+        assert_eq!(
+            storage.load(&refreshed.review.id).unwrap().unwrap().comments[0].commit.as_deref(),
+            Some(oid.to_string().as_str()),
+            "the handoff persists",
+        );
     }
 
     #[test]

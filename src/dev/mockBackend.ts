@@ -236,6 +236,20 @@ const REVIEW: Review = {
       createdAt: "2026-06-25T18:52:00Z",
       updatedAt: "2026-06-25T18:52:00Z",
     },
+    // Commit-tagged (handed off to commit c9a30d4 when its file was committed):
+    // exercises the index's commit chip, the working-view filter (it hides here),
+    // and the index → commit-mode jump on card click. (#handoff)
+    {
+      id: "c4",
+      scope: "line",
+      anchor: { file: "src/auth/session.ts", side: "new", startLine: 2, endLine: null, snippet: "  const user = await auth.currentUser()" },
+      body: "Guard this against a null session.",
+      stale: false,
+      resolved: false,
+      commit: "c9a30d40000000000000000000000000000000bb",
+      createdAt: "2026-06-25T18:53:00Z",
+      updatedAt: "2026-06-25T18:53:00Z",
+    },
   ],
   viewed: [],
   createdAt: "2026-06-25T18:50:00Z",
@@ -422,7 +436,11 @@ export function installMockBackend(): void {
       case "save_review":
         return undefined as T;
       case "export_review": {
-        const open = ds.review.comments.filter((c) => !c.resolved);
+        // Mirrors the real backend: export exactly the comments of the review the
+        // frontend hands over (it pre-scopes them to the current view), not the
+        // fixture's own set — else commit-tagged scoping can't be exercised in mock.
+        const review = (args?.review ?? ds.review) as Review;
+        const open = review.comments.filter((c) => !c.resolved);
         const lines = open.map((c) => {
           const loc = c.anchor ? `${c.anchor.file}${c.anchor.startLine ? `:${c.anchor.startLine}` : ""}` : "general";
           return `- [${loc}] ${c.body}`;

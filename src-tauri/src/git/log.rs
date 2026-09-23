@@ -1,7 +1,6 @@
 use crate::git::model::Target;
 use crate::git::{open_repo, resolve_base, GitError};
 use git2::{Oid, Repository, Sort};
-use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,11 +72,6 @@ pub fn list_commits(target: &Target, skip: usize, limit: usize) -> Result<Commit
     })
 }
 
-/// Every oid on the branch, without loading commit metadata.
-pub fn branch_commit_oids(target: &Target) -> Result<HashSet<String>, GitError> {
-    with_branch_walk(target, |_repo, oids| oids.map(|oid| oid.map(|o| o.to_string())).collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +102,7 @@ mod tests {
 
     #[test]
     fn pages_through_branch_commits() {
+        use std::collections::HashSet;
         let (dir, repo) = repo_with_commit();
         let base = repo.head().unwrap().peel_to_commit().unwrap().id();
         repo.branch("feature", &repo.find_commit(base).unwrap(), false).unwrap();
@@ -126,7 +121,6 @@ mod tests {
         assert_eq!(pages.iter().map(|p| p.has_more).collect::<Vec<_>>(), vec![true, true, false]);
         let paged: HashSet<String> = pages.iter().flat_map(|p| p.commits.iter().map(|c| c.oid.clone())).collect();
         assert_eq!(paged, made.into_iter().collect::<HashSet<_>>());
-        assert_eq!(branch_commit_oids(&t).unwrap(), paged);
     }
 
     #[test]

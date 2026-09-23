@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Check, MessageSquareDashed, Pencil, RotateCcw, Trash2, X } from "lucide-react";
@@ -25,7 +25,7 @@ const RESOLVE_BTN = "size-6 rounded-md text-muted-foreground hover:bg-emerald-50
 const DEL_BTN = "size-6 rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive";
 
 export function CommentIndex({
-  open, onOpenChange, comments, onJump, onEdit, onDelete, onToggleResolved,
+  open, onOpenChange, comments, onJump, onEdit, onDelete, onDeleteAll, onToggleResolved,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -39,6 +39,8 @@ export function CommentIndex({
   // agent export with no way out.
   onEdit?: (id: string, body: string) => void;
   onDelete?: (id: string) => void;
+  // Clears every comment in one save. Gated behind the inline two-tap confirm.
+  onDeleteAll?: () => void;
   onToggleResolved?: (id: string) => void;
 }) {
   // Inset right panel — part of the layout, not an overlay. The <aside>'s width
@@ -75,6 +77,20 @@ export function CommentIndex({
   // pending a delete confirmation (drives the single ConfirmDialog).
   const [editingId, setEditingId] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+
+  // "Delete all" uses an inline two-tap confirm — the button morphs into a soft-red
+  // Confirm and the second click fires. No modal to dismiss; the confirm also
+  // reverts on its own after a beat (and on Escape) so a stray later click can't
+  // wipe everything.
+  const [confirmingAll, setConfirmingAll] = useState(false);
+  const allConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!confirmingAll) return;
+    allConfirmTimer.current = setTimeout(() => setConfirmingAll(false), 3000);
+    return () => {
+      if (allConfirmTimer.current) clearTimeout(allConfirmTimer.current);
+    };
+  }, [confirmingAll]);
 
   const anchored = comments
     .filter((c) => c.scope !== "general")
@@ -113,15 +129,50 @@ export function CommentIndex({
             ⚠ {staleCount} stale
           </span>
         )}
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          className={`${staleCount > 0 ? "" : "ml-auto "}size-6 rounded-md bg-foreground/[0.04] text-muted-foreground/70 hover:bg-foreground/10 hover:text-foreground`}
-          aria-label="Close comments"
-          onClick={() => onOpenChange(false)}
-        >
-          <X className="size-3.5" />
-        </Button>
+        <span className="ml-auto flex items-center gap-1">
+          {onDeleteAll && anchored.length > 0 && (
+            confirmingAll ? (
+              <Button
+                variant="ghost"
+                className="h-6 gap-1 rounded-md bg-destructive/10 px-2 text-[12px] font-medium text-destructive transition-colors hover:bg-destructive/20"
+                aria-label="Confirm delete all comments"
+                title="Click again to delete every comment in this review"
+                onClick={() => {
+                  setConfirmingAll(false);
+                  onDeleteAll();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.stopPropagation();
+                    setConfirmingAll(false);
+                  }
+                }}
+              >
+                <Trash2 className="size-3.5" /> Delete all?
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="size-6 rounded-md text-muted-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                aria-label="Delete all comments"
+                title="Delete all comments"
+                onClick={() => setConfirmingAll(true)}
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            )
+          )}
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            className="size-6 rounded-md bg-foreground/[0.04] text-muted-foreground/70 hover:bg-foreground/10 hover:text-foreground"
+            aria-label="Close comments"
+            onClick={() => onOpenChange(false)}
+          >
+            <X className="size-3.5" />
+          </Button>
+        </span>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-auto pl-0 pr-3.5 pb-3.5 pt-2">
         {anchored.length === 0 && (
@@ -164,6 +215,14 @@ export function CommentIndex({
                 <span className="min-w-0 truncate text-foreground/80">{name}</span>
                 <span className="ml-1 shrink-0 text-muted-foreground/70">{suffix}</span>
               </span>
+              {c.commit && (
+                <span
+                  className="shrink-0 rounded-md squircle bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                  title={`Comment handed off to commit ${c.commit} — click the card to open that commit`}
+                >
+                  {c.commit.slice(0, 7)}
+                </span>
+              )}
               {c.stale && !c.resolved && <span className="shrink-0 rounded-md squircle bg-amber-500/15 px-1.5 py-0.5 text-amber-600 dark:text-amber-400">⚠ stale</span>}
               {c.resolved && <span className="shrink-0 rounded-md squircle bg-emerald-500/15 px-1.5 py-0.5 text-emerald-600 dark:text-emerald-400">✓</span>}
             </span>

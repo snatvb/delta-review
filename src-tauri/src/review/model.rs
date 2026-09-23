@@ -55,6 +55,11 @@ pub struct Snapshot {
     pub base_oid: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_oid: Option<String>,
+    /// Branch HEAD commit at capture time — how reconcile detects "new commits
+    /// landed" so untagged comments can be handed off to the commit that took
+    /// their file. Stamped on every reconcile; `None` only for pre-field data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_commit: Option<String>,
     pub captured_at: String,
 }
 

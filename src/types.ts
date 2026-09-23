@@ -80,7 +80,8 @@ export interface Comment {
   body: string;
   stale: boolean;
   resolved: boolean;
-  /** Full oid of the commit this comment was authored against (commit mode). */
+  /** Full oid of the commit this comment belongs to — set at creation in commit
+   *  mode, or handed off by reconcile when a new commit takes the commented file. */
   commit?: string | null;
   createdAt: string;
   updatedAt: string;
@@ -89,6 +90,9 @@ export interface Comment {
 export interface Snapshot {
   baseOid: string;
   headOid?: string | null;
+  /** Branch HEAD commit at capture time — the backend's "new commits landed"
+   *  detector for handing comments off to commits. Managed entirely backend-side. */
+  headCommit?: string | null;
   capturedAt: string;
 }
 

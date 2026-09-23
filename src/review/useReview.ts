@@ -93,6 +93,11 @@ export function useReview(initial: Review | null) {
     mutate((r) => ({ ...r, comments: r.comments.filter((c) => c.id !== id) }), "now");
   }, [mutate]);
 
+  // Bulk clear for the index's "delete all" — one save, not N.
+  const clearComments = useCallback(() => {
+    mutate((r) => ({ ...r, comments: [] }), "now");
+  }, [mutate]);
+
   const toggleResolved = useCallback((id: string) => {
     const now = new Date().toISOString();
     mutate(
@@ -110,5 +115,5 @@ export function useReview(initial: Review | null) {
     }, "now");
   }, [mutate]);
 
-  return { review, setReview, addComment, updateCommentBody, deleteComment, toggleResolved, toggleViewed };
+  return { review, setReview, addComment, updateCommentBody, deleteComment, clearComments, toggleResolved, toggleViewed };
 }

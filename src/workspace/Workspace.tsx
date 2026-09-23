@@ -75,7 +75,10 @@ function reviewSig(s: DiffSummary | null, r: Review | null): string {
     head: s?.headLabel,
     // OIDs only — `capturedAt` churns every refresh and would defeat the skip.
     oids: r ? [r.snapshot.baseOid, r.snapshot.headOid] : null,
-    stale: r?.comments?.map((c) => [c.id, c.stale]),
+    // Per-comment staleness AND commit ownership: a handoff (comments given to a
+    // new commit) changes what the working view shows, so it must count as a
+    // real change even when the file list didn't move.
+    comments: r?.comments?.map((c) => [c.id, c.stale, c.commit ?? null]),
     viewed: r?.viewed,
   });
 }
@@ -111,6 +114,11 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // file/comment still re-fires the scroll effect; `commentId` lets the pane
   // scroll to the exact comment, not just the file top.
   const [jump, setJump] = useState<{ file: string; commentId?: string; n: number } | null>(null);
+  // A jump whose file isn't in the current view yet (e.g. into commit mode, whose
+  // summary loads async) is held here and re-fired once the file list carries it.
+  const heldJumpRef = useRef<{ file: string; commentId?: string } | null>(null);
+  // Mirror of `orderedFiles` for stable callbacks that need the live list.
+  const orderedFilesRef = useRef<{ path: string }[]>([]);
   // Hover-prefetch signal: the files tree emits a (debounced) file path on pointer
   // rest; the diff pane warms it so a subsequent click paints with no blank. (#jump-preload)
   const [prefetch, setPrefetch] = useState<{ file: string; n: number } | null>(null);
@@ -119,7 +127,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   const [copyState, setCopyState] = useState<"idle" | "ok" | "err">("idle");
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const { review, setReview, addComment, updateCommentBody, deleteComment, toggleViewed, toggleResolved } = useReview(null);
+  const { review, setReview, addComment, updateCommentBody, deleteComment, clearComments, toggleViewed, toggleResolved } = useReview(null);
 
   // Auto-refresh plumbing (#9): reviewRef lets the once-mounted fs-watcher
   // listener always refresh the *current* review; sigRef skips no-op state
@@ -423,9 +431,16 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     if (!review) return;
     try {
       setError(null);
-      const md = await api.exportReview(review);
+      // Export what the current view shows, not everything on disk: untagged
+      // comments in the working view, the pinned commit's in commit mode. A
+      // commit-tagged comment is history — the agent works on the working tree,
+      // not on old commits — so it stays out of the export (and out of the way).
+      const scoped = inCommitMode
+        ? allComments.filter((c) => c.commit === commitOid)
+        : allComments.filter((c) => !c.commit);
+      const md = await api.exportReview({ ...review, comments: scoped });
       await navigator.clipboard.writeText(md);
-      track("copy_for_agents", { comment_count: review.comments.length });
+      track("copy_for_agents", { comment_count: scoped.length });
       flashCopy("ok");
     } catch (e) {
       setError(String(e));
@@ -450,9 +465,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     [addComment, commitOid],
   );
   // Inset panel stays open so the user can move between comments.
-  const onJump = useCallback((c: Comment) => {
-    if (c.anchor?.file) setJump({ file: c.anchor.file, commentId: c.id, n: Date.now() });
-  }, []);
+  // (onJump lives after pickCommit below — it needs it to open a comment's commit.)
 
   // Commit-mode navigation. "Last commit" is the same diff as the newest commit, so
   // it steps too (from HEAD / index 0); stepping back to the top returns to last-commit.
@@ -492,6 +505,20 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     setCommitOid(oid);
     syncCommitParam(oid);
   }, []);
+  // A commit-tagged comment lives in that commit's isolated diff, not the working
+  // one — open the commit so the jump actually lands. If the target file isn't in
+  // the view yet (the pinned commit's summary is still loading), hold the jump and
+  // let the effect below fire it once the file arrives.
+  const fireJump = useCallback((file: string, commentId?: string) => {
+    const present = orderedFilesRef.current.some((f) => f.path === file);
+    heldJumpRef.current = null; // latest intent wins
+    if (present) setJump({ file, commentId, n: Date.now() });
+    else heldJumpRef.current = { file, commentId };
+  }, []);
+  const onJump = useCallback((c: Comment) => {
+    if (c.commit) pickCommit(c.commit);
+    if (c.anchor?.file) fireJump(c.anchor.file, c.id);
+  }, [pickCommit, fireJump]);
   const exitCommitMode = useCallback((mode: DiffMode) => {
     setCommitOid(null);
     syncCommitParam(null);
@@ -528,8 +555,15 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     [allComments, inCommitMode, commitOid],
   );
   // General notes were removed; ignore any legacy ones. Counted over ALL comments so
-  // "Copy for agents" (which exports everything) stays gated on the true total.
+  // the comments button's badge reflects the whole review (the index shows everything).
   const commentCount = allComments.filter((c) => c.scope !== "general").length;
+  // What "Copy for agents" would actually export: the view-scoped, unresolved set —
+  // commit-tagged comments are history and resolved ones are acknowledged, so neither
+  // belongs in the payload the agent acts on.
+  const copyCount = useMemo(
+    () => comments.filter((c) => c.scope !== "general" && !c.resolved).length,
+    [comments],
+  );
   // Per-file comment counts for the tree/list badges, scoped to the visible context. (#1)
   const commentCountsByFile = useMemo(() => {
     const m = new Map<string, number>();
@@ -547,6 +581,21 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // the active row mid-scroll. (#jump-preload)
   const orderedFiles = useMemo(() => reviewOrder(viewSummary?.files ?? []), [viewSummary?.files]);
 
+  // Keep the mirror current, and release a held jump once its file is in view —
+  // the diff pane's jump effect can't wait for the file itself.
+  useEffect(() => {
+    orderedFilesRef.current = orderedFiles;
+    const held = heldJumpRef.current;
+    if (!held) return;
+    if (orderedFiles.some((f) => f.path === held.file)) {
+      heldJumpRef.current = null;
+      // Not a mirrored prop: the jump waits on async-loaded file data, so the
+      // release genuinely belongs in an effect.
+      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change
+      setJump({ ...held, n: Date.now() });
+    }
+  }, [orderedFiles]);
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.key === "r" || e.key === "R") && (e.metaKey || e.ctrlKey)) {
@@ -558,7 +607,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       } else if ((e.key === "c" || e.key === "C") && e.shiftKey && (e.metaKey || e.ctrlKey)) {
         // ⌘⇧C copies the agent export, when there's something to copy. (#copy)
         e.preventDefault();
-        if (commentCount > 0) void copyForClaude();
+        if (copyCount > 0) void copyForClaude();
       } else if (
         stepperVisible && !e.metaKey && !e.ctrlKey && !e.altKey &&
         // Match the physical key (e.code) so it works on non-US layouts where
@@ -742,8 +791,8 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                       : undefined
                 }
                 onClick={copyForClaude}
-                disabled={commentCount === 0}
-                title={commentCount === 0 ? "No comments to copy" : undefined}
+                disabled={copyCount === 0}
+                title={copyCount === 0 ? "No open comments in this view to copy" : undefined}
               >
                 {copyState === "ok" ? (
                   <><Check className="size-3.5" /> Copied</>
@@ -788,47 +837,53 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
           </div>
         )}
         {viewSummary && review ? (
-          orderedFiles.length === 0 ? (
-            <NothingToReview
-              target={review.target}
-              repoName={repoName}
-              modeLabel={inCommitMode ? `commit ${commits[commitIndex]?.shortOid ?? ""}`.trim() : (MODES.find((m) => m.id === diffMode)?.label ?? diffMode)}
-            />
-          ) : (
           <>
-            <aside style={{ width: sidebarWidth }} className="relative flex min-h-0 shrink-0 flex-col">
-              <FilesPanel
-                files={orderedFiles}
-                selected={visibleFile}
-                onSelect={onSelectFile}
-                onPrefetch={onPrefetchFile}
-                viewedFiles={viewedFiles}
-                onToggleViewed={onToggleViewedFile}
-                commentCounts={commentCountsByFile}
+            {orderedFiles.length === 0 ? (
+              // The comments pane renders in the empty state too: once the work is
+              // committed, its comments are unreachable in the (now empty) diff, so
+              // the index is the only place to read, resolve, or delete them.
+              <NothingToReview
+                target={review.target}
+                repoName={repoName}
+                modeLabel={inCommitMode ? `commit ${commits[commitIndex]?.shortOid ?? ""}`.trim() : (MODES.find((m) => m.id === diffMode)?.label ?? diffMode)}
               />
-              <PaneResizer edge="right" label="Resize file panel" {...fileResize} />
-            </aside>
-            <main aria-busy={busy} className="min-h-0 min-w-0 flex-1 -ml-1.5 transition-opacity aria-busy:pointer-events-none aria-busy:opacity-50">
-              <VirtualDiffPane
-                target={viewTarget!}
-                files={orderedFiles}
-                theme={theme}
-                layout={layout}
-                viewedFiles={viewedFiles}
-                comments={comments}
-                jump={jump}
-                prefetch={prefetch}
-                invalidate={diffInval}
-                onVisibleFileChange={onVisibleFileChange}
-                onToggleViewed={onToggleViewedFile}
-                onAddComment={onAddComment}
-                onAddFileComment={onAddFileComment}
-                onEditComment={updateCommentBody}
-                onDeleteComment={deleteComment}
-                onToggleResolvedComment={toggleResolved}
-                onFileEdited={onFileEdited}
-              />
-            </main>
+            ) : (
+              <>
+                <aside style={{ width: sidebarWidth }} className="relative flex min-h-0 shrink-0 flex-col">
+                  <FilesPanel
+                    files={orderedFiles}
+                    selected={visibleFile}
+                    onSelect={onSelectFile}
+                    onPrefetch={onPrefetchFile}
+                    viewedFiles={viewedFiles}
+                    onToggleViewed={onToggleViewedFile}
+                    commentCounts={commentCountsByFile}
+                  />
+                  <PaneResizer edge="right" label="Resize file panel" {...fileResize} />
+                </aside>
+                <main aria-busy={busy} className="min-h-0 min-w-0 flex-1 -ml-1.5 transition-opacity aria-busy:pointer-events-none aria-busy:opacity-50">
+                  <VirtualDiffPane
+                    target={viewTarget!}
+                    files={orderedFiles}
+                    theme={theme}
+                    layout={layout}
+                    viewedFiles={viewedFiles}
+                    comments={comments}
+                    jump={jump}
+                    prefetch={prefetch}
+                    invalidate={diffInval}
+                    onVisibleFileChange={onVisibleFileChange}
+                    onToggleViewed={onToggleViewedFile}
+                    onAddComment={onAddComment}
+                    onAddFileComment={onAddFileComment}
+                    onEditComment={updateCommentBody}
+                    onDeleteComment={deleteComment}
+                    onToggleResolvedComment={toggleResolved}
+                    onFileEdited={onFileEdited}
+                  />
+                </main>
+              </>
+            )}
             <CommentIndex
               open={indexOpen}
               onOpenChange={setIndexOpen}
@@ -836,10 +891,10 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
               onJump={onJump}
               onEdit={updateCommentBody}
               onDelete={deleteComment}
+              onDeleteAll={clearComments}
               onToggleResolved={toggleResolved}
             />
           </>
-          )
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center text-muted-foreground">
             {error ? (

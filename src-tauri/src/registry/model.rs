@@ -129,7 +129,7 @@ mod tests {
         let mut r = Review::new(
             "0123456789abcdef".into(),
             target,
-            Snapshot { base_oid: "b".into(), head_oid: None, captured_at: "t".into() },
+            Snapshot { base_oid: "b".into(), head_oid: None, head_commit: None, captured_at: "t".into() },
             "t".into(),
         );
         r.comments = comments;

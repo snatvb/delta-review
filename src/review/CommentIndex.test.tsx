@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { render, screen, fireEvent, within, act } from "@testing-library/react";
 import { CommentIndex } from "./CommentIndex";
 import type { Comment } from "../types";
 
@@ -90,5 +90,67 @@ describe("CommentIndex", () => {
     expect(screen.queryByTitle("Resolve")).not.toBeInTheDocument();
     fireEvent.click(screen.getByTitle("Reopen"));
     expect(onToggleResolved).toHaveBeenCalledWith("d");
+  });
+
+  describe("delete all", () => {
+    it("needs a second tap on the soft-red confirm to fire", () => {
+      const onDeleteAll = vi.fn();
+      render(
+        <CommentIndex
+          open onOpenChange={() => {}} comments={comments} onJump={() => {}}
+          onDelete={vi.fn()} onDeleteAll={onDeleteAll}
+        />,
+      );
+      // First tap swaps the button for the confirm — nothing fires yet.
+      fireEvent.click(screen.getByRole("button", { name: "Delete all comments" }));
+      expect(onDeleteAll).not.toHaveBeenCalled();
+      const confirm = screen.getByRole("button", { name: "Confirm delete all comments" });
+      expect(confirm.className).toContain("bg-destructive/10");
+      // Second tap fires.
+      fireEvent.click(confirm);
+      expect(onDeleteAll).toHaveBeenCalledTimes(1);
+      // And the idle button is back.
+      expect(screen.getByRole("button", { name: "Delete all comments" })).toBeInTheDocument();
+    });
+
+    it("reverts the confirm on its own after a beat", () => {
+      vi.useFakeTimers();
+      const onDeleteAll = vi.fn();
+      render(
+        <CommentIndex
+          open onOpenChange={() => {}} comments={comments} onJump={() => {}}
+          onDelete={vi.fn()} onDeleteAll={onDeleteAll}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Delete all comments" }));
+      act(() => { vi.advanceTimersByTime(3100); });
+      expect(onDeleteAll).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Delete all comments" })).toBeInTheDocument();
+      vi.useRealTimers();
+    });
+
+    it("reverts the confirm on Escape", () => {
+      const onDeleteAll = vi.fn();
+      render(
+        <CommentIndex
+          open onOpenChange={() => {}} comments={comments} onJump={() => {}}
+          onDelete={vi.fn()} onDeleteAll={onDeleteAll}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Delete all comments" }));
+      fireEvent.keyDown(screen.getByRole("button", { name: "Confirm delete all comments" }), { key: "Escape" });
+      expect(onDeleteAll).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Delete all comments" })).toBeInTheDocument();
+    });
+
+    it("hides the button when there is nothing to delete", () => {
+      render(
+        <CommentIndex
+          open onOpenChange={() => {}} comments={[]} onJump={() => {}}
+          onDelete={vi.fn()} onDeleteAll={vi.fn()}
+        />,
+      );
+      expect(screen.queryByRole("button", { name: "Delete all comments" })).not.toBeInTheDocument();
+    });
   });
 });
