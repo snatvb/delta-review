@@ -8,6 +8,8 @@ import { useCodeFont, setCodeFontFamily, setCodeFontSize, installedMonoFonts, SI
 import { usePickerOpenMode, type PickerOpenMode } from "../windowMode";
 import { reloadWindowPerBranch, useWindowPerBranch } from "../windowPerBranch";
 import { useChangeDetection } from "../changeDetection";
+import { useUpdateCheck } from "../updater/updateCheckPref";
+import type { OnOff } from "../lib/onOffPref";
 
 const THEMES: { value: ThemePref; label: string; Icon: typeof Monitor }[] = [
   { value: "system", label: "System", Icon: Monitor },
@@ -43,6 +45,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   const [openMode, setOpenMode] = usePickerOpenMode();
   const [windowPerBranch, setWindowPerBranch] = useWindowPerBranch();
   const [changeDetection, setChangeDetection] = useChangeDetection();
+  const [updateCheck, setUpdateCheck] = useUpdateCheck();
   const { family: fontFamily, size: fontSize } = useCodeFont();
   // Installed mono families (probed once) → "System Mono" default + whatever the
   // machine actually has. Keep the current pick listed even if it's not detected.
@@ -176,21 +179,16 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           <div className="h-px bg-border/50" />
 
           <Row
-            label="Other branch, same folder"
-            hint="When the folder's window is already open."
+            label="New window per branch"
+            hint="Off: another branch of the same folder reuses its window."
             control={
-              <div className="relative">
-                <select
-                  aria-label="Other branch, same folder"
-                  value={windowPerBranch ? "new-window" : "same-window"}
-                  onChange={(e) => setWindowPerBranch(e.target.value === "new-window")}
-                  className={selectClass}
-                >
-                  <option value="new-window">New window</option>
-                  <option value="same-window">Same window</option>
-                </select>
-                <Chevron />
-              </div>
+              <OnOffToggle
+                label="New window per branch"
+                value={windowPerBranch ? "on" : "off"}
+                onChange={(v) => setWindowPerBranch(v === "on")}
+                onTitle="Each branch gets its own window"
+                offTitle="One window per folder"
+              />
             }
           />
 
@@ -258,6 +256,22 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           <div className="h-px bg-border/50" />
 
           <Row
+            label="Check for updates"
+            hint="Look for a new version on launch."
+            control={
+              <OnOffToggle
+                label="Check for updates"
+                value={updateCheck}
+                onChange={setUpdateCheck}
+                onTitle="Check for updates on launch"
+                offTitle="Never check for updates"
+              />
+            }
+          />
+
+          <div className="h-px bg-border/50" />
+
+          <Row
             label="Usage analytics"
             hint="Anonymous feature usage only."
             control={
@@ -287,8 +301,8 @@ function OnOffToggle({
   offTitle,
 }: {
   label: string;
-  value: "on" | "off";
-  onChange: (v: "on" | "off") => void;
+  value: OnOff;
+  onChange: (v: OnOff) => void;
   onTitle: string;
   offTitle: string;
 }) {
@@ -298,7 +312,7 @@ function OnOffToggle({
       size="sm"
       aria-label={label}
       value={value}
-      onValueChange={(v) => v && onChange(v as "on" | "off")}
+      onValueChange={(v) => v && onChange(v as OnOff)}
       className="gap-0.5 rounded-lg bg-muted/70 p-0.5"
     >
       <ToggleGroupItem value="on" aria-label="On" title={onTitle} className={toggleItemClass}>

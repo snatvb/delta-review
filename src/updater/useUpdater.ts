@@ -4,6 +4,7 @@ import { isTauri } from '@tauri-apps/api/core';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { api } from '../api';
+import { useUpdateCheck } from './updateCheckPref';
 
 export type UpdaterStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error';
 
@@ -25,9 +26,11 @@ export function useUpdater(): UpdaterState {
   const [version, setVersion] = useState<string | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const updateRef = useRef<Update | null>(null);
+  const [updateCheck] = useUpdateCheck();
 
   useEffect(() => {
     if (!isTauri()) return; // dev / dev:mock — no Tauri IPC available
+    if (updateCheck === 'off') return;
     let cancelled = false;
     (async () => {
       try {
@@ -54,7 +57,7 @@ export function useUpdater(): UpdaterState {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [updateCheck]);
 
   const download = useCallback(() => {
     const update = updateRef.current;

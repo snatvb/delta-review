@@ -10,12 +10,27 @@ import { isTauri } from '@tauri-apps/api/core';
 import { check } from '@tauri-apps/plugin-updater';
 import { api } from '../api';
 import { useUpdater } from './useUpdater';
+import { setUpdateCheck } from './updateCheckPref';
 
 describe('useUpdater', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Default: this window wins the gate. The contention case overrides to false.
     vi.mocked(api.acquireUpdaterGate).mockResolvedValue(true);
+    setUpdateCheck('on');
+  });
+
+  it('never checks when update checks are turned off, and checks once turned back on', async () => {
+    vi.mocked(isTauri).mockReturnValue(true);
+    vi.mocked(check).mockResolvedValue(null);
+    setUpdateCheck('off');
+    renderHook(() => useUpdater());
+    await act(async () => {});
+    expect(api.acquireUpdaterGate).not.toHaveBeenCalled();
+    expect(check).not.toHaveBeenCalled();
+
+    act(() => setUpdateCheck('on'));
+    await waitFor(() => expect(check).toHaveBeenCalledOnce());
   });
 
   it('never checks outside Tauri', () => {
