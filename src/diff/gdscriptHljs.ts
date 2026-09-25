@@ -85,6 +85,17 @@ export function gdscriptGrammar(hljs: HljsApi): Grammar {
       { match: [/\bextends/, /\s+/, /[A-Za-z_][\w.]*/], scope: { 1: "keyword", 3: "title.class" } },
       { match: [/\bclass/, /\s+/, /[A-Za-z_]\w*/], scope: { 1: "keyword", 3: "title.class" } },
       { match: [/\benum/, /\s+/, /[A-Za-z_]\w*/], scope: { 1: "keyword", 3: "title.class" } },
+      // Function and method call sites, borrowed from the rust grammar's
+      // FUNCTION_INVOKE: any lowercase identifier invoked with (…). The scope
+      // resolves to the same .hljs-title.function_ CSS the app already themes
+      // (purple), so calls stand out from plain variables the way they do in
+      // .rs diffs. Capitalized callers stay "type" (constructors); keywords
+      // that can precede a paren — if(/while(/func( — are excluded.
+      {
+        scope: "title.function.invoke",
+        relevance: 0,
+        match: new RegExp(`\\b(?!${[...GDSCRIPT_CONTROL_KEYWORDS, ...GDSCRIPT_KEYWORDS].map((w) => `${w}\\b`).join("|")})[a-z_][A-Za-z0-9_]*(?=\\s*\\()`),
+      },
       // Engine and user classes (Player, Node2D) — any capitalized identifier.
       { match: /\b[A-Z][A-Za-z0-9_]*/, scope: "type" },
     ],

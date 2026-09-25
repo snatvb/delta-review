@@ -137,7 +137,9 @@ export const gdscriptLanguage = StreamLanguage.define<State>({
       if (KEYWORDS.has(word)) return "keyword";
       if (LITERALS.has(word)) return word === "null" ? "null" : "bool";
       if (CONSTANTS.has(word)) return "atom";
-      if (BUILTINS.has(word)) return "variableName.standard";
+      // A builtin being *called* is a call site (entity color, like the diff
+      // view's invoke rule); only a bare reference keeps the builtin color.
+      if (BUILTINS.has(word)) return stream.peek() === "(" ? "variableName.function" : "variableName.standard";
       if (wasAfter === "func" || wasAfter === "signal") return "variableName.function";
       if (wasAfter) return "className";
       if (/^[A-Z]/.test(word)) return "typeName";

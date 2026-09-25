@@ -77,16 +77,30 @@ describe("gdscript diff-view grammar", () => {
       "hljs-type", // Sprite2D, Color, State
       "hljs-attribute", // @export
       "hljs-variable", // $Sprite2D, %HealthBar, &"jump"
-      "hljs-built_in", // clampi, print
+      "hljs-title", // create_tween() call sites + func names
     ]) {
       expect(classes, expected).toContain(expected);
     }
   });
 
-  it("highlights comments, literals and constants", () => {
-    const classes = hljsClasses("# комментарий\nvar ok = true\nvar tau = TAU\n");
+  it("highlights comments, literals, constants and bare builtin references", () => {
+    const classes = hljsClasses("# комментарий\nvar ok = true\nvar tau = TAU\nvar cb = print\n");
     expect(classes).toContain("hljs-comment");
     expect(classes).toContain("hljs-literal");
+    expect(classes).toContain("hljs-built_in");
+  });
+
+  it("colors call sites (including method and builtin calls) as invokes", () => {
+    const classes = hljsClasses("var t = create_tween()\ntween.tween_property(sprite, 0.5)\n");
+    // title.function.invoke renders as ["hljs-title", "function_", "invoke__"].
+    expect(classes).toContain("function_");
+    expect(classes).toContain("invoke__");
+  });
+
+  it("keeps keyword calls and constructors out of the invoke rule", () => {
+    const classes = hljsClasses("if hp > 0:\nvar f = func(x): pass\nvar v = Vector2(1, 2)\n");
+    expect(classes).not.toContain("invoke__");
+    expect(classes).toContain("hljs-type");
   });
 
   it("does not leak keywords into strings", () => {
@@ -137,7 +151,7 @@ describe("gdscript CodeMirror mode", () => {
     const names = tokens(SAMPLE).map((t) => t.name);
     for (const expected of [
       "keyword", "controlKeyword", "operatorKeyword", "string", "number",
-      "typeName", "variableName.function", "variableName.standard",
+      "typeName", "variableName.function",
     ]) {
       expect(names, expected).toContain(expected);
     }
@@ -146,6 +160,12 @@ describe("gdscript CodeMirror mode", () => {
   it("marks func names and call sites as function variables", () => {
     const ts = tokens("func take_damage(amount: int) -> void:\n\ttake_damage(3)\n");
     expect(ts).toContainEqual({ name: "variableName.function", text: "take_damage" });
+  });
+
+  it("colors called builtins as calls, bare builtin references as builtins", () => {
+    const ts = tokens("print(\"x\")\nvar cb = print\n");
+    expect(ts).toContainEqual({ name: "variableName.function", text: "print" });
+    expect(ts).toContainEqual({ name: "variableName.standard", text: "print" });
   });
 
   it("colors capitalized identifiers as types", () => {
