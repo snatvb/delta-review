@@ -45,7 +45,7 @@ import { useFileDiffCache } from "./useFileDiffCache";
 import { wrapsByDefault, paneColsFor, visualLinesForCols, buildRowOffsets } from "./wrap";
 import { splitRowChanged, splitSideChanged } from "./splitChanged";
 import { anchorScrollTopOnCollapse } from "./anchorScroll";
-import { isGiant } from "./giant";
+import { isGiant, isGiantBySize } from "./giant";
 import { useCodeFont, rowHeightFor } from "../codeFont";
 
 const HEADER_H = 40; // sticky file header (border-box); content is vertically centered. (#card)
@@ -550,14 +550,14 @@ const VFileSection = memo(function VFileSection({
   // files genuinely wider than the pane get overflow-x — the scrollbar itself is
   // hidden (it flickered on scroll; trackpad/shift-wheel still scroll).
   const maxCols = useMemo(() => {
-    if (!fd) return 0;
+    if (!fd || !wantModel) return 0;
     let m = 0;
     for (const c of [fd.oldContent, fd.newContent]) {
       if (!c) continue;
       for (const ln of c.split("\n")) if (ln.length > m) m = ln.length;
     }
     return m;
-  }, [fd]);
+  }, [fd, wantModel]);
   const rowWidthCss = layout === "split" ? `calc(120px + ${2 * maxCols}ch)` : `calc(124px + ${maxCols}ch)`;
   const colWidthCss = `calc(60px + ${maxCols}ch)`; // one split column's content width (gutter + code) (#10)
   const rowPx = (layout === "split" ? 120 : 124) + maxCols * chPx * (layout === "split" ? 2 : 1);
@@ -1078,13 +1078,17 @@ const VFileSection = memo(function VFileSection({
           ) : bigHidden ? (
             <div className="delta-ui-font flex h-full items-center gap-3 pl-5 pr-3 text-[13px] text-muted-foreground">
               <FileText className="size-4 shrink-0 opacity-70" />
-              <span>Large file — {entry.additions + entry.deletions} changed lines, hidden by default.</span>
+              <span>
+                {isGiantBySize(entry)
+                  ? `Large file — ${formatBytes(entry.bytes ?? 0)}, hidden by default.`
+                  : `Large file — ${entry.additions + entry.deletions} changed lines, hidden by default.`}
+              </span>
               <button
                 type="button"
                 onClick={() => { setRevealed(true); void cache.load(entry.path); }}
                 className="flex h-7 items-center gap-1.5 rounded-md px-2 text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
               >
-                <Eye className="size-4" /> Show diff
+                <Eye className="size-4" /> {isGiantBySize(entry) ? "Open anyway" : "Show diff"}
               </button>
             </div>
           ) : isRenameOnly(entry) && !revealed ? (

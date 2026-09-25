@@ -32,6 +32,7 @@ pub struct FileEntry {
     pub additions: usize,
     pub deletions: usize,
     pub binary: bool,
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,7 +87,7 @@ fn map_status(s: git2::Delta) -> FileStatus {
 /// Build the summary entry for one delta: path, rename old_path, status, +/- line
 /// stats, and the binary flag. Shared by `compute_diff` (summary only) and
 /// `compute_diff_full` (summary + content) so the two can't drift. (#perf)
-fn summary_entry(diff: &Diff, idx: usize, delta: &DiffDelta) -> FileEntry {
+fn summary_entry(diff: &Diff, idx: usize, delta: &DiffDelta, bytes: u64) -> FileEntry {
     let new_path = delta.new_file().path().map(|p| p.to_string_lossy().into_owned());
     let old_path = delta.old_file().path().map(|p| p.to_string_lossy().into_owned());
     let path = new_path.clone().or_else(|| old_path.clone()).unwrap_or_default();
@@ -106,9 +107,21 @@ fn summary_entry(diff: &Diff, idx: usize, delta: &DiffDelta) -> FileEntry {
         additions,
         deletions,
         binary: delta.new_file().is_binary() || delta.old_file().is_binary(),
+        bytes,
     }
 }
 
+fn recorded_bytes(delta: &DiffDelta) -> u64 {
+    delta.new_file().size().max(delta.old_file().size())
+}
+
+fn source_bytes(repo: &Repository, sources: &FileSources) -> u64 {
+    let old = sources.size(repo, BlobSide::Old).unwrap_or(0);
+    let new = sources.size(repo, BlobSide::New).unwrap_or(0);
+    old.max(new)
+}
+
+#[cfg(test)]
 pub fn compute_diff(target: &Target) -> Result<DiffSummary, GitError> {
     let repo = open_repo(&target.repo_path)?;
     let ep = resolve_endpoints(&repo, target)?;
@@ -117,7 +130,7 @@ pub fn compute_diff(target: &Target) -> Result<DiffSummary, GitError> {
     let files = diff
         .deltas()
         .enumerate()
-        .map(|(idx, delta)| summary_entry(&diff, idx, &delta))
+        .map(|(idx, delta)| summary_entry(&diff, idx, &delta, recorded_bytes(&delta)))
         .collect();
 
     Ok(DiffSummary {
@@ -376,10 +389,14 @@ pub fn compute_diff_full(target: &Target) -> Result<FullDiff, GitError> {
     let mut all_sources: HashMap<String, FileSources> = HashMap::new();
     let mut held_bytes: usize = 0;
     for (idx, delta) in diff.deltas().enumerate() {
-        let entry = summary_entry(&diff, idx, &delta);
+        let sources = delta_sources(&repo, &ep, &delta).ok();
+        let bytes = sources
+            .as_ref()
+            .map_or_else(|| recorded_bytes(&delta), |s| source_bytes(&repo, s));
+        let entry = summary_entry(&diff, idx, &delta, bytes);
         let path = entry.path.clone();
         files.push(entry);
-        let Ok(sources) = delta_sources(&repo, &ep, &delta) else {
+        let Some(sources) = sources else {
             continue;
         };
 
@@ -389,7 +406,7 @@ pub fn compute_diff_full(target: &Target) -> Result<FullDiff, GitError> {
         // The pre-check uses the delta's recorded size (accurate for tree blobs); a
         // working-tree file can report size 0, so a post-read length check backs it
         // up before we RETAIN the content. (#perf)
-        let size = delta.new_file().size().max(delta.old_file().size());
+        let size = bytes;
         if size <= MAX_CACHED_FILE_BYTES && held_bytes < MAX_CACHED_SNAPSHOT_BYTES {
             if let Ok(fd) = extract_file_diff(&repo, &delta, &sources) {
                 let n = fd.old_content.as_deref().map_or(0, str::len)
@@ -478,6 +495,20 @@ mod tests {
         let added = files.get("new.ts").expect("new.ts in map");
         assert_eq!(added.old_content.as_deref(), None); // added → no old side
         assert_eq!(added.new_content.as_deref(), Some("export const x = 1;\n"));
+    }
+
+    #[test]
+    fn compute_diff_full_reports_larger_side_size_in_bytes() {
+        let (dir, _repo) = repo_with_commit();
+        write(dir.path(), "file.txt", "line1\nCHANGED\nline2\n");
+        write(dir.path(), "new.ts", "export const x = 1;\n");
+        let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
+
+        let FullDiff { summary, .. } = compute_diff_full(&t).unwrap();
+
+        let bytes_of = |path: &str| summary.files.iter().find(|f| f.path == path).unwrap().bytes;
+        assert_eq!(bytes_of("file.txt"), "line1\nCHANGED\nline2\n".len() as u64);
+        assert_eq!(bytes_of("new.ts"), "export const x = 1;\n".len() as u64);
     }
 
     #[test]

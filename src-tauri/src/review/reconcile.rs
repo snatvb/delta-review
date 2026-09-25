@@ -1,6 +1,6 @@
 use crate::anchor::{diff_hash, reanchor};
 use crate::git::cache::DiffCache;
-use crate::git::diff::{compute_diff, get_file_diff, DiffSummary};
+use crate::git::diff::DiffSummary;
 use crate::git::model::Target;
 use crate::git::{open_repo, resolve_endpoints, resolve_worktree, GitError, RightSide};
 use crate::review::model::{review_id, Review, Side, Snapshot};
@@ -26,13 +26,13 @@ fn now() -> String {
 /// Reconcile a review against the current repo state: re-resolve worktree/id,
 /// recompute the diff, re-anchor comments (best-effort, else stale), reset viewed
 /// where the file's diff changed, and refresh the snapshot.
-pub fn reconcile(mut review: Review) -> Result<ReviewSession, GitError> {
+pub fn reconcile(cache: &DiffCache, mut review: Review) -> Result<ReviewSession, GitError> {
     let repo = open_repo(&review.target.repo_path)?;
     let worktree = resolve_worktree(&repo)?;
     review.target.worktree = Some(worktree.clone());
     review.id = review_id(&review.target.repo_path, &worktree);
 
-    let summary = compute_diff(&review.target)?;
+    let summary = cache.summary(&review.target)?;
     let present: HashSet<String> =
         summary.files.iter().map(|f| f.path.clone()).collect();
 
@@ -59,7 +59,7 @@ pub fn reconcile(mut review: Review) -> Result<ReviewSession, GitError> {
             comment.stale = !present.contains(anchor.file.as_str());
             continue;
         }
-        let content = file_side_content(&target, &anchor.file, anchor.side);
+        let content = file_side_content(cache, &target, &anchor.file, anchor.side);
         match content {
             Some(content) => {
                 match reanchor(
@@ -88,7 +88,7 @@ pub fn reconcile(mut review: Review) -> Result<ReviewSession, GitError> {
             if !present.contains(&v.file) {
                 return None; // file no longer in the diff → drop viewed progress
             }
-            match get_file_diff(&target, &v.file) {
+            match cache.file(&target, &v.file) {
                 Ok(fd) => {
                     let current = diff_hash(
                         fd.old_content.as_deref().unwrap_or(""),
@@ -261,8 +261,8 @@ pub fn restore_persisted_comments(incoming: &mut Review, persisted: &Review) {
     incoming.comments = persisted.comments.clone();
 }
 
-fn file_side_content(target: &Target, file: &str, side: Side) -> Option<String> {
-    let fd = get_file_diff(target, file).ok()?;
+fn file_side_content(cache: &DiffCache, target: &Target, file: &str, side: Side) -> Option<String> {
+    let fd = cache.file(target, file).ok()?;
     match side {
         Side::New => fd.new_content,
         Side::Old => fd.old_content,
@@ -331,7 +331,7 @@ mod tests {
         let mut c = line_comment("file.txt", 2, "ADDED");
         c.commit = Some(oid.to_string());
         r.comments.push(c);
-        let session = reconcile(r).unwrap();
+        let session = reconcile(&DiffCache::default(), r).unwrap();
         assert!(!session.review.comments[0].stale, "a present commit's comment stays fresh");
     }
 
@@ -343,7 +343,7 @@ mod tests {
         let mut c = line_comment("file.txt", 2, "ADDED");
         c.commit = Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".into());
         r.comments.push(c);
-        let session = reconcile(r).unwrap();
+        let session = reconcile(&DiffCache::default(), r).unwrap();
         assert!(session.review.comments[0].stale, "an unknown commit oid => stale");
     }
 
@@ -358,7 +358,7 @@ mod tests {
         let mut c = line_comment("file.txt", 1, "line1");
         c.commit = Some(head.to_string());
         r.comments.push(c);
-        let session = reconcile(r).unwrap();
+        let session = reconcile(&DiffCache::default(), r).unwrap();
         assert!(!session.review.comments[0].stale, "a commit reachable from HEAD is not stale, even on the base branch");
     }
 
@@ -377,7 +377,7 @@ mod tests {
         other.id = "c2".into();
         r.comments.push(line_comment("file.txt", 2, "ADDED"));
         r.comments.push(other);
-        let first = reconcile(r).unwrap();
+        let first = reconcile(&DiffCache::default(), r).unwrap();
         assert!(first.review.comments.iter().all(|c| c.commit.is_none()));
 
         // The agent commits file.txt (only).
@@ -392,7 +392,7 @@ mod tests {
             .commit(Some("HEAD"), &sig, &sig, "agent work", &tree, &[&parent])
             .unwrap();
 
-        let second = reconcile(first.review).unwrap();
+        let second = reconcile(&DiffCache::default(), first.review).unwrap();
         let by_file = |f: &str| {
             second.review.comments.iter().find(|c| c.anchor.as_ref().unwrap().file == f).unwrap()
         };
@@ -409,7 +409,7 @@ mod tests {
         write(dir.path(), "file.txt", "line1\nADDED\nline2\n");
         let mut r = empty_review(dir.path().to_str().unwrap());
         r.comments.push(line_comment("file.txt", 2, "ADDED"));
-        let first = reconcile(r).unwrap();
+        let first = reconcile(&DiffCache::default(), r).unwrap();
 
         // A commit lands, then the branch is reset to before it (rewrite): the
         // stored HEAD is no longer an ancestor of the new HEAD, so this is not
@@ -421,7 +421,7 @@ mod tests {
         let old = repo.find_commit(start).unwrap();
         repo.reset(old.as_object(), git2::ResetType::Hard, None).unwrap();
 
-        let second = reconcile(first.review).unwrap();
+        let second = reconcile(&DiffCache::default(), first.review).unwrap();
         assert!(second.review.comments[0].commit.is_none(), "a rewritten-away HEAD must not tag comments");
     }
 
@@ -433,7 +433,7 @@ mod tests {
         let mut c = line_comment("file.txt", 1, "line1");
         c.stale = true;
         r.comments.push(c);
-        let session = reconcile(r).unwrap();
+        let session = reconcile(&DiffCache::default(), r).unwrap();
         let a = session.review.comments[0].anchor.as_ref().unwrap();
         assert_eq!(a.start_line, Some(2));
         assert_eq!(session.review.comments[0].stale, false);
@@ -445,7 +445,7 @@ mod tests {
         write(dir.path(), "file.txt", "completely\ndifferent\n");
         let mut r = empty_review(dir.path().to_str().unwrap());
         r.comments.push(line_comment("file.txt", 1, "line1"));
-        let session = reconcile(r).unwrap();
+        let session = reconcile(&DiffCache::default(), r).unwrap();
         assert_eq!(session.review.comments[0].stale, true);
     }
 
@@ -456,7 +456,7 @@ mod tests {
         let (dir, _repo) = repo_with_commit();
         let mut r = empty_review(dir.path().to_str().unwrap());
         r.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: "anything".into() });
-        let session = reconcile(r).unwrap();
+        let session = reconcile(&DiffCache::default(), r).unwrap();
         assert_eq!(session.review.viewed.len(), 0);
     }
 
@@ -467,7 +467,7 @@ mod tests {
         let mut r = empty_review(dir.path().to_str().unwrap());
         // FE toggles viewed with empty hash (doesn't know the hash)
         r.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: "".into() });
-        let session = reconcile(r).unwrap();
+        let session = reconcile(&DiffCache::default(), r).unwrap();
         // Entry must be kept and its hash must now be non-empty (stamped)
         assert_eq!(session.review.viewed.len(), 1);
         assert!(!session.review.viewed[0].diff_hash.is_empty());
@@ -479,7 +479,7 @@ mod tests {
         write(dir.path(), "file.txt", "line1\nCHANGED\n");
         // capture the current diff hash for file.txt by reconciling once
         let r = empty_review(dir.path().to_str().unwrap());
-        let first = reconcile(r.clone()).unwrap();
+        let first = reconcile(&DiffCache::default(), r.clone()).unwrap();
         // mark viewed with the correct current hash
         let fd =
             crate::git::diff::get_file_diff(&first.review.target, "file.txt").unwrap();
@@ -489,11 +489,11 @@ mod tests {
         );
         let mut r = first.review;
         r.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: h });
-        let kept = reconcile(r.clone()).unwrap();
+        let kept = reconcile(&DiffCache::default(), r.clone()).unwrap();
         assert_eq!(kept.review.viewed.len(), 1);
         // now change the file -> viewed should drop
         write(dir.path(), "file.txt", "line1\nCHANGED-AGAIN\n");
-        let dropped = reconcile(r).unwrap();
+        let dropped = reconcile(&DiffCache::default(), r).unwrap();
         assert_eq!(dropped.review.viewed.len(), 0);
     }
 
