@@ -40,6 +40,8 @@ const SUMMARY: DiffSummary = {
     { path: "src/legacy/cache.ts", status: "deleted", additions: 0, deletions: 9, binary: false },
     { path: "README.md", status: "added", additions: 15, deletions: 0, binary: false },
     { path: "assets/atlas.xml", status: "modified", additions: 1, deletions: 1, binary: false, bytes: 3_400_000 },
+    { path: "src/generated/schema.gen.ts", status: "modified", additions: 0, deletions: 0, binary: false, ignored: true },
+    { path: "src/generated/routes.gen.ts", status: "added", additions: 0, deletions: 0, binary: false, ignored: true },
     // Binary images → the GitHub-style compare card (#binary): added (new side
     // only) and modified (old | new side by side).
     { path: "assets/logo.png", status: "added", additions: 0, deletions: 0, binary: true },
@@ -170,6 +172,22 @@ const FILES: Record<string, FileDiff> = {
     binary: false,
     oldContent: null,
     newContent: "# delta\n\nReview code diffs and leave structured comments for Claude.\n\n## Features\n\n- [x] Unified & split diffs\n- [x] Inline comments\n- [ ] Rich markdown preview\n\n| Shortcut | Action |\n| --- | --- |\n| `j` / `k` | Next / prev file |\n| `v` | Toggle viewed |\n\n~~Old workflow~~ is now the new workflow.\n\n## Links\n\nSee the [homepage](https://example.com), the [contributing guide](./CONTRIBUTING.md), or jump to [Features](#features). Clicking these must not break the app.\n",
+  },
+  "src/generated/schema.gen.ts": {
+    oldFileName: "src/generated/schema.gen.ts",
+    newFileName: "src/generated/schema.gen.ts",
+    status: "modified",
+    binary: false,
+    oldContent: 'export const schemaVersion = 41;\nexport const tables = ["users", "sessions"];\n',
+    newContent: 'export const schemaVersion = 42;\nexport const tables = ["users", "sessions", "tokens"];\n',
+  },
+  "src/generated/routes.gen.ts": {
+    oldFileName: null,
+    newFileName: "src/generated/routes.gen.ts",
+    status: "added",
+    binary: false,
+    oldContent: null,
+    newContent: 'export const routes = ["/login", "/logout"];\n',
   },
   "assets/atlas.xml": {
     oldFileName: "assets/atlas.xml",

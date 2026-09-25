@@ -38,6 +38,21 @@ describe("FilesPanel", () => {
     expect(screen.getByText("−5")).toBeInTheDocument();
   });
 
+  it("groups ignored files in a collapsed section and leaves them out of the counts", () => {
+    const withIgnored: FileEntry[] = [
+      { path: "src/a.ts", status: "modified", additions: 3, deletions: 1, binary: false },
+      { path: "gen/api.ts", status: "modified", additions: 0, deletions: 0, binary: false, ignored: true },
+    ];
+    render(<FilesPanel files={withIgnored} selected={null} onSelect={() => {}} viewedFiles={new Set(["gen/api.ts"])} onToggleViewed={() => {}} />);
+    expect(screen.getByTitle("Files viewed")).toHaveTextContent("0 / 1 viewed");
+    expect(screen.getByText("Ignored (1)")).toBeInTheDocument();
+    expect(screen.queryByText("api.ts")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Ignored (1)"));
+    expect(screen.getByText("api.ts")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "viewed gen/api.ts" })).not.toBeInTheDocument();
+  });
+
   it("omits the tree-indent spacer in list mode", () => {
     render(<FilesPanel files={files} selected={null} onSelect={() => {}} viewedFiles={new Set()} onToggleViewed={() => {}} />);
     // Tree mode (default): file rows carry the chevron-column spacer.

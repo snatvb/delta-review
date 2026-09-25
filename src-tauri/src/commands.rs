@@ -194,7 +194,7 @@ fn sync_registry_after_save(reg_store: &dyn RegistryStore, review: &Review) {
 #[cfg(test)]
 pub fn open_review_impl_with_registry(cache: &DiffCache, storage: &dyn Storage, reg_store: &dyn RegistryStore, input: Target) -> Result<ReviewSession, String> {
     let session = with_repo_name(open_review_impl(cache, storage, input)?);
-    sync_registry_after_open(reg_store, &session.review, session.summary.files.len() as u32);
+    sync_registry_after_open(reg_store, &session.review, session.reviewable_file_count());
     Ok(session)
 }
 
@@ -228,7 +228,7 @@ fn sync_registry_in_background(reg_store: JsonRegistryStore, session: &ReviewSes
     let job = RegistrySyncJob {
         reg_store,
         review: session.review.clone(),
-        file_count: session.summary.files.len() as u32,
+        file_count: session.reviewable_file_count(),
     };
     let mut queue = registry_sync_queue();
     queue.pending.insert(job.review.id.clone(), job);

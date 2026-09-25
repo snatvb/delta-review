@@ -18,7 +18,7 @@
 // jump-to-comment, and the viewed toggle.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { track } from "@/analytics";
-import { ArrowLeftRight, BookOpen, Check, ChevronDown, ChevronRight, ChevronUp, Code as CodeIcon, Copy, ExternalLink, Eye, FileQuestion, FileText, FileX, MessageSquarePlus, Pencil, Plus, WrapText } from "lucide-react";
+import { ArrowLeftRight, BookOpen, Check, ChevronDown, ChevronRight, ChevronUp, Code as CodeIcon, Copy, ExternalLink, Eye, EyeOff, FileQuestion, FileText, FileX, MessageSquarePlus, Pencil, Plus, WrapText } from "lucide-react";
 import { getSyntaxLineTemplate } from "@git-diff-view/file";
 import { SplitSide } from "@git-diff-view/react";
 import { Button } from "@/components/ui/button";
@@ -113,7 +113,8 @@ const isRenameOnly = (e: FileEntry) => e.status === "renamed" && e.additions ===
 // re-report (its effect deps don't change) — and for a revealed giant, its reported
 // body height overrides this. (#9)
 const estReserved = (e: FileEntry, rowH: number) =>
-  e.binary
+  e.ignored ? PLACEHOLDER_BODY_H
+  : e.binary
     ? isImagePath(e.path) ? IMAGE_BODY_H : PLACEHOLDER_BODY_H
     : e.status === "deleted" || isGiant(e) || isRenameOnly(e) ? PLACEHOLDER_BODY_H
     : estBodyH(e, rowH);
@@ -262,12 +263,12 @@ const railBg = (tint: string | null) => (tint ? `linear-gradient(${tint}, ${tint
 const mix = (color: string, pct: number) => `color-mix(in oklch, ${color} ${pct}%, transparent)`;
 
 // Unified row: old# · new# · marker · code, hover `+` to comment, gutters drag-select.
-function Row({ model, index, top, height, wrap, selected, highlighted, onComment, marks, mode, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onEscalateEdit }: { model: Model; index: number; top: number; height: number; wrap: boolean; selected: boolean; highlighted: boolean; onComment: (side: Side, line: number) => void; marks?: RowMark[]; mode: DiffMode; rowEdit: RowEditState | null; onStartEdit: (line: number, text: string) => void; onSaveEdit: (line: number, expected: string, replacement: string) => void; onCancelEdit: () => void; onEscalateEdit: (line: number) => void }) {
+function Row({ model, index, top, height, wrap, selected, highlighted, onComment, marks, mode, readOnly, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onEscalateEdit }: { model: Model; index: number; top: number; height: number; wrap: boolean; selected: boolean; highlighted: boolean; onComment: (side: Side, line: number) => void; marks?: RowMark[]; mode: DiffMode; readOnly: boolean; rowEdit: RowEditState | null; onStartEdit: (line: number, text: string) => void; onSaveEdit: (line: number, expected: string, replacement: string) => void; onCancelEdit: () => void; onEscalateEdit: (line: number) => void }) {
   const line = model.getUnifiedLine(index);
   const hasOld = line.oldLineNumber != null, hasNew = line.newLineNumber != null;
   const kind = hasOld && hasNew ? "ctx" : hasNew ? "add" : hasOld ? "del" : "hunk";
   const side: Side = hasNew ? "new" : "old";
-  const editable = unifiedRowEdit(mode, line);
+  const editable = readOnly ? null : unifiedRowEdit(mode, line);
   const isEditingThis = rowEdit != null && editable != null && rowEdit.line === editable.line;
   const html = kind === "hunk" ? escapeHtml(line.value ?? "") : syntaxHtml(model, side, (hasNew ? line.newLineNumber : line.oldLineNumber)!, line.value);
   const range = kind === "add" || kind === "del" ? changeRangeOf(line.diff) : undefined;
@@ -296,7 +297,7 @@ function Row({ model, index, top, height, wrap, selected, highlighted, onComment
         <span data-gutter="old" className={gutterCls}>{hasOld ? line.oldLineNumber : ""}</span>
         <span data-gutter="new" className={gutterCls}>{hasNew ? line.newLineNumber : ""}</span>
         <span className={`w-4 shrink-0 select-none text-center ${markerColor}`}>{marker}</span>
-        {kind !== "hunk" && (
+        {!readOnly && kind !== "hunk" && (
           <button type="button" onClick={() => onComment(side, (hasNew ? line.newLineNumber : line.oldLineNumber)!)} aria-label={`comment on line ${hasNew ? line.newLineNumber : line.oldLineNumber}`} title="Comment (drag line numbers for a range)" className={`left-[5.25rem] top-1/2 ${addBtnCls}`}>
             <Plus className="size-3.5" strokeWidth={2.5} />
           </button>
@@ -315,12 +316,12 @@ function Row({ model, index, top, height, wrap, selected, highlighted, onComment
 // gutter is a sticky rail (like the unified row) so it stays pinned and masks the
 // code that scrolls under it on horizontal scroll. The two columns are separate
 // scroll containers (synced), so each side scrolls within its own half. (#2/#10)
-function SplitColCell({ model, side, index, top, height, wrap, changed, highlighted, selected, onComment, marks, mode, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onEscalateEdit }: { model: Model; side: Side; index: number; top: number; height: number; wrap: boolean; changed: boolean; highlighted: boolean; selected: boolean; onComment: (side: Side, line: number) => void; marks?: RowMark[]; mode: DiffMode; rowEdit: RowEditState | null; onStartEdit: (line: number, text: string) => void; onSaveEdit: (line: number, expected: string, replacement: string) => void; onCancelEdit: () => void; onEscalateEdit: (line: number) => void }) {
+function SplitColCell({ model, side, index, top, height, wrap, changed, highlighted, selected, onComment, marks, mode, readOnly, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onEscalateEdit }: { model: Model; side: Side; index: number; top: number; height: number; wrap: boolean; changed: boolean; highlighted: boolean; selected: boolean; onComment: (side: Side, line: number) => void; marks?: RowMark[]; mode: DiffMode; readOnly: boolean; rowEdit: RowEditState | null; onStartEdit: (line: number, text: string) => void; onSaveEdit: (line: number, expected: string, replacement: string) => void; onCancelEdit: () => void; onEscalateEdit: (line: number) => void }) {
   const line = side === "old" ? model.getSplitLeftLine(index) : model.getSplitRightLine(index);
   const has = line.lineNumber != null;
   const ln = line.lineNumber!;
   const html = has ? syntaxHtml(model, side, ln, line.value) : "";
-  const editable = splitRowEdit(mode, side, line);
+  const editable = readOnly ? null : splitRowEdit(mode, side, line);
   const isEditingThis = rowEdit != null && editable != null && rowEdit.line === editable.line;
   // No line here → the change is on the other side; tint the whole empty row
   // (gutter included) a neutral "void" so it reads as absent, not context. (#2)
@@ -337,7 +338,7 @@ function SplitColCell({ model, side, index, top, height, wrap, changed, highligh
     <div data-row-index={index} className="group absolute left-0 flex w-full items-stretch font-mono text-[length:var(--code-fs,13px)] leading-[var(--code-lh,22px)]" style={{ top, height, background: tint ?? undefined }}>
       <div className="sticky left-0 z-[1] flex items-stretch bg-code" style={{ background: railBg(tint), boxShadow: accent ? `inset 3px 0 0 ${accent}` : undefined }}>
         <span data-gutter={side} className={gutterCls}>{has ? ln : ""}</span>
-        {has && (
+        {!readOnly && has && (
           <button type="button" onClick={() => onComment(side, ln)} aria-label={`comment on ${side} line ${ln}`} title="Comment (drag line numbers for a range)" className={`left-12 top-1/2 ${addBtnCls}`}>
             <Plus className="size-3.5" strokeWidth={2.5} />
           </button>
@@ -507,12 +508,14 @@ const VFileSection = memo(function VFileSection({
   // — restoring the classic pane's treatment that the virtual refactor dropped. (#11)
   const isBinary = entry.binary;
   const isDeleted = entry.status === "deleted";
+  const isIgnored = !!entry.ignored;
   // Binary image (by extension) → the GitHub-style compare card instead of the
   // one-line placeholder. Its sizes/previews load only while the card is on
   // screen, like a text file's diff model. (#binary)
   const isImageCard = isBinary && isImagePath(entry.path);
-  const binary = useBinaryFile(target, cache, entry.path, !collapsed && !previewing && isBinary && (isImageCard ? imageNear : view != null));
   const [revealed, setRevealed] = useState(false);
+  const ignoredHidden = isIgnored && !revealed;
+  const binary = useBinaryFile(target, cache, entry.path, !collapsed && !previewing && !ignoredHidden && isBinary && (isImageCard ? imageNear : view != null));
   // Rendered markdown preview: added/modified markdown files only (deleted has no
   // new content; binary has none). `previewing` is held by the pane (survives the
   // card unmounting when scrolled off-screen); only the measured height is local. (#preview)
@@ -524,12 +527,12 @@ const VFileSection = memo(function VFileSection({
   const bigHidden = isGiant(entry) && !revealed; // giant, not yet revealed → placeholder
   // Previewing takes precedence over every diff placeholder (incl. a giant's "Show
   // diff") — a previewed file shows rendered content, not a placeholder.
-  const showPlaceholder = !collapsed && !previewing && (isBinary || (isDeleted && !revealed) || bigHidden || (isRenameOnly(entry) && !revealed));
+  const showPlaceholder = !collapsed && !previewing && (ignoredHidden || isBinary || (isDeleted && !revealed) || bigHidden || (isRenameOnly(entry) && !revealed));
 
   // Build the model when on-screen, or whenever find is active (forceModel) so
   // every searchable file contributes matches even while off-screen/collapsed — but a
   // hidden giant only builds under forceModel, so scrolling past it stays cheap. (#11)
-  const wantModel = !isBinary && (!isDeleted || revealed) && (!isRenameOnly(entry) || revealed) && (forceModel || (!bigHidden && view != null && !collapsed));
+  const wantModel = !isBinary && !ignoredHidden && (!isDeleted || revealed) && (!isRenameOnly(entry) || revealed) && (forceModel || (!bigHidden && view != null && !collapsed));
   const fd = useFileDiffCacheEntry(cache, entry.path, wantModel || previewing);
   const model = useMemo(() => (fd && wantModel ? buildModel(fd, theme, layout) : null), [fd, theme, layout, wantModel]);
   const rowCount = model ? rowCountOf(model, layout) : 0;
@@ -781,7 +784,7 @@ const VFileSection = memo(function VFileSection({
   // Drag the line-number gutter → range comment.
   const [sel, setSel] = useState<{ a: number; b: number } | null>(null);
   const onGutterPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!model || !fd) return;
+    if (!model || !fd || isIgnored) return;
     const t = e.target as HTMLElement;
     const gut = t.closest("[data-gutter]"), rowEl = t.closest("[data-row-index]");
     if (!gut || !rowEl) return;
@@ -813,7 +816,7 @@ const VFileSection = memo(function VFileSection({
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
-  }, [model, fd, entry.path, layout, onAddComment]);
+  }, [model, fd, isIgnored, entry.path, layout, onAddComment]);
   const selLo = sel ? Math.min(sel.a, sel.b) : -1, selHi = sel ? Math.max(sel.a, sel.b) : -1;
 
   const slash = entry.path.lastIndexOf("/");
@@ -862,7 +865,7 @@ const VFileSection = memo(function VFileSection({
             key={idx} model={model} side={side} index={idx} top={visualRowTop(v)} height={rowPxOf(v)} wrap={wrap}
             changed={changed} highlighted={rangeRows.has(idx)} selected={idx >= selLo && idx <= selHi}
             onComment={commentLine} marks={rowMarks(idx)?.filter((m) => m.side === side)}
-            mode={mode} rowEdit={rowEdit} onStartEdit={startEditRow} onSaveEdit={saveEditRow} onCancelEdit={onCancelEdit} onEscalateEdit={escalateEditRow}
+            mode={mode} readOnly={isIgnored} rowEdit={rowEdit} onStartEdit={startEditRow} onSaveEdit={saveEditRow} onCancelEdit={onCancelEdit} onEscalateEdit={escalateEditRow}
           />
         );
       })}
@@ -905,6 +908,11 @@ const VFileSection = memo(function VFileSection({
             <span className="min-w-0 truncate text-[13px]">
               {dir && <span className="text-muted-foreground">{dir}</span>}
               <span className="font-medium text-foreground">{base}</span>
+            </span>
+          )}
+          {isIgnored && (
+            <span className="delta-ui-font ml-1 shrink-0 rounded bg-muted px-1.5 py-px text-[11px] text-muted-foreground" title="Matched by .deltaignore">
+              ignored
             </span>
           )}
           {/* Reveals on header hover (and keyboard focus); ✓ flashes after a copy. */}
@@ -973,7 +981,7 @@ const VFileSection = memo(function VFileSection({
             >
               <ExternalLink className="size-4" />
             </Button>
-            {isWorkingTreeTarget(mode) && !isBinary && !isDeleted && (
+            {isWorkingTreeTarget(mode) && !isIgnored && !isBinary && !isDeleted && (
               <Button
                 size="sm"
                 variant="ghost"
@@ -985,49 +993,57 @@ const VFileSection = memo(function VFileSection({
                 <Pencil className="size-4" />
               </Button>
             )}
-            {/* While previewing there are no line anchors to attach to, so commenting is
-                disabled rather than hidden. The title lives on the wrapping span so the
-                native tooltip still shows over the disabled (pointer-events-none) button,
-                and the span absorbs the click so it can't fall through to the collapse
-                target behind it. (#preview) */}
-            <span
-              className="relative shrink-0"
-              title={previewing ? "Switch to Diff to add a comment" : "Comment on file"}
-            >
+            {!isIgnored && (
+              <>
+                {/* While previewing there are no line anchors to attach to, so commenting is
+                    disabled rather than hidden. The title lives on the wrapping span so the
+                    native tooltip still shows over the disabled (pointer-events-none) button,
+                    and the span absorbs the click so it can't fall through to the collapse
+                    target behind it. (#preview) */}
+                <span
+                  className="relative shrink-0"
+                  title={previewing ? "Switch to Diff to add a comment" : "Comment on file"}
+                >
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={previewing}
+                    onClick={() => {
+                      // A deleted or giant file hides its content behind a reveal, and the
+                      // file-comment form renders inside the (model-built) body — so reveal first,
+                      // else the comment this click creates would sit hidden behind the placeholder. (#11)
+                      if ((isDeleted || isGiant(entry) || isRenameOnly(entry)) && !revealed) { setRevealed(true); void cache.load(entry.path); }
+                      onAddFileComment(entry.path, "");
+                    }}
+                    aria-label={previewing ? `commenting disabled while previewing ${entry.path}` : `comment on ${entry.path}`}
+                    className="h-7 px-2 text-muted-foreground hover:text-foreground"
+                  >
+                    <MessageSquarePlus className="size-4" />
+                  </Button>
+                </span>
+              </>
+            )}
+          </div>
+          {!isIgnored && (
+            <>
+              <span aria-hidden className="mx-1 h-5 w-px bg-border/60" />
+              {/* Review state: the per-file "done" checkpoint, pinned to the edge. */}
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={previewing}
-                onClick={() => {
-                  // A deleted or giant file hides its content behind a reveal, and the
-                  // file-comment form renders inside the (model-built) body — so reveal first,
-                  // else the comment this click creates would sit hidden behind the placeholder. (#11)
-                  if ((isDeleted || isGiant(entry) || isRenameOnly(entry)) && !revealed) { setRevealed(true); void cache.load(entry.path); }
-                  onAddFileComment(entry.path, "");
-                }}
-                aria-label={previewing ? `commenting disabled while previewing ${entry.path}` : `comment on ${entry.path}`}
-                className="h-7 px-2 text-muted-foreground hover:text-foreground"
+                onClick={() => onToggleViewed(entry.path)}
+                aria-pressed={viewed}
+                aria-label={`viewed ${entry.path}`}
+                title="Mark viewed"
+                className={`delta-ui-font h-7 gap-1.5 px-2 text-[12px] ${viewed ? "text-primary hover:text-primary" : "text-muted-foreground hover:text-foreground"}`}
               >
-                <MessageSquarePlus className="size-4" />
+                <span className={`flex size-4 items-center justify-center rounded-[5px] border transition-colors ${viewed ? "border-primary bg-primary text-primary-foreground" : "border-border/80"}`}>
+                  {viewed && <Check className="size-3" strokeWidth={3} />}
+                </span>
+                Viewed
               </Button>
-            </span>
-          </div>
-          <span aria-hidden className="mx-1 h-5 w-px bg-border/60" />
-          {/* Review state: the per-file "done" checkpoint, pinned to the edge. */}
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => onToggleViewed(entry.path)}
-            aria-pressed={viewed}
-            aria-label={`viewed ${entry.path}`}
-            title="Mark viewed"
-            className={`delta-ui-font h-7 gap-1.5 px-2 text-[12px] ${viewed ? "text-primary hover:text-primary" : "text-muted-foreground hover:text-foreground"}`}
-          >
-            <span className={`flex size-4 items-center justify-center rounded-[5px] border transition-colors ${viewed ? "border-primary bg-primary text-primary-foreground" : "border-border/80"}`}>
-              {viewed && <Check className="size-3" strokeWidth={3} />}
-            </span>
-            Viewed
-          </Button>
+            </>
+          )}
         </div>
       </div>
       {!collapsed && (
@@ -1045,6 +1061,18 @@ const VFileSection = memo(function VFileSection({
                 <span>Loading preview…</span>
               </div>
             )
+          ) : ignoredHidden ? (
+            <div className="delta-ui-font flex h-full items-center gap-3 pl-5 pr-3 text-[13px] text-muted-foreground">
+              <EyeOff className="size-4 shrink-0 opacity-70" />
+              <span>Ignored by .deltaignore — not part of the review.</span>
+              <button
+                type="button"
+                onClick={() => { setRevealed(true); void cache.load(entry.path); }}
+                className="flex h-7 items-center gap-1.5 rounded-md px-2 text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+              >
+                <Eye className="size-4" /> Show anyway
+              </button>
+            </div>
           ) : isBinary ? (
             isImageCard ? (
               <BinaryImageDiff
@@ -1141,7 +1169,7 @@ const VFileSection = memo(function VFileSection({
                     const vr = visualRows[v];
                     if (vr.kind !== "line") return null;
                     const hl = rangeRows.has(vr.index);
-                    return <Row key={vr.index} model={model} index={vr.index} top={visualRowTop(v)} height={rowPxOf(v)} wrap={wrap} selected={vr.index >= selLo && vr.index <= selHi} highlighted={hl} onComment={commentLine} marks={rowMarks(vr.index)} mode={mode} rowEdit={rowEdit} onStartEdit={startEditRow} onSaveEdit={saveEditRow} onCancelEdit={onCancelEdit} onEscalateEdit={escalateEditRow} />;
+                    return <Row key={vr.index} model={model} index={vr.index} top={visualRowTop(v)} height={rowPxOf(v)} wrap={wrap} selected={vr.index >= selLo && vr.index <= selHi} highlighted={hl} onComment={commentLine} marks={rowMarks(vr.index)} mode={mode} readOnly={isIgnored} rowEdit={rowEdit} onStartEdit={startEditRow} onSaveEdit={saveEditRow} onCancelEdit={onCancelEdit} onEscalateEdit={escalateEditRow} />;
                   })}
                 </div>
               ))}
@@ -1323,11 +1351,13 @@ export function VirtualDiffPane({
   // Giant files no longer auto-collapse — they render an expanded card with a
   // "Show diff" placeholder instead (see bigHidden). Only viewed files collapse by
   // default; everything else follows the manual override. (#11)
-  const collapsedFor = useCallback((e: FileEntry) => overrides[e.path] ?? viewedFiles.has(e.path), [overrides, viewedFiles]);
+  const ignoredPaths = useMemo(() => new Set(files.filter((f) => f.ignored).map((f) => f.path)), [files]);
+  const collapsedByDefault = useCallback((path: string) => viewedFiles.has(path) || ignoredPaths.has(path), [viewedFiles, ignoredPaths]);
+  const collapsedFor = useCallback((e: FileEntry) => overrides[e.path] ?? collapsedByDefault(e.path), [overrides, collapsedByDefault]);
   const toggleCollapse = useCallback((path: string) => {
-    const cur = overrides[path] ?? viewedFiles.has(path);
+    const cur = overrides[path] ?? collapsedByDefault(path);
     setOverrides((o) => ({ ...o, [path]: !cur }));
-  }, [overrides, viewedFiles]);
+  }, [overrides, collapsedByDefault]);
 
   // Per-file line-wrap override (session-only, like the collapse overrides above):
   // resolved wrap = explicit override, else the extension default. Not persisted.

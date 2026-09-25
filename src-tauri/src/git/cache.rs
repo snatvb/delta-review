@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 
 use git2::Repository;
 
-use crate::git::diff::{compute_diff_full, get_file_diff, with_fresh_sources, DiffSummary, FileDiff, FileSources, FullDiff};
+use crate::git::diff::{compute_diff_full, extract_file_diff, get_file_diff, with_fresh_sources, DiffSummary, FileDiff, FileSources, FullDiff};
 use crate::git::open_repo;
 use crate::git::model::{DiffMode, Target};
 use crate::git::GitError;
@@ -131,13 +131,17 @@ impl DiffCache {
     }
 
     /// One file's diff for `target` — a map read once the snapshot is built. Files
-    /// too large to cache aren't in the map and fall back to a one-off `get_file_diff`.
+    /// left out of the map (over the cache cap, or `.deltaignore`d) are extracted from
+    /// the snapshot's header + sources, without rebuilding the whole-repo diff.
     pub fn file(&self, target: &Target, path: &str) -> Result<FileDiff, GitError> {
         let snap = self.snapshot(target)?;
         if let Some(fd) = snap.diff.files.get(path) {
             return Ok(fd.clone());
         }
-        get_file_diff(target, path)
+        match (snap.diff.headers.get(path), snap.diff.sources.get(path)) {
+            (Some(header), Some(sources)) => extract_file_diff(&open_repo(&target.repo_path)?, header, sources),
+            _ => get_file_diff(target, path),
+        }
     }
 
     /// Run `f` on `path`'s byte sources from the snapshot, so a binary card's reads
@@ -190,6 +194,25 @@ mod tests {
 
     fn target(repo_path: &str, mode: DiffMode) -> Target {
         Target { repo_path: repo_path.into(), worktree: None, mode, base: None, commit: None }
+    }
+
+    #[test]
+    fn deltaignored_file_is_extracted_on_demand_from_the_snapshot() {
+        let (dir, _repo) = repo_with_commit();
+        write(dir.path(), ".deltaignore", "gen/
+");
+        write(dir.path(), "gen/api.ts", "export const generated = 1;
+");
+        let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
+        let cache = DiffCache::default();
+
+        let entry = cache.summary(&t).unwrap().files.into_iter().find(|f| f.path == "gen/api.ts").unwrap();
+        assert!(entry.ignored);
+        assert!(cache.snapshot(&t).unwrap().diff.files.get("gen/api.ts").is_none());
+
+        let fd = cache.file(&t, "gen/api.ts").unwrap();
+        assert_eq!(fd.new_content.as_deref(), Some("export const generated = 1;
+"));
     }
 
     #[test]

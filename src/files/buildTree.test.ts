@@ -30,4 +30,11 @@ describe("reviewOrder", () => {
     const ordered = reviewOrder([bin("a/logo.png"), f("z.ts"), giant("a/gen.ts"), f("a/b.ts"), bin("readme.pdf")]);
     expect(ordered.map((e) => e.path)).toEqual(["a/b.ts", "z.ts", "a/gen.ts", "a/logo.png", "readme.pdf"]);
   });
+
+  it("puts ignored files last, after binaries and giants", () => {
+    const ignored = (path: string): FileEntry => ({ ...f(path), ignored: true });
+    const bin = (path: string): FileEntry => ({ ...f(path), binary: true });
+    const ordered = reviewOrder([ignored("a/gen/api.ts"), bin("logo.png"), f("z.ts"), ignored("b.gen.ts")]);
+    expect(ordered.map((e) => e.path)).toEqual(["z.ts", "logo.png", "a/gen/api.ts", "b.gen.ts"]);
+  });
 });

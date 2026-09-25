@@ -19,6 +19,12 @@ pub struct ReviewSession {
     pub repo_name: String,
 }
 
+impl ReviewSession {
+    pub fn reviewable_file_count(&self) -> u32 {
+        self.summary.files.iter().filter(|f| !f.ignored).count() as u32
+    }
+}
+
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
@@ -35,6 +41,8 @@ pub fn reconcile(cache: &DiffCache, mut review: Review) -> Result<ReviewSession,
     let summary = cache.summary(&review.target)?;
     let present: HashSet<String> =
         summary.files.iter().map(|f| f.path.clone()).collect();
+    let ignored: std::collections::HashSet<String> =
+        summary.files.iter().filter(|f| f.ignored).map(|f| f.path.clone()).collect();
 
     // Hand untagged comments to the commits that landed since the last snapshot
     // (before the stale loop, so freshly-tagged comments take the frozen path).
@@ -53,6 +61,9 @@ pub fn reconcile(cache: &DiffCache, mut review: Review) -> Result<ReviewSession,
         let Some(anchor) = comment.anchor.as_mut() else {
             continue; // general note — no anchor
         };
+        if ignored.contains(anchor.file.as_str()) {
+            continue;
+        }
         let has_lines = anchor.start_line.is_some() && anchor.snippet.is_some();
         if !has_lines {
             // file-scope: present in diff => fresh, else stale
@@ -87,6 +98,9 @@ pub fn reconcile(cache: &DiffCache, mut review: Review) -> Result<ReviewSession,
         .filter_map(|mut v| {
             if !present.contains(&v.file) {
                 return None; // file no longer in the diff → drop viewed progress
+            }
+            if ignored.contains(&v.file) {
+                return Some(v);
             }
             match cache.file(&target, &v.file) {
                 Ok(fd) => {
@@ -447,6 +461,26 @@ mod tests {
         r.comments.push(line_comment("file.txt", 1, "line1"));
         let session = reconcile(&DiffCache::default(), r).unwrap();
         assert_eq!(session.review.comments[0].stale, true);
+    }
+
+    #[test]
+    fn leaves_comments_and_viewed_on_deltaignored_files_untouched() {
+        let (dir, _repo) = repo_with_commit();
+        write(dir.path(), ".deltaignore", "file.txt\n");
+        write(dir.path(), "file.txt", "completely\ndifferent\n");
+        let mut r = empty_review(dir.path().to_str().unwrap());
+        r.comments.push(line_comment("file.txt", 1, "line1"));
+        r.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: "stale-hash".into() });
+
+        let session = reconcile(&DiffCache::default(), r).unwrap();
+
+        let file = session.summary.files.iter().find(|f| f.path == "file.txt").unwrap();
+        assert!(file.ignored);
+        assert_eq!((file.additions, file.deletions), (0, 0));
+        assert_eq!(session.review.comments[0].stale, false);
+        assert_eq!(session.review.comments[0].anchor.as_ref().unwrap().start_line, Some(1));
+        assert_eq!(session.review.viewed.len(), 1);
+        assert_eq!(session.review.viewed[0].diff_hash, "stale-hash");
     }
 
     #[test]

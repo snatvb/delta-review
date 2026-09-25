@@ -36,6 +36,7 @@ export interface FileEntry {
   deletions: number;
   binary: boolean;
   bytes?: number;
+  ignored?: boolean;
 }
 
 export interface FileDiff {

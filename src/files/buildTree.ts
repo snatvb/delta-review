@@ -56,8 +56,9 @@ export function flattenTreeFiles(files: FileEntry[]): FileEntry[] {
 
 const unreviewable = (e: FileEntry) => e.binary || isGiant(e);
 
-/** Tree order, with binaries and giant diffs moved to the end so readable diffs come first. */
+/** Tree order, with binaries and giant diffs moved to the end so readable diffs come first, then `.deltaignore`d files. */
 export function reviewOrder(files: FileEntry[]): FileEntry[] {
   const flat = flattenTreeFiles(files);
-  return [...flat.filter((e) => !unreviewable(e)), ...flat.filter(unreviewable)];
+  const reviewable = flat.filter((e) => !e.ignored);
+  return [...reviewable.filter((e) => !unreviewable(e)), ...reviewable.filter(unreviewable), ...flat.filter((e) => e.ignored)];
 }

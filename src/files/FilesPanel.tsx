@@ -2,7 +2,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Kbd } from "@/components/ui/kbd";
-import { ChevronRight, ChevronsDownUp, ChevronsUpDown, Folder, FolderOpen, FileCode, FileJson, FileText, Check, List, ListTree, MessageSquare, Search, X } from "lucide-react";
+import { ChevronRight, ChevronsDownUp, ChevronsUpDown, EyeOff, Folder, FolderOpen, FileCode, FileJson, FileText, Check, List, ListTree, MessageSquare, Search, X } from "lucide-react";
 import type { FileEntry, FileStatus } from "../types";
 import { buildTree, type TreeNode } from "./buildTree";
 
@@ -26,6 +26,9 @@ const EMPTY_COUNTS: Map<string, number> = new Map();
 // Compact large diff totals so the header stays on one line: over 100k → drop the
 // last three digits and append "k" (156048 → "156k"). Smaller counts stay exact.
 const fmtCount = (n: number) => (n > 100_000 ? `${Math.floor(n / 1000)}k` : String(n));
+
+// Git paths are repo-relative, so a leading "/" can never collide with a real file.
+const IGNORED_GROUP = "/:ignored";
 
 // Row windowing geometry (#virtual). Rows are a fixed height, so a row's y-offset is
 // exact arithmetic — we mount only the on-screen slice of a flattened node list and
@@ -64,6 +67,8 @@ interface RowHandlers {
 // border-l wrappers — collapsed subtrees simply never appear in `visible`. (#virtual)
 function Row({ node, depth, top, h }: { node: TreeNode; depth: number; top: number; h: RowHandlers }) {
   const isDir = node.kind === "dir";
+  const isIgnoredGroup = node.path === IGNORED_GROUP;
+  const isIgnoredFile = !isDir && !!node.entry?.ignored;
   const open = isDir && !h.collapsed.has(node.path);
   const active = node.path === h.activePath;
   const isViewed = !isDir && node.entry ? h.viewedFiles.has(node.entry.path) : false;
@@ -99,17 +104,19 @@ function Row({ node, depth, top, h }: { node: TreeNode; depth: number; top: numb
       ) : h.flat ? null : (
         <span data-testid="tree-indent" className="w-3.5 shrink-0" />
       )}
-      {isDir ? (
+      {isIgnoredGroup ? (
+        <EyeOff className="size-3.5 shrink-0 text-muted-foreground" />
+      ) : isDir ? (
         open
           ? <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
           : <Folder className="size-3.5 shrink-0 text-muted-foreground" />
       ) : (
         <FileGlyph name={node.name} status={node.entry!.status} />
       )}
-      <span className={`flex-1 truncate text-[13px] ${isDir ? "font-medium text-foreground" : "text-foreground"}`}>
+      <span className={`flex-1 truncate text-[13px] ${isIgnoredGroup ? "font-medium text-muted-foreground" : isDir ? "font-medium text-foreground" : isIgnoredFile ? "text-muted-foreground" : "text-foreground"}`}>
         {node.name}
       </span>
-      {!isDir && node.entry && (
+      {!isDir && node.entry && !isIgnoredFile && (
         <>
           {commentN > 0 && (
             <span
@@ -151,7 +158,7 @@ export function FilesPanel({
   commentCounts?: Map<string, number>;
 }) {
   const [mode, setMode] = useState<"tree" | "list">("tree");
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set([IGNORED_GROUP]));
   const [activePath, setActivePath] = useState<string | null>(selected);
   const [query, setQuery] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -217,12 +224,17 @@ export function FilesPanel({
     [files, q, searching],
   );
 
-  const roots: TreeNode[] = useMemo(
-    () => mode === "tree"
-      ? buildTree(filteredFiles)
-      : filteredFiles.map((e) => ({ id: e.path, name: e.path, path: e.path, kind: "file" as const, entry: e, children: [] })),
-    [filteredFiles, mode],
-  );
+  const roots: TreeNode[] = useMemo(() => {
+    const toNodes = (list: FileEntry[]): TreeNode[] => mode === "tree"
+      ? buildTree(list)
+      : list.map((e) => ({ id: e.path, name: e.path, path: e.path, kind: "file" as const, entry: e, children: [] }));
+    const ignored = filteredFiles.filter((f) => f.ignored);
+    const nodes = toNodes(filteredFiles.filter((f) => !f.ignored));
+    if (ignored.length > 0) {
+      nodes.push({ id: IGNORED_GROUP, name: `Ignored (${ignored.length})`, path: IGNORED_GROUP, kind: "dir", children: toNodes(ignored) });
+    }
+    return nodes;
+  }, [filteredFiles, mode]);
 
   // Flatten the currently-visible rows (with depth) for both keyboard nav and row
   // windowing. While searching, every dir is force-open so matches are never hidden
@@ -281,9 +293,11 @@ export function FilesPanel({
   const anyDirOpen = treeDirPaths.some((p) => !collapsed.has(p));
 
   // Cheap sums — React Compiler memoizes the render; no manual useMemo needed.
-  const totalAdds = files.reduce((n, f) => n + f.additions, 0);
-  const totalDels = files.reduce((n, f) => n + f.deletions, 0);
-  const allViewed = files.length > 0 && viewedFiles.size >= files.length;
+  const reviewable = files.filter((f) => !f.ignored);
+  const totalAdds = reviewable.reduce((n, f) => n + f.additions, 0);
+  const totalDels = reviewable.reduce((n, f) => n + f.deletions, 0);
+  const viewedCount = reviewable.filter((f) => viewedFiles.has(f.path)).length;
+  const allViewed = reviewable.length > 0 && viewedCount >= reviewable.length;
 
   // All hooks must run unconditionally — keep the empty-state return below them.
   if (files.length === 0) {
@@ -327,7 +341,7 @@ export function FilesPanel({
         break;
       case "Enter":
         e.preventDefault();
-        if (cur?.kind === "file") onToggleViewed(cur.path);
+        if (cur?.kind === "file" && !cur.entry?.ignored) onToggleViewed(cur.path);
         else if (cur?.kind === "dir") toggleDir(cur.path);
         break;
     }
@@ -381,8 +395,8 @@ export function FilesPanel({
           className={`inline-block shrink-0 whitespace-nowrap select-none rounded-md px-2 py-0.5 text-[13px] tabular-nums ${allViewed ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground"}`}
           title="Files viewed"
         >
-          <span className={`font-medium ${allViewed ? "" : "text-foreground"}`}>{viewedFiles.size}</span>
-          <span className="opacity-80">{" / "}{files.length} viewed</span>
+          <span className={`font-medium ${allViewed ? "" : "text-foreground"}`}>{viewedCount}</span>
+          <span className="opacity-80">{" / "}{reviewable.length} viewed</span>
         </span>
         <span className="ml-auto shrink-0 whitespace-nowrap tabular-nums">
           {totalAdds > 0 && <span className="text-emerald-500">+{fmtCount(totalAdds)}</span>}{" "}

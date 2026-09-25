@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod deltaignore;
 pub mod diff;
 pub mod log;
 pub mod model;
