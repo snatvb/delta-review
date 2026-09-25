@@ -12,6 +12,7 @@ const highlightStyle = HighlightStyle.define([
   { tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.definition(tags.variableName)], color: "var(--cm-entity)" },
   { tag: [tags.string, tags.special(tags.string), tags.regexp], color: "var(--cm-string)" },
   { tag: [tags.number, tags.bool, tags.null, tags.atom, tags.attributeValue], color: "var(--cm-constant)" },
+  { tag: tags.standard(tags.variableName), color: "var(--cm-constant)" },
   { tag: [tags.comment, tags.lineComment, tags.blockComment], color: "var(--cm-comment)", fontStyle: "italic" },
   { tag: tags.invalid, color: "var(--destructive)" },
 ]);

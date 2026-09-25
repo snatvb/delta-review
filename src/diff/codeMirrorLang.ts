@@ -7,7 +7,7 @@ import { langFromFilename } from "./lang";
 export type CodeMirrorLanguageId =
   | "javascript" | "jsx" | "typescript" | "tsx"
   | "python" | "rust" | "sql" | "css" | "html" | "json" | "markdown"
-  | "xml" | "yaml" | "cpp" | "java" | "php";
+  | "xml" | "yaml" | "cpp" | "java" | "php" | "gdscript";
 
 const HINT_TO_LANGUAGE: Record<string, CodeMirrorLanguageId> = {
   js: "javascript", mjs: "javascript", cjs: "javascript",
@@ -26,6 +26,7 @@ const HINT_TO_LANGUAGE: Record<string, CodeMirrorLanguageId> = {
   cpp: "cpp", cc: "cpp", cxx: "cpp", hpp: "cpp", hxx: "cpp", c: "cpp", h: "cpp",
   java: "java",
   php: "php",
+  gd: "gdscript",
 };
 
 export function codeMirrorLanguageFor(path: string): CodeMirrorLanguageId | null {

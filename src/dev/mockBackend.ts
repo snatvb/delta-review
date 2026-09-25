@@ -39,6 +39,9 @@ const SUMMARY: DiffSummary = {
     { path: "src/core/http.ts", oldPath: "src/api/client.ts", status: "renamed", additions: 3, deletions: 1, binary: false },
     { path: "src/legacy/cache.ts", status: "deleted", additions: 0, deletions: 9, binary: false },
     { path: "README.md", status: "added", additions: 15, deletions: 0, binary: false },
+    // GDScript — exercises the in-repo .gd grammar (annotations, &"…", $paths,
+    // %Unique, typed declarations, -> void, match).
+    { path: "game/player.gd", status: "modified", additions: 4, deletions: 2, binary: false },
     { path: "assets/atlas.xml", status: "modified", additions: 1, deletions: 1, binary: false, bytes: 3_400_000 },
     { path: "src/generated/schema.gen.ts", status: "modified", additions: 0, deletions: 0, binary: false, ignored: true },
     { path: "src/generated/routes.gen.ts", status: "added", additions: 0, deletions: 0, binary: false, ignored: true },
@@ -188,6 +191,44 @@ const FILES: Record<string, FileDiff> = {
     binary: false,
     oldContent: null,
     newContent: 'export const routes = ["/login", "/logout"];\n',
+  },
+  // GDScript diff for the in-repo .gd grammar: keeps the Godot-4 idioms in one
+  // place so the diff view's highlighting can be checked at a glance.
+  "game/player.gd": {
+    oldFileName: "game/player.gd",
+    newFileName: "game/player.gd",
+    status: "modified",
+    binary: false,
+    oldContent:
+      "extends CharacterBody2D\n" +
+      "class_name Player\n" +
+      "\n" +
+      "signal health_changed(new_health: int)\n" +
+      "\n" +
+      "@export var speed := 300.0\n" +
+      "@onready var sprite: Sprite2D = $Sprite2D\n" +
+      "@export_range(0, 100, 1) var hp: int = 100\n" +
+      "\n" +
+      "func take_damage(amount: int) -> void:\n" +
+      "\thp = clampi(hp - amount, 0, 100)\n" +
+      "\t%HealthBar.update(hp)\n" +
+      "\thealth_changed.emit(hp)\n",
+    newContent:
+      "extends CharacterBody2D\n" +
+      "class_name Player\n" +
+      "\n" +
+      "signal health_changed(new_health: int)\n" +
+      "\n" +
+      "@export var speed := 300.0\n" +
+      "@onready var sprite: Sprite2D = $Sprite2D\n" +
+      "@export_range(0, 100, 1) var hp: int = 100\n" +
+      "\n" +
+      "func take_damage(amount: int) -> void:\n" +
+      "\thp = clampi(hp - amount, 0, 100)  # клип в диапазоне\n" +
+      "\tif hp == 0 and not is_on_floor():\n" +
+      "\t\tawait get_tree().create_timer(0.1).timeout\n" +
+      "\t%HealthBar.update(hp)\n" +
+      "\thealth_changed.emit(hp)\n",
   },
   "assets/atlas.xml": {
     oldFileName: "assets/atlas.xml",

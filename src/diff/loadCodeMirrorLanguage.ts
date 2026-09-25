@@ -38,6 +38,10 @@ export async function loadCodeMirrorLanguage(id: CodeMirrorLanguageId | null): P
       return [(await import("@codemirror/lang-java")).java()];
     case "php":
       return [(await import("@codemirror/lang-php")).php()];
+    case "gdscript":
+      // In-repo StreamLanguage mode (see gdscriptLanguage.ts) — same
+      // one-dynamic-import-per-language chunking as the @codemirror/lang-* ones.
+      return [(await import("./gdscriptLanguage")).gdscript()];
     default:
       return [];
   }
