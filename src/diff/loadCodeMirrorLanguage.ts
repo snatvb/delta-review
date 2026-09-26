@@ -42,6 +42,9 @@ export async function loadCodeMirrorLanguage(id: CodeMirrorLanguageId | null): P
       // In-repo StreamLanguage mode (see gdscriptLanguage.ts) — same
       // one-dynamic-import-per-language chunking as the @codemirror/lang-* ones.
       return [(await import("./gdscriptLanguage")).gdscript()];
+    case "ron":
+      // In-repo StreamLanguage mode (see ronLanguage.ts).
+      return [(await import("./ronLanguage")).ron()];
     default:
       return [];
   }

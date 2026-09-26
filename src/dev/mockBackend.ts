@@ -42,6 +42,9 @@ const SUMMARY: DiffSummary = {
     // GDScript — exercises the in-repo .gd grammar (annotations, &"…", $paths,
     // %Unique, typed declarations, -> void, match).
     { path: "game/player.gd", status: "modified", additions: 4, deletions: 2, binary: false },
+    // RON — exercises the in-repo .ron grammar (fields, enums, newtype
+    // payloads, Some/None, invoke-styled tuple calls).
+    { path: "game/spells/combustion.ron", status: "modified", additions: 3, deletions: 1, binary: false },
     { path: "assets/atlas.xml", status: "modified", additions: 1, deletions: 1, binary: false, bytes: 3_400_000 },
     { path: "src/generated/schema.gen.ts", status: "modified", additions: 0, deletions: 0, binary: false, ignored: true },
     { path: "src/generated/routes.gen.ts", status: "added", additions: 0, deletions: 0, binary: false, ignored: true },
@@ -229,6 +232,35 @@ const FILES: Record<string, FileDiff> = {
       "\t\tawait get_tree().create_timer(0.1).timeout\n" +
       "\t%HealthBar.update(hp)\n" +
       "\thealth_changed.emit(hp)\n",
+  },
+  // RON diff for the in-repo .ron grammar: Godot-project spell-config shapes.
+  "game/spells/combustion.ron": {
+    oldFileName: "game/spells/combustion.ron",
+    newFileName: "game/spells/combustion.ron",
+    status: "modified",
+    binary: false,
+    oldContent:
+      "(\n" +
+      "    id: \"combustion\",\n" +
+      "    cast: Fire(\n" +
+      "        cost: Mana(amount: 25),\n" +
+      "        delay_ms: 60_000,\n" +
+      "    ),\n" +
+      "    hit: ApplyStatus((name: \"burning\", stacks: 3)),\n" +
+      "    animations: { Sword2h: \"great_sword_idle\" },\n" +
+      "    crit: None,\n" +
+      ")\n",
+    newContent:
+      "(\n" +
+      "    id: \"combustion\",\n" +
+      "    cast: Fire(\n" +
+      "        cost: Mana(amount: 20),\n" +
+      "        delay_ms: 45_000,\n" +
+      "    ),\n" +
+      "    hit: ApplyStatus((name: \"burning\", stacks: 3, instant((clip: \"vfx/fire\")))),\n" +
+      "    animations: { Sword2h: \"great_sword_idle\" },\n" +
+      "    crit: Some(0.25), // прокомментировали\n" +
+      ")\n",
   },
   "assets/atlas.xml": {
     oldFileName: "assets/atlas.xml",
