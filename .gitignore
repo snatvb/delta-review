@@ -32,6 +32,9 @@ docs/superpowers/
 # Playwright MCP run artifacts (UI verification)
 .playwright-mcp/
 
+# ZCode agent tooling ignore patterns
+.zcodeignore
+
 # Rust / Tauri build artifacts (src-tauri/.gitignore also covers /target)
 target/
 src-tauri/target/
