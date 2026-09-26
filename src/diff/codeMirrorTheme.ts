@@ -6,12 +6,19 @@ import { tags } from "@lezer/highlight";
 // Colors are CSS custom properties (--cm-*, defined in index.css for :root and
 // .dark) so the editor follows the app's light/dark theme and its palette stays
 // in one place, mirroring the diff pane's own hljs colors.
+// Exported for tests (codeMirrorTheme.test.ts): asserts every token kind the
+// in-repo stream modes emit actually resolves to a color.
 const highlightStyle = HighlightStyle.define([
   { tag: [tags.keyword, tags.controlKeyword, tags.moduleKeyword, tags.operatorKeyword], color: "var(--cm-keyword)" },
   { tag: [tags.className, tags.typeName, tags.tagName], color: "var(--cm-type)" },
   { tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.definition(tags.variableName)], color: "var(--cm-entity)" },
   { tag: [tags.string, tags.special(tags.string), tags.regexp], color: "var(--cm-string)" },
-  { tag: [tags.number, tags.bool, tags.null, tags.atom, tags.attributeValue], color: "var(--cm-constant)" },
+  // propertyName = the field-name token the RON stream mode emits (StreamLanguage
+  // "propertyName"). It must ride the constant color: the diff pane groups
+  // .hljs-attr with .hljs-number in both palettes (GitHub Dark #79c0ff, light
+  // override #0550ae — see index.css), and keys dominate .ron files, so leaving
+  // them unstyled made the edit overlay read as unhighlighted.
+  { tag: [tags.number, tags.bool, tags.null, tags.atom, tags.attributeValue, tags.propertyName], color: "var(--cm-constant)" },
   { tag: tags.standard(tags.variableName), color: "var(--cm-constant)" },
   { tag: [tags.comment, tags.lineComment, tags.blockComment], color: "var(--cm-comment)", fontStyle: "italic" },
   { tag: tags.invalid, color: "var(--destructive)" },
@@ -57,3 +64,5 @@ const chrome = EditorView.theme({
 export function codeMirrorAppTheme(): Extension[] {
   return [chrome, syntaxHighlighting(highlightStyle)];
 }
+
+export { highlightStyle as codeMirrorHighlightStyle };
