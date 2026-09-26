@@ -136,10 +136,11 @@
        just under the canvas (0.208) so it still reads as a sunken well without
        being a near-black pit. (#6) */
     --code: oklch(0.188 0 0);
-    /* Mirrors the diff pane's dark hljs palette (GitHub Dark, unmodified below). */
+    /* Mirrors the diff pane's dark hljs palette (GitHub Dark; strings overridden
+       to its green in the .hljs-* rules below — same split as light mode). */
     --cm-keyword: #ff7b72;
     --cm-entity: #d2a8ff;
-    --cm-string: #a5d6ff;
+    --cm-string: #7ee787;
     --cm-constant: #79c0ff;
     --cm-type: #ff7b72;
     --cm-comment: #8b949e;
@@ -349,6 +350,15 @@
 .diff-tailwindcss-wrapper[data-theme="light"] .hljs-attribute { color: #953800; }
 .diff-tailwindcss-wrapper[data-theme="light"] .hljs-comment,
 .diff-tailwindcss-wrapper[data-theme="light"] .hljs-quote { color: #6e7781; }
+
+/* Dark: GitHub Dark paints .hljs-attr/.hljs-number (and literal/variable) the
+   same blue #79c0ff and strings a near-white blue #a5d6ff — in data formats
+   (RON, JSON, GDScript exports) fields, strings and numbers blur together.
+   Split strings onto GitHub Dark's own green, mirroring the light theme's
+   green-string / blue-key grouping. */
+.diff-tailwindcss-wrapper[data-theme="dark"] .hljs-string,
+.diff-tailwindcss-wrapper[data-theme="dark"] .hljs-regexp,
+.diff-tailwindcss-wrapper[data-theme="dark"] .hljs-char { color: #7ee787; }
 
 /* Rendered comment text is real content — let it be selected/copied. */
 .prose, .prose * {
