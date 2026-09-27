@@ -39,6 +39,18 @@ describe("CommentThread", () => {
     expect(onDelete).toHaveBeenCalledWith("n1");
   });
 
+  it("saving a never-saved draft while still blank discards it instead of keeping an empty comment", () => {
+    const onEdit = vi.fn();
+    const onDelete = vi.fn();
+    const draft: Comment = { id: "n1", scope: "line", anchor: null, body: "", stale: false, resolved: false, createdAt: "t", updatedAt: "t" };
+    render(<CommentThread comments={[draft]} onEdit={onEdit} onDelete={onDelete} onToggleResolved={() => {}} />);
+    // The empty draft auto-opens its editor; hitting Save with no text must not
+    // persist a pointless empty comment.
+    fireEvent.click(screen.getByRole("button", { name: /^save/i }));
+    expect(onEdit).not.toHaveBeenCalled();
+    expect(onDelete).toHaveBeenCalledWith("n1");
+  });
+
   it("keeps a comment that has content when its edit is cancelled", () => {
     const onDelete = vi.fn();
     render(<CommentThread comments={comments} onEdit={() => {}} onDelete={onDelete} onToggleResolved={() => {}} />);

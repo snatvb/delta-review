@@ -298,7 +298,7 @@ function Row({ model, index, top, height, wrap, selected, highlighted, onComment
         <span data-gutter="new" className={gutterCls}>{hasNew ? line.newLineNumber : ""}</span>
         <span className={`w-4 shrink-0 select-none text-center ${markerColor}`}>{marker}</span>
         {!readOnly && kind !== "hunk" && (
-          <button type="button" onClick={() => onComment(side, (hasNew ? line.newLineNumber : line.oldLineNumber)!)} aria-label={`comment on line ${hasNew ? line.newLineNumber : line.oldLineNumber}`} title="Comment (drag line numbers for a range)" className={`left-[5.25rem] top-1/2 ${addBtnCls}`}>
+          <button type="button" data-add-comment={side} onClick={() => onComment(side, (hasNew ? line.newLineNumber : line.oldLineNumber)!)} aria-label={`comment on line ${hasNew ? line.newLineNumber : line.oldLineNumber}`} title="Comment (drag for a range)" className={`left-[5.25rem] top-1/2 ${addBtnCls}`}>
             <Plus className="size-3.5" strokeWidth={2.5} />
           </button>
         )}
@@ -339,7 +339,7 @@ function SplitColCell({ model, side, index, top, height, wrap, changed, highligh
       <div className="sticky left-0 z-[1] flex items-stretch bg-code" style={{ background: railBg(tint), boxShadow: accent ? `inset 3px 0 0 ${accent}` : undefined }}>
         <span data-gutter={side} className={gutterCls}>{has ? ln : ""}</span>
         {!readOnly && has && (
-          <button type="button" onClick={() => onComment(side, ln)} aria-label={`comment on ${side} line ${ln}`} title="Comment (drag line numbers for a range)" className={`left-12 top-1/2 ${addBtnCls}`}>
+          <button type="button" data-add-comment={side} onClick={() => onComment(side, ln)} aria-label={`comment on ${side} line ${ln}`} title="Comment (drag for a range)" className={`left-12 top-1/2 ${addBtnCls}`}>
             <Plus className="size-3.5" strokeWidth={2.5} />
           </button>
         )}
@@ -770,41 +770,72 @@ const VFileSection = memo(function VFileSection({
   useEffect(() => { if (model || showPlaceholder || previewing) reportBodyHeight(entry.path, bodyH); }, [model, showPlaceholder, previewing, isBinary, entry.path, bodyH, reportBodyHeight]);
 
   // Create a line/range anchor and add an (empty) comment, mirroring the classic renderer.
+  // A line that already carries a thread (same block key as `blocks`) never gets a
+  // second comment from `+`. Pressed again, `+` toggles the draft away: a trailing
+  // empty draft is discarded — the editor closes with it, since a blank comment is
+  // noise — while a thread with real content just pulses (caret into an open
+  // editor) so "already commented here" is obvious and the button doesn't read dead.
   const commentLine = useCallback((side: Side, lineNumber: number) => {
     if (!fd || lineNumber == null) return;
+    const existing = blocks.find((b) => b.id === `${side}:${lineNumber}`);
+    if (existing) {
+      const last = existing.comments[existing.comments.length - 1];
+      if (last.body.trim() === "") { onDeleteComment(last.id); return; }
+      const node = document.querySelector(`[data-comment-id="${CSS.escape(last.id)}"]`) as HTMLElement | null;
+      if (node) {
+        node.scrollIntoView({ block: "nearest" });
+        const ta = node.querySelector("textarea");
+        if (ta) { ta.focus(); const n = ta.value.length; ta.setSelectionRange(n, n); }
+        const primary = getComputedStyle(document.documentElement).getPropertyValue("--primary").trim() || "currentColor";
+        if (typeof node.animate === "function") node.animate([{ boxShadow: `0 0 0 2px ${primary}` }, { boxShadow: "0 0 0 2px transparent" }], { duration: 1100, easing: "ease-out" });
+      }
+      return;
+    }
     const content = side === "old" ? fd.oldContent : fd.newContent;
     const snippet = (content ?? "").split("\n").slice(lineNumber - 1, lineNumber).join("\n");
     onAddComment({ file: entry.path, side, startLine: lineNumber, endLine: null, snippet }, "");
-  }, [fd, entry.path, onAddComment]);
+  }, [fd, entry.path, onAddComment, onDeleteComment, blocks]);
 
   const startEditRow = useCallback((line: number, text: string) => onStartEdit(entry.path, line, text), [entry.path, onStartEdit]);
   const saveEditRow = useCallback((line: number, expected: string, replacement: string) => onSaveEdit(entry.path, line, expected, replacement), [entry.path, onSaveEdit]);
   const escalateEditRow = useCallback((line: number) => onOpenFileEditor(entry.path, line), [entry.path, onOpenFileEditor]);
 
-  // Drag the line-number gutter → range comment.
+  // Drag the line-number gutter OR the hover `+` → range comment. A press that
+  // never leaves its row is a click: nothing happens here — for `+` the plain
+  // onClick still fires and adds the single-line comment.
   const [sel, setSel] = useState<{ a: number; b: number } | null>(null);
   const onGutterPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     if (!model || !fd || isIgnored) return;
     const t = e.target as HTMLElement;
-    const gut = t.closest("[data-gutter]"), rowEl = t.closest("[data-row-index]");
-    if (!gut || !rowEl) return;
-    const side: Side = gut.getAttribute("data-gutter") === "old" ? "old" : "new";
+    const gut = t.closest("[data-gutter]"), add = t.closest("[data-add-comment]");
+    const rowEl = t.closest("[data-row-index]");
+    if ((!gut && !add) || !rowEl) return;
+    const side: Side = gut
+      ? (gut.getAttribute("data-gutter") === "old" ? "old" : "new")
+      : (add!.getAttribute("data-add-comment") === "old" ? "old" : "new");
     const startIdx = Number(rowEl.getAttribute("data-row-index"));
     e.preventDefault();
-    setSel({ a: startIdx, b: startIdx });
-    let head = startIdx;
+    let head = startIdx, moved = false;
     const lineAt = (i: number): number | undefined => layout === "split"
       ? (side === "old" ? model.getSplitLeftLine(i) : model.getSplitRightLine(i)).lineNumber
       : (side === "old" ? model.getUnifiedLine(i).oldLineNumber : model.getUnifiedLine(i).newLineNumber);
     const onMove = (ev: PointerEvent) => {
       const r = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)?.closest("[data-row-index]");
-      if (r) { head = Number(r.getAttribute("data-row-index")); setSel({ a: startIdx, b: head }); }
+      if (!r) return;
+      head = Number(r.getAttribute("data-row-index"));
+      // Paint the range only once the pointer leaves the start row, so a plain
+      // click (on `+` especially) never flashes the selection tint.
+      if (moved || head !== startIdx) { moved = true; setSel({ a: startIdx, b: head }); }
     };
-    const onUp = () => {
+    const onUp = (ev: PointerEvent) => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       setSel(null);
-      if (head === startIdx) return; // a click, not a drag — `+` handles single lines
+      if (!moved) return; // a click, not a drag — `+`'s onClick handles single lines
+      // The release point is authoritative — a fast flick can coalesce the last
+      // pointermove away from where the pointer actually let go.
+      const r = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)?.closest("[data-row-index]");
+      if (r) head = Number(r.getAttribute("data-row-index"));
       const lo = Math.min(startIdx, head), hi = Math.max(startIdx, head);
       let startLine: number | null = null, endLine: number | null = null;
       for (let i = lo; i <= hi; i++) { const n = lineAt(i); if (n != null) { if (startLine == null) startLine = n; endLine = n; } }

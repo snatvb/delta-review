@@ -81,7 +81,10 @@ export function CommentThread({
                   <CommentEditor
                     initialValue={c.body}
                     onSubmit={(body) => {
-                      onEdit(c.id, body);
+                      // Saving a never-saved draft while still blank is a no-op
+                      // comment — discard it instead of persisting an empty one.
+                      if (editing?.wasBlank && body.trim() === "") onDelete(c.id);
+                      else onEdit(c.id, body);
                       close();
                     }}
                     onCancel={() => {
