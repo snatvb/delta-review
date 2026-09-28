@@ -1238,7 +1238,7 @@ function useFileDiffCacheEntry(cache: ReturnType<typeof useFileDiffCache>, path:
 }
 
 export function VirtualDiffPane({
-  target, files, theme, layout, viewedFiles, comments, jump, prefetch, invalidate, onVisibleFileChange, onToggleViewed, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, onFileEdited,
+  target, files, theme, layout, viewedFiles, comments, jump, prefetch, invalidate, onReloadSettled, onVisibleFileChange, onToggleViewed, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, onFileEdited,
 }: {
   target: Target; files: FileEntry[]; theme: "light" | "dark"; layout: DiffLayout;
   viewedFiles: Set<string>; comments: Comment[];
@@ -1249,6 +1249,9 @@ export function VirtualDiffPane({
   // Reload signal from the header Refresh button: { paths: null } reloads all
   // mounted files, otherwise just the listed ones. The nonce re-fires it. (#12)
   invalidate?: { paths: string[] | null; n: number } | null;
+  // Fired once the reload kicked off by `invalidate` has fully landed (every
+  // mounted file's diff re-fetched) — the Refresh spinner's stop signal. (#refresh-feedback)
+  onReloadSettled?: () => void;
   onVisibleFileChange?: (file: string) => void;
   onToggleViewed: (file: string) => void;
   onAddComment: (a: Anchor, body: string) => void;
@@ -1294,6 +1297,9 @@ export function VirtualDiffPane({
     if (!invalidate) return;
     if (invalidate.paths === null) cache.refreshAll();
     else cache.invalidate(invalidate.paths);
+    // Report back when every re-fetch has landed, so the header spinner spans
+    // the whole reload — not just the re-diff IPC that triggered it. (#refresh-feedback)
+    void cache.whenIdle().then(() => onReloadSettled?.());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [invalidate?.n]);
 

@@ -76,4 +76,27 @@ describe("useFileDiffCache", () => {
     await act(async () => { rerender({ t: tB }); });
     expect(getFileDiff).toHaveBeenLastCalledWith(tB, "x.ts");
   });
+
+  it("whenIdle resolves immediately when idle and only after in-flight loads land (#refresh-feedback)", async () => {
+    getFileDiff.mockResolvedValue({ status: "modified", binary: false });
+    const { result } = renderHook(() => useFileDiffCache(target));
+
+    // Idle store: the Refresh spinner's stop signal must not dangle.
+    await act(async () => { await result.current.whenIdle(); });
+
+    // A load in flight holds the signal back…
+    let release!: (v: unknown) => void;
+    getFileDiff.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    let settled = false;
+    act(() => { void result.current.load("x.ts").then(() => { settled = true; }); });
+    let resolved = false;
+    const wait = result.current.whenIdle().then(() => { resolved = true; });
+    await act(async () => { await Promise.resolve(); });
+    expect(resolved).toBe(false);
+
+    // …and releases it exactly when the last load lands.
+    await act(async () => { release({ status: "modified", binary: false }); await wait; });
+    expect(settled).toBe(true);
+    expect(resolved).toBe(true);
+  });
 });

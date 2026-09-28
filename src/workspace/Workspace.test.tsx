@@ -41,8 +41,9 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { Workspace } from "./Workspace";
+import { api } from "../api";
 import { setChangeDetection } from "../changeDetection";
-import type { Target } from "../types";
+import type { FileDiff, Target } from "../types";
 
 const target: Target = { repoPath: "/r", mode: "all-changes" };
 const minimalSession = {
@@ -185,6 +186,48 @@ describe("Workspace", () => {
     fireEvent.click(screen.getByRole("button", { name: /re-diff now/i }));
     await waitFor(() => expect(refreshReview).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByRole("button", { name: /re-diff now/i })).toBeEnabled());
+  });
+
+  it("keeps the Refresh spinner up until the pane's reload lands, not just the re-diff IPC (#refresh-feedback)", async () => {
+    openReview.mockResolvedValue(fileSession);
+    refreshReview.mockResolvedValue(fileSession);
+    // Sections only mount once viewportH > 0, which never happens on its own in
+    // happy-dom (no layout → clientHeight 0) — mirror VirtualDiffPane.test's stub.
+    const clientHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight")!;
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 900 });
+    try {
+      render(<Workspace target={target} />);
+      await waitFor(() => expect(screen.getByRole("button", { name: /copy for agents/i })).toBeInTheDocument());
+
+      // A file reload that stays pending pins the spinner (the icon button is the
+      // spinner's proxy here: disabled while refreshing)…
+      let release!: (v: FileDiff) => void;
+      vi.mocked(api.getFileDiff).mockImplementation(() => new Promise<FileDiff>((r) => { release = r; }));
+      fireEvent.click(screen.getByRole("button", { name: /re-diff now/i }));
+      await waitFor(() => expect(refreshReview).toHaveBeenCalled());
+      await waitFor(() => expect(screen.getByRole("button", { name: /re-diff now/i })).toBeDisabled());
+
+      // …and only the reload settling re-enables it — the old code stopped the
+      // spinner right as the heavy re-render began, which read as a hang.
+      release({ status: "modified", additions: 0, deletions: 0, binary: false } as FileDiff);
+      await waitFor(() => expect(screen.getByRole("button", { name: /re-diff now/i })).toBeEnabled());
+      vi.mocked(api.getFileDiff).mockReset(); // back to the default instant-resolve mock
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDesc);
+    }
+  });
+
+  it("stops the Refresh spinner when the reload empties the diff — no pane to settle it (#refresh-feedback)", async () => {
+    openReview.mockResolvedValue(fileSession);
+    refreshReview.mockResolvedValue(minimalSession); // everything got committed → empty diff
+    render(<Workspace target={target} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /copy for agents/i })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /re-diff now/i }));
+    // The empty state renders INSTEAD of the diff pane, so nothing would ever
+    // report the reload as settled — the stand-in must stop the spinner anyway.
+    await waitFor(() => expect(screen.getByRole("button", { name: /re-diff now/i })).toBeEnabled());
+    await waitFor(() => expect(screen.getByText(/nothing to review/i)).toBeInTheDocument());
   });
 
   it("ignores a git-meta event whose re-diff is unchanged — no spurious Refresh (#12)", async () => {

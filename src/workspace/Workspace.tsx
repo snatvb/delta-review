@@ -143,6 +143,14 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   const pendingRef = useRef<{ session: ReviewSession; paths: string[] | null } | null>(null);
   const [pendingRefresh, setPendingRefresh] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // Tags the newest refresh cycle (force/apply/background re-diff). The spinner
+  // now spans the WHOLE pipeline — the re-diff IPC plus the pane's per-file
+  // re-fetches (see onReloadSettled) — so a superseded cycle finishing late
+  // must not stop the current one's spinner. (#refresh-feedback)
+  const refreshSeq = useRef(0);
+  const endRefresh = (seq: number) => {
+    if (seq === refreshSeq.current) setRefreshing(false);
+  };
   const selfEditedRef = useRef<Set<string>>(new Set());
   // Keep reviewRef/summaryRef current via an effect (not during render — the
   // compiler forbids ref writes in render, and the listener only reads them on
@@ -274,6 +282,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     if (!cur || getChangeDetection() === "off") {
       return;
     }
+    const seq = ++refreshSeq.current;
     setRefreshing(true);
     try {
       const session = await api.refreshReview(cur);
@@ -300,14 +309,22 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     } catch (e) {
       setError(String(e));
     }
-    setRefreshing(false);
+    endRefresh(seq);
   }
 
   // Apply the stashed change: swap in the re-diffed session and reload the
   // affected file diffs. The only path that mutates the displayed diff. (#12)
-  function applyRefresh() {
+  async function applyRefresh() {
     const p = pendingRef.current;
     if (!p) return;
+    const seq = ++refreshSeq.current;
+    setRefreshing(true);
+    // Paint the spinner BEFORE the heavy swap: the merge + full-pane reload below
+    // blocks the main thread for a while on large reviews, and without this yield
+    // the click's spinner would only appear in the same (frozen) frame. The double
+    // rAF waits for one painted frame. (#refresh-feedback)
+    await new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res())));
+    if (seq !== refreshSeq.current) return; // a newer refresh superseded this apply
     sigRef.current = reviewSig(p.session.summary, p.session.review);
     // Merge, don't replace: the session's comment set was captured when the fs
     // change was first detected, so a wholesale swap would drop comments added
@@ -318,6 +335,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     setDiffInval({ paths: p.paths, n: ++invalNonce.current });
     pendingRef.current = null;
     setPendingRefresh(false);
+    // `refreshing` stays on until the pane finishes reloading (onReloadSettled).
   }
 
   // Manual force-reload (the `r` key): re-diff now and apply immediately,
@@ -325,6 +343,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   async function forceRefresh() {
     const cur = reviewRef.current;
     if (!cur) return;
+    const seq = ++refreshSeq.current;
     setRefreshing(true);
     try {
       const session = await api.refreshReview(cur);
@@ -337,10 +356,13 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       setDiffInval({ paths: null, n: ++invalNonce.current });
       pendingRef.current = null;
       setPendingRefresh(false);
+      // `refreshing` stays on until the pane finishes reloading (onReloadSettled) —
+      // stopping it here froze the spinner right as the heavy re-render began,
+      // which read as the app hanging on large reviews. (#refresh-feedback)
     } catch (e) {
       setError(String(e));
+      endRefresh(seq);
     }
-    setRefreshing(false);
   }
 
   // An inline edit the user just made: their own write is not a change "under
@@ -602,7 +624,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
         // ⌘R re-diffs now: apply a pending change if there is one, else force a
         // full reload. preventDefault stops the webview's reload accelerator. (#9/#12)
         e.preventDefault();
-        if (pendingRef.current) applyRefresh();
+        if (pendingRef.current) void applyRefresh();
         else void forceRefresh();
       } else if ((e.key === "c" || e.key === "C") && e.shiftKey && (e.metaKey || e.ctrlKey)) {
         // ⌘⇧C copies the agent export, when there's something to copy. (#copy)
@@ -748,11 +770,11 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={applyRefresh}
+                  onClick={() => void applyRefresh()}
                   title="The diff changed on disk — click to update (⌘R)"
                   className="h-7 gap-1.5 px-2.5 text-[13px] border-amber-500/40 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 hover:text-amber-700 dark:border-amber-400/40 dark:bg-amber-400/10 dark:text-amber-400 dark:hover:text-amber-300"
                 >
-                  <RefreshCw className="size-3.5" /> Refresh
+                  <RefreshCw className={`size-3.5 ${refreshing ? "animate-spin will-change-transform" : ""}`} /> Refresh
                   <Kbd keys="⌘R" className="border-amber-600/30 bg-amber-500/15 text-amber-700 dark:border-amber-400/30 dark:text-amber-300" />
                 </Button>
               ) : (
@@ -760,11 +782,14 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                   type="button"
                   onClick={() => void forceRefresh()}
                   disabled={refreshing}
-                  title="Re-diff now (⌘R)"
+                  title={refreshing ? "Re-diffing…" : "Re-diff now (⌘R)"}
                   aria-label="Re-diff now"
                   className={ICON_BUTTON}
                 >
-                  <RefreshCw className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
+                  {/* will-change promotes the spin to its own compositor layer, so it
+                      keeps rotating through the reload's main-thread jank instead of
+                      freezing with it. (#refresh-feedback) */}
+                  <RefreshCw className={`size-4 ${refreshing ? "animate-spin will-change-transform" : ""}`} />
                 </button>
               )}
               <ToggleGroup
@@ -839,14 +864,17 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
         {viewSummary && review ? (
           <>
             {orderedFiles.length === 0 ? (
-              // The comments pane renders in the empty state too: once the work is
-              // committed, its comments are unreachable in the (now empty) diff, so
-              // the index is the only place to read, resolve, or delete them.
-              <NothingToReview
-                target={review.target}
-                repoName={repoName}
-                modeLabel={inCommitMode ? `commit ${commits[commitIndex]?.shortOid ?? ""}`.trim() : (MODES.find((m) => m.id === diffMode)?.label ?? diffMode)}
-              />
+              <>
+                {/* The comments pane renders in the empty state too: once the work is
+                    committed, its comments are unreachable in the (now empty) diff, so
+                    the index is the only place to read, resolve, or delete them. */}
+                <NothingToReview
+                  target={review.target}
+                  repoName={repoName}
+                  modeLabel={inCommitMode ? `commit ${commits[commitIndex]?.shortOid ?? ""}`.trim() : (MODES.find((m) => m.id === diffMode)?.label ?? diffMode)}
+                />
+                <ReloadSettler invalidate={diffInval} onSettled={() => setRefreshing(false)} />
+              </>
             ) : (
               <>
                 <aside style={{ width: sidebarWidth }} className="relative flex min-h-0 shrink-0 flex-col">
@@ -872,6 +900,9 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                     jump={jump}
                     prefetch={prefetch}
                     invalidate={diffInval}
+                    // The store tracks ALL in-flight loads, so by the time it goes
+                    // idle the reload has fully landed — stop the spinner then.
+                    onReloadSettled={() => setRefreshing(false)}
                     onVisibleFileChange={onVisibleFileChange}
                     onToggleViewed={onToggleViewedFile}
                     onAddComment={onAddComment}
@@ -897,6 +928,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
           </>
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center text-muted-foreground">
+            <ReloadSettler invalidate={diffInval} onSettled={() => setRefreshing(false)} />
             {error ? (
               <div className="flex flex-col items-center gap-3">
                 <CircleAlert className="size-6 text-destructive/80" />
@@ -918,4 +950,16 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       </div>
     </div>
   );
+}
+
+// Stands in for the diff pane where none is mounted (nothing to review, or the
+// summary hasn't landed yet): the pane is what reports a Refresh-triggered
+// reload as settled, so without this stand-in the spinner would never hear
+// back and stay up forever. (#refresh-feedback)
+function ReloadSettler({ invalidate, onSettled }: { invalidate?: { n: number } | null; onSettled: () => void }) {
+  useEffect(() => {
+    if (invalidate) onSettled();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invalidate?.n]);
+  return null;
 }

@@ -36,6 +36,7 @@ function makeStore(): FileDiffStore {
     refreshAll: () => {
       for (const s of listeners.values()) for (const cb of s) cb();
     },
+    whenIdle: () => Promise.resolve(),
   };
 }
 

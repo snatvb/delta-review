@@ -17,6 +17,9 @@ export interface FileDiffStore {
   invalidate(paths: string[]): void;
   /** Drop + re-fetch every mounted file (base/HEAD shifted). (#9) */
   refreshAll(): void;
+  /** Resolves once no loads are in flight — the Refresh spinner's stop signal,
+   *  so it can span the whole reload instead of just the re-diff IPC. */
+  whenIdle(): Promise<void>;
 }
 
 interface InternalStore extends FileDiffStore {
@@ -27,6 +30,9 @@ function createStore(): InternalStore {
   const cache = new Map<string, FileDiff>();
   const inflight = new Set<string>();
   const listeners = new Map<string, Set<() => void>>();
+  // Resolved the moment `inflight` empties, so a caller that just kicked off a
+  // reload can wait for every load it started (and any stragglers) to land.
+  const idleWaiters = new Set<() => void>();
   let target: Target | null = null;
   // Bumped every time the whole cache is dropped (target/base shifted). A load
   // started under an older generation must NOT write its result: the target it
@@ -39,6 +45,12 @@ function createStore(): InternalStore {
 
   const notify = (path: string) => listeners.get(path)?.forEach((cb) => cb());
   const notifyAll = () => listeners.forEach((set) => set.forEach((cb) => cb()));
+  const notifyIdle = () => {
+    if (inflight.size === 0) {
+      idleWaiters.forEach((cb) => cb());
+      idleWaiters.clear();
+    }
+  };
 
   async function load(path: string) {
     if (!target || cache.has(path) || inflight.has(path)) return;
@@ -52,6 +64,9 @@ function createStore(): InternalStore {
       notify(path); // wake only this path's subscriber
     } finally {
       if (gen === generation) inflight.delete(path); // a newer generation owns its own inflight entry
+      // A stale load's entry was already dropped by the reset itself, which
+      // notified idle on its own.
+      notifyIdle();
     }
   }
 
@@ -66,6 +81,7 @@ function createStore(): InternalStore {
       notify(p);
       if (listeners.has(p)) void load(p);
     }
+    notifyIdle(); // nothing was re-loaded for these paths — don't keep idle waiters hanging
   }
 
   // Drop the whole cache (target or base shifted) and immediately re-fetch every
@@ -78,6 +94,7 @@ function createStore(): InternalStore {
     inflight.clear();
     notifyAll();
     for (const p of listeners.keys()) void load(p);
+    notifyIdle(); // a reset with no mounted files settles immediately
   }
 
   return {
@@ -99,9 +116,14 @@ function createStore(): InternalStore {
       cache.clear();
       inflight.clear();
       notifyAll();
+      notifyIdle(); // everything this store was loading is cancelled
     },
     invalidate,
     refreshAll: reload,
+    whenIdle(): Promise<void> {
+      if (inflight.size === 0) return Promise.resolve();
+      return new Promise((res) => idleWaiters.add(res));
+    },
     reset(t) {
       // Re-point first so the re-driven loads fetch against the new target. Unlike
       // the old clear-only reset, this re-fetches mounted files now: a section that
