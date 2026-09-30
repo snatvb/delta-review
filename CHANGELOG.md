@@ -1,10 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.18.0 — 2026-09-30
+
+The fork gets its own identity: the app is now **delta-review** (identifier `com.snatvb.delta-review`, binary `DeltaReview`, CLI command `delta-review`). Up to and including 0.17.0 it still carried the upstream name and bundle ID (`Delta` / `com.darioielardi.delta`).
+
+**Moving from 0.17.0:** your data (reviews, recents, settings, window state) migrates automatically on first launch — the old directory is copied, not moved, so rolling back stays possible. Install this release fresh from the DMG/installer and remove the old `Delta` app; don't rely on the in-app updater across the rename (a differently-named bundle replaces the old one). The CLI command is now `delta-review` — reinstall the shim from the app and remove the old `delta` symlink if you had one. The updater, its signatures, and the release feed are unchanged.
 
 ### Added
 
 - Comments: copy a single comment for an agent — location (`path:line-range`), anchored snippet, and body, no headers — from the inline thread and the comments panel.
+- Files: file-type icons; status moves to letters in the counts cluster.
 
 ## 0.17.0 — 2026-09-30
 
