@@ -1,4 +1,4 @@
-//! The `delta` CLI shim: a no-Tauri client that forwards an open-target request
+//! The `delta-review` CLI shim: a no-Tauri client that forwards an open-target request
 //! to the running app (or cold-launches the bundle via Launch Services) and exits.
 
 use std::ffi::OsStr;
@@ -11,15 +11,15 @@ use crate::git::model::DiffMode;
 use crate::ipc::{cli_socket_path, CliRequest, IDENTIFIER};
 use crate::launch::{launch_targets_non_repo, parse_launch};
 
-/// Installed shim names. The app's own bundled executable is `Delta` / `Delta Dev`
-/// (after `productName`), so a shim invocation always differs from the real name.
-const SHIMS: [&str; 2] = ["delta", "delta-dev"];
+/// Installed shim names. The app's own bundled executable is `DeltaReview`
+/// (after `mainBinaryName`), so a shim invocation always differs from the real name.
+const SHIMS: [&str; 2] = ["delta-review", "delta-review-dev"];
 
 const USAGE: &str = "\
-delta — review git diffs with structured comments for AI agents
+delta-review — review git diffs with structured comments for AI agents
 
 USAGE:
-    delta [PATH] [MODE]
+    delta-review [PATH] [MODE]
 
 ARGS:
     PATH    Repository or worktree to open (default: current directory)
@@ -70,8 +70,8 @@ pub fn precheck(args: &[String]) -> PreCheck {
 
 /// Pure dispatch rule: we are the CLI client iff invoked under one of our shim names
 /// AND we are not the app binary itself. "Not the app" holds when either the invoked
-/// name differs from the real binary (shim `delta` vs bundle `Delta`), or we were
-/// reached through the shim symlink (`via_symlink`).
+/// name differs from the real binary (shim `delta-review` vs bundle `DeltaReview`),
+/// or we were reached through the shim symlink (`via_symlink`).
 ///
 /// The `via_symlink` backstop is casing-independent: it fires even when the bundle
 /// binary shares the shim's basename — the `delta` shim → `.../MacOS/delta` collision
@@ -123,19 +123,19 @@ pub fn cli_main() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     // Resolve help/version/unknown-flag before any repo or socket work, so
-    // `delta --help` prints usage instead of silently opening the cwd's review.
+    // `delta-review --help` prints usage instead of silently opening the cwd's review.
     match precheck(&args) {
         PreCheck::Help => {
             print!("{USAGE}");
             return 0;
         }
         PreCheck::Version => {
-            println!("delta {}", env!("DELTA_VERSION"));
+            println!("delta-review {}", env!("DELTA_VERSION"));
             return 0;
         }
         PreCheck::BadFlag(flag) => {
-            eprintln!("delta: unknown option '{flag}'");
-            eprintln!("Try 'delta --help' for usage.");
+            eprintln!("delta-review: unknown option '{flag}'");
+            eprintln!("Try 'delta-review --help' for usage.");
             return 2;
         }
         PreCheck::Proceed => {}
@@ -146,7 +146,7 @@ pub fn cli_main() -> i32 {
 
     // Reject a non-repo target from a terminal (mirrors the old in-app guard).
     if launch_targets_non_repo(&launch) && std::io::stderr().is_terminal() {
-        eprintln!("delta: not a git repository: {}", launch.repo_path.display());
+        eprintln!("delta-review: not a git repository: {}", launch.repo_path.display());
         return 1;
     }
 
@@ -154,7 +154,7 @@ pub fn cli_main() -> i32 {
     let home = match std::env::var_os("HOME") {
         Some(h) => PathBuf::from(h),
         None => {
-            eprintln!("delta: HOME is not set");
+            eprintln!("delta-review: HOME is not set");
             return 1;
         }
     };
@@ -171,7 +171,7 @@ pub fn cli_main() -> i32 {
                     0
                 }
                 Err(e) => {
-                    eprintln!("delta: {e}");
+                    eprintln!("delta-review: {e}");
                     1
                 }
             }
@@ -182,11 +182,11 @@ pub fn cli_main() -> i32 {
             match Command::new("open").args(&argv).status() {
                 Ok(s) if s.success() => 0,
                 Ok(s) => {
-                    eprintln!("delta: could not launch Delta ({s})");
+                    eprintln!("delta-review: could not launch delta-review ({s})");
                     1
                 }
                 Err(e) => {
-                    eprintln!("delta: could not launch Delta: {e}");
+                    eprintln!("delta-review: could not launch delta-review: {e}");
                     1
                 }
             }
@@ -200,9 +200,9 @@ mod tests {
 
     #[test]
     fn cli_mode_when_invoked_through_a_shim() {
-        // Distinct names (bundle `Delta` via mainBinaryName) → the name rule alone fires.
-        assert!(is_cli_invocation(Some(OsStr::new("delta")), Some(OsStr::new("Delta")), false));
-        assert!(is_cli_invocation(Some(OsStr::new("delta-dev")), Some(OsStr::new("Delta Dev")), false));
+        // Distinct names (bundle `DeltaReview` via mainBinaryName) → the name rule alone fires.
+        assert!(is_cli_invocation(Some(OsStr::new("delta-review")), Some(OsStr::new("DeltaReview")), false));
+        assert!(is_cli_invocation(Some(OsStr::new("delta-review-dev")), Some(OsStr::new("DeltaReview")), false));
     }
 
     #[test]
@@ -211,33 +211,34 @@ mod tests {
         // to a bundle binary *also* basenamed `delta` (Tauri used the Cargo bin name),
         // so the name rule can't tell them apart. The symlink backstop must still route
         // to CLI mode. The old (name-only) rule returned false here — an inline app run.
-        assert!(is_cli_invocation(Some(OsStr::new("delta")), Some(OsStr::new("delta")), true));
-        assert!(is_cli_invocation(Some(OsStr::new("delta-dev")), Some(OsStr::new("delta")), true));
+        assert!(is_cli_invocation(Some(OsStr::new("delta-review")), Some(OsStr::new("delta-review")), true));
+        assert!(is_cli_invocation(Some(OsStr::new("delta-review-dev")), Some(OsStr::new("delta-review")), true));
     }
 
     #[test]
     fn app_mode_when_invoked_as_the_real_binary() {
         // Bundled app launched by LS/dock: argv0 basename == real exe name, not a symlink.
-        assert!(!is_cli_invocation(Some(OsStr::new("Delta")), Some(OsStr::new("Delta")), false));
+        assert!(!is_cli_invocation(Some(OsStr::new("DeltaReview")), Some(OsStr::new("DeltaReview")), false));
         // Raw cargo binary run directly during dev: same name AND not reached via symlink.
-        assert!(!is_cli_invocation(Some(OsStr::new("delta")), Some(OsStr::new("delta")), false));
+        assert!(!is_cli_invocation(Some(OsStr::new("delta-review")), Some(OsStr::new("delta-review")), false));
     }
 
     #[test]
     fn app_mode_when_name_is_not_a_shim() {
-        assert!(!is_cli_invocation(Some(OsStr::new("something")), Some(OsStr::new("Delta")), false));
+        assert!(!is_cli_invocation(Some(OsStr::new("something")), Some(OsStr::new("DeltaReview")), false));
         // A non-shim name is never the CLI client, even reached through a symlink.
-        assert!(!is_cli_invocation(Some(OsStr::new("something")), Some(OsStr::new("Delta")), true));
+        assert!(!is_cli_invocation(Some(OsStr::new("something")), Some(OsStr::new("DeltaReview")), true));
     }
 
     #[test]
     fn bundle_binary_name_differs_from_the_shim_names() {
         // Guard the fix at its source. The bundled executable is named after
-        // `mainBinaryName`; if it's unset (or set to a shim name), Tauri falls back to
-        // the Cargo bin name `delta`, which collides with the `delta` shim and drops
-        // every terminal invocation into app mode — the window opens and the shell
-        // hangs. Fails fast on that regression, unlike the basename tests above which
-        // can't observe the real build output.
+        // `mainBinaryName`; if it's unset, Tauri falls back to the Cargo bin name,
+        // and if it ever equals a shim name the name rule can't tell a shim
+        // invocation from the app — the window opens and the shell hangs (the
+        // symlink backstop only helps where current_exe() keeps symlinks, i.e.
+        // not on Linux). Fails fast on that regression, unlike the basename
+        // tests above which can't observe the real build output.
         let conf: serde_json::Value =
             serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json parses");
         let name = conf.get("mainBinaryName").and_then(|v| v.as_str());

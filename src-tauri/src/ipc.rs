@@ -1,4 +1,4 @@
-//! Cross-process IPC between the `delta` CLI shim and the running app.
+//! Cross-process IPC between the `delta-review` CLI shim and the running app.
 //!
 //! The app binds a unix-domain socket; a CLI invocation connects and forwards
 //! one open-target request, then exits. Single-instance and detaching are
@@ -13,11 +13,12 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::git::model::DiffMode;
 
 /// Bundle identifier this binary talks to. The debug build is a separate app so
-/// `delta-dev` never forwards into an installed release. Mirrors `launch::CLI_NAME`.
+/// `delta-review-dev` never forwards into an installed release. Mirrors
+/// `launch::CLI_NAME` and the identifiers in the tauri conf files.
 #[cfg(not(debug_assertions))]
-pub const IDENTIFIER: &str = "com.darioielardi.delta";
+pub const IDENTIFIER: &str = "com.snatvb.delta-review";
 #[cfg(debug_assertions)]
-pub const IDENTIFIER: &str = "com.darioielardi.delta.dev";
+pub const IDENTIFIER: &str = "com.snatvb.delta-review.dev";
 
 /// The rendezvous socket: stable, per-user, per-identifier. NOT `$TMPDIR` —
 /// launchd hands the app a different `$TMPDIR` than the shell, so they'd never meet.
@@ -99,10 +100,10 @@ mod tests {
 
     #[test]
     fn socket_path_is_under_app_support_for_identifier() {
-        let p = cli_socket_path("com.darioielardi.delta", Path::new("/Users/me"));
+        let p = cli_socket_path("com.snatvb.delta-review", Path::new("/Users/me"));
         assert_eq!(
             p,
-            PathBuf::from("/Users/me/Library/Application Support/com.darioielardi.delta/cli.sock")
+            PathBuf::from("/Users/me/Library/Application Support/com.snatvb.delta-review/cli.sock")
         );
     }
 

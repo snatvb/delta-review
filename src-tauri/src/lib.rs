@@ -9,6 +9,7 @@ mod git;
 #[cfg(unix)]
 mod ipc;
 mod launch;
+mod migrate;
 mod registry;
 mod review;
 mod settings;
@@ -23,8 +24,8 @@ use tauri::Manager;
 #[cfg(unix)]
 pub use cli::{cli_main, invoked_as_cli};
 
-// The `delta` shim talks to the app over a unix-domain socket and cold-launches it
-// with `open -b`; neither exists on Windows, so the app there is GUI-only.
+// The `delta-review` shim talks to the app over a unix-domain socket and cold-launches
+// it with `open -b`; neither exists on Windows, so the app there is GUI-only.
 #[cfg(not(unix))]
 pub fn invoked_as_cli() -> bool {
     false
@@ -36,7 +37,12 @@ pub fn cli_main() -> i32 {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Single-instance and the non-repo CLI guard now live in the `delta` shim
+    // Must run before the Tauri builder: plugins (window-state, storage) read the
+    // app-data dir at init and need to see the migrated tree on first launch.
+    #[cfg(not(debug_assertions))]
+    migrate::migrate_legacy_data_dir();
+
+    // Single-instance and the non-repo CLI guard now live in the `delta-review` shim
     // (`cli`/`ipc`): a CLI invocation forwards over the socket or `open -b`s the
     // bundle, which Launch Services single-instances. The app is only entered via
     // LS/dock/dev, so the old in-process TTY guard is gone.

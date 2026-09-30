@@ -1,5 +1,5 @@
 // A small fixed "DEV" pill, shown only in dev builds (running under the Vite dev
-// server) so the debug app — window title "Delta (dev)", CLI `delta-dev` — is also
+// server) so the debug app — window title "delta-review (dev)", CLI `delta-review-dev` — is also
 // distinguishable in-window from the installed release. Decorative; never blocks clicks.
 export function DevBadge() {
   if (!import.meta.env.DEV) return null;

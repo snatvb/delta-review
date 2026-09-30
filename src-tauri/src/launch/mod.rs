@@ -12,19 +12,21 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 /// moved to another branch since the window opened.
 const REOPEN_EVENT: &str = "review:reopen";
 
-/// CLI shim name. The debug build installs as `delta-dev` so it never clobbers the
-/// installed release's `delta`; the two coexist on PATH and never hijack each other.
+/// CLI shim name. The debug build installs as `delta-review-dev` so it never clobbers
+/// the installed release's `delta-review`; the two coexist on PATH and never hijack
+/// each other. Must differ from `mainBinaryName` in tauri.conf.json — the shim is a
+/// symlink and Linux resolves /proc/self/exe, so equal names break CLI routing there.
 #[cfg(debug_assertions)]
-pub const CLI_NAME: &str = "delta-dev";
+pub const CLI_NAME: &str = "delta-review-dev";
 #[cfg(not(debug_assertions))]
-pub const CLI_NAME: &str = "delta";
+pub const CLI_NAME: &str = "delta-review";
 
 /// Window title — suffixed in dev builds so the debug app is visually distinct from
 /// the installed release in the title bar and window switcher.
 #[cfg(debug_assertions)]
-const WINDOW_TITLE: &str = "Delta (dev)";
+const WINDOW_TITLE: &str = "delta-review (dev)";
 #[cfg(not(debug_assertions))]
-const WINDOW_TITLE: &str = "Delta";
+const WINDOW_TITLE: &str = "delta-review";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
