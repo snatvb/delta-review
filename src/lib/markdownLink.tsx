@@ -5,7 +5,7 @@ import type { Components } from "react-markdown";
 // Schemes we hand off to the OS default handler (browser, mail client, dialer).
 const EXTERNAL = /^(https?|mailto|tel):/i;
 
-function openExternal(href: string) {
+export function openExternal(href: string) {
   // In the Tauri webview, route through the opener plugin so the OS default app
   // handles it. Under the browser mock / plain-browser dev / tests there's no
   // plugin IPC, so fall back to a normal new-tab open.
