@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Publishes the fork release: commits the version bump if needed, tags, pushes,
+# and creates a GitHub release on snatvb/delta-review with every artifact from
+# release/<version>/ (built by scripts/build-release.sh) plus a multi-platform
+# latest.json for the in-app updater.
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+
+REPO_SLUG="snatvb/delta-review"
 
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/publish-release.sh [--remote origin] [--skip-cask]
+  scripts/publish-release.sh [--remote origin]
 
-Publishes the already-built and tested DMG for the current package.json version.
+Publishes release/<version>/ artifacts for the current package.json version.
 If package.json has an uncommitted version bump, this commits it before tagging.
 USAGE
 }
@@ -31,24 +38,9 @@ product_name() {
   node -e "console.log(JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).productName)"
 }
 
-find_dmg() {
-  local version="$1"
-  local product="$2"
-  local count=0
-  local found=""
-
-  while IFS= read -r candidate; do
-    count=$((count + 1))
-    found="$candidate"
-  done < <(find src-tauri/target/release/bundle/dmg -maxdepth 1 -type f -name "${product}_${version}_*.dmg" -print 2>/dev/null)
-
-  [ "$count" -eq 1 ] || die "expected exactly one DMG for ${product} ${version}, found ${count}"
-  printf '%s\n' "$found"
-}
-
 ensure_publishable_worktree() {
   local status
-  status="$(git status --porcelain --untracked-files=all)"
+  status="$(git status --porcelain --untracked-files=no)"
 
   if [ -z "$status" ]; then
     return
@@ -58,7 +50,7 @@ ensure_publishable_worktree() {
   unexpected="$(printf '%s\n' "$status" | awk '$2 != "package.json" { print }')"
   if [ -n "$unexpected" ]; then
     printf '%s\n' "$status" >&2
-    die "only package.json may be changed when publishing"
+    die "only package.json may be changed when publishing (commit or stash the rest)"
   fi
 }
 
@@ -74,8 +66,31 @@ commit_version_bump_if_needed() {
   git commit -m "chore(release): v${version}"
 }
 
+changelog_section() {
+  local version="$1"
+  # The CHANGELOG heading carries a date suffix ("## 0.17.0 — 2026-09-30"), so
+  # match the version as a heading prefix; drop leading blank lines.
+  awk -v ver="## ${version}" '
+    !found && index($0, ver) == 1 { found = 1; next }
+    found && /^## / { exit }
+    found { print }
+  ' CHANGELOG.md | sed -e '/./,$!d'
+}
+
+# latest.json platform key for an updater artifact, or empty if the file is not
+# an updater artifact (e.g. the raw .deb).
+platform_for_asset() {
+  case "$1" in
+    *.app.tar.gz)        printf 'darwin-aarch64\n' ;;
+    *.nsis.zip)          printf 'windows-x86_64\n' ;;
+    *-setup.exe)         printf 'windows-x86_64\n' ;;
+    *.AppImage.tar.gz)   printf 'linux-x86_64\n' ;;
+    *.AppImage)          printf 'linux-x86_64\n' ;;
+    *)                   printf '' ;;
+  esac
+}
+
 remote="origin"
-skip_cask=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -83,9 +98,6 @@ while [ "$#" -gt 0 ]; do
       shift
       [ "$#" -gt 0 ] || die "--remote requires a remote name"
       remote="$1"
-      ;;
-    --skip-cask)
-      skip_cask=1
       ;;
     -h|--help)
       usage
@@ -102,21 +114,16 @@ done
 require_cmd git
 require_cmd gh
 require_cmd node
-require_cmd spctl
-require_cmd xcrun
 require_cmd shasum
 
 version="$(package_version)"
 product="$(product_name)"
 tag="v${version}"
-dmg_path="$(find_dmg "$version" "$product")"
-tarball="src-tauri/target/release/bundle/macos/${product}.app.tar.gz"
-[ -f "$tarball" ] || die "updater tarball not found at $tarball (run build-release-dmg.sh first)"
-[ -f "${tarball}.sig" ] || die "updater signature not found at ${tarball}.sig"
+staging="release/${version}"
 
-printf 'Verifying DMG before publishing...\n'
-spctl -a -vvv -t open --context context:primary-signature "$dmg_path"
-xcrun stapler validate "$dmg_path"
+[ -d "$staging" ] || die "no staging directory at $staging (run scripts/build-release.sh first)"
+[ -f "${staging}/SHA256SUMS.txt" ] || die "SHA256SUMS.txt missing from $staging (run scripts/build-release.sh again)"
+[ -f CHANGELOG.md ] || die "CHANGELOG.md not found"
 
 if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
   die "local tag already exists: ${tag}"
@@ -133,39 +140,57 @@ git tag "$tag"
 git push "$remote" HEAD
 git push "$remote" "$tag"
 
-sha256="$(shasum -a 256 "$dmg_path" | awk '{print $1}')"
+base_url="https://github.com/${REPO_SLUG}/releases/download/${tag}"
+
+# Assemble the updater manifest from whatever signed updater artifacts exist.
+latest_args=()
+for sig in "$staging"/*.sig; do
+  [ -f "$sig" ] || continue
+  asset="$(basename "$sig" .sig)"
+  key="$(platform_for_asset "$asset")"
+  [ -n "$key" ] || continue
+  # Prefer the wrapped (v1) artifact for Windows when both forms are present.
+  if [ "$key" = "windows-x86_64" ] && [ "$asset" = "${product}_${version}_x64-setup.exe" ] \
+     && [ -f "$staging/${asset}.nsis.zip.sig" ]; then
+    continue
+  fi
+  latest_args+=(--sig "${key}=${sig}" --url "${key}=${base_url}/${asset}")
+done
+
 notes_file="$(mktemp)"
-trap 'rm -f "$notes_file"' EXIT
+latest_json="$(mktemp -d)/latest.json"
+trap 'rm -f "$notes_file"; rm -rf "$(dirname "$latest_json")"' EXIT
 
 {
-  printf 'Signed and notarized macOS DMG.\n\n'
-  printf 'SHA-256:\n\n'
-  printf '```text\n'
-  printf '%s  %s\n' "$sha256" "$(basename "$dmg_path")"
-  printf '```\n'
+  printf 'See [CHANGELOG.md](https://github.com/%s/blob/%s/CHANGELOG.md) for details.\n\n' "$REPO_SLUG" "$tag"
+  changelog_section "$version"
 } > "$notes_file"
 
-latest_json="$(mktemp -d)/latest.json"
-tarball_url="https://github.com/darioielardi/delta/releases/download/${tag}/${product}.app.tar.gz"
-node scripts/gen-latest-json.mjs \
-  --version "$version" \
-  --signature-file "${tarball}.sig" \
-  --url "$tarball_url" \
-  --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  --notes "See the release page for details." > "$latest_json"
-
-gh release create "$tag" "$dmg_path" "$tarball" "${tarball}.sig" "$latest_json" \
-  --title "$tag" --notes-file "$notes_file" --generate-notes
-
-printf '\nPublished %s.\n' "$tag"
-printf 'DMG: %s\n' "$dmg_path"
-printf 'SHA-256: %s\n' "$sha256"
-
-if [ "$skip_cask" -eq 0 ]; then
-  printf '\nBumping Homebrew cask...\n'
-  if ! "$ROOT_DIR/scripts/update-cask.sh" --version "$version" --sha256 "$sha256"; then
-    printf 'warning: release %s is published, but the cask bump failed.\n' "$tag" >&2
-    printf 'Re-run: scripts/update-cask.sh --version %s --sha256 %s\n' "$version" "$sha256" >&2
-    exit 1
-  fi
+if [ "${#latest_args[@]}" -gt 0 ]; then
+  node scripts/gen-latest-json.mjs \
+    --version "$version" \
+    --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --notes "See the release page for details." \
+    "${latest_args[@]}" > "$latest_json"
+else
+  printf 'warning: no signed updater artifacts found — publishing without latest.json.\n' >&2
 fi
+
+assets=()
+for f in "$staging"/*; do
+  case "$(basename "$f")" in
+    latest.json) ;;
+    *) assets+=("$f") ;;
+  esac
+done
+if [ -s "$latest_json" ]; then
+  assets+=("$latest_json")
+fi
+
+gh release create "$tag" "${assets[@]}" \
+  --repo "$REPO_SLUG" \
+  --title "Delta ${tag}" \
+  --notes-file "$notes_file"
+
+printf '\nPublished %s on %s with %s assets.\n' "$tag" "$REPO_SLUG" "$((${#assets[@]}))"
+printf 'SHA-256 checksums are in SHA256SUMS.txt on the release page.\n'

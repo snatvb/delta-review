@@ -23,9 +23,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "doctor": "react-doctor",
-    "build:release-dmg": "scripts/build-release-dmg.sh",
     "publish:release": "scripts/publish-release.sh",
-    "prepare": "husky"
+    "prepare": "husky",
+    "build:release": "scripts/build-release.sh"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",

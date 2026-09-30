@@ -43,3 +43,7 @@ src-tauri/target/
 .env
 .env.*
 !.env.example
+
+# Local release artifacts
+/release/
+.pnpm-store/

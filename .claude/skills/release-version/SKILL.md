@@ -1,103 +1,96 @@
 ---
 name: release-version
 description: >
-  Use when cutting a new release of the delta desktop app — building a signed,
-  notarized macOS DMG and publishing it (git tag, GitHub release, Homebrew cask
-  bump). Triggers: "release a patch/minor/major version", "publish a new
-  version", "cut a release", "ship vX.Y.Z". macOS-only.
+  Use when cutting a new release of the delta desktop app fork — building
+  macOS, Windows, and Linux artifacts locally (no CI) and publishing them
+  (git tag, GitHub release with all platforms, updater manifest). Triggers:
+  "release a patch/minor/major version", "publish a new version", "cut a
+  release", "ship vX.Y.Z".
 license: MIT
 ---
 
 # Release a new version
 
-Two dedicated scripts do everything. `build-release-dmg.sh` produces a signed,
-notarized, stapled DMG and bumps `package.json` (uncommitted). `publish-release.sh`
-commits the bump, tags, pushes, creates the GitHub release, and bumps the Homebrew
-cask. Build first, then publish.
+Two scripts do everything. `scripts/build-release.sh` builds **all three
+platforms locally** into `release/<version>/` and bumps `package.json`
+(uncommitted). `scripts/publish-release.sh` commits the bump, tags, pushes,
+creates the GitHub release on `snatvb/delta-review`, and attaches every
+artifact plus a multi-platform `latest.json` for the in-app updater. Build
+first, then publish.
 
-## Preconditions (all required — the scripts hard-fail otherwise)
+## What gets built (no CI, all from this Mac)
 
-- **Run from the main worktree**, on `main`, pulled and clean:
-  `cd /Users/dario.ielardi/projects/delta && git checkout main && git pull --ff-only`.
-  Do NOT run from a `.claude/worktrees/*` worktree. `build-release-dmg.sh` aborts
-  if the tree is dirty (untracked files count too).
-- **Source `~/.zshrc` in the same command.** The Apple credentials
-  (`APPLE_API_KEY`, `APPLE_API_ISSUER`, `APPLE_API_KEY_PATH`, `APPLE_SIGNING_IDENTITY`)
-  live in `~/.zshrc`, which is only loaded for *interactive* shells. A non-interactive
-  agent/tool shell does NOT source it, so the vars read as unset and the build dies at
-  `require_notary_auth`. Every release command below is prefixed with `source ~/.zshrc &&`.
-  Env does not persist between separate shell calls — re-source each time.
-- macOS with `cargo`, `xcrun`, `spctl`, `shasum`, `gh` on PATH (all present on this machine).
+| Platform | Artifact | How |
+|---|---|---|
+| macOS (aarch64) | `Delta_X.Y.Z_aarch64.dmg` + `Delta.app.tar.gz(.sig)` | native `tauri build` |
+| Windows (x64) | `Delta_X.Y.Z_x64-setup.exe(.sig)` | cross-compiled via `mingw-w64` (`x86_64-pc-windows-gnu`) |
+| Linux (x86_64) | `Delta_X.Y.Z_amd64.deb` + `Delta_X.Y.Z_amd64.AppImage(.sig)` | Docker `ubuntu:22.04` amd64, emulated |
+
+Builds are **unsigned** (no Apple certificates); the release notes tell users
+how to open them anyway. Updater artifacts are signed with the fork key at
+`~/.tauri/delta-review-updater.key` (lose it and auto-updates break).
+
+## Preconditions
+
+- **Main worktree, on `main`, clean**: `git checkout main && git pull --ff-only`.
+  Uncommitted changes other than the version bump make `publish-release.sh` refuse.
+- **Docker Desktop running with Rosetta on** (Settings → General → "Use Rosetta
+  for x86_64/amd64 emulation"). Without it the Linux build dies: Node asserts
+  under QEMU, and AppImage tools fail with `Exec format error`.
+- On PATH: `cargo`, `pnpm`, `node`, `gh`, `shasum`, `x86_64-w64-mingw32-gcc`
+  (brew `mingw-w64`), `makensis` (brew `makensis`).
+- First run bakes the `delta-review-linux-builder` Docker image (~10 min);
+  later runs reuse it and the named cargo/node volumes.
 
 ## Procedure
 
-Both steps are long (Rust release compile + Apple notarization over the network) and
-can exceed a 10-minute foreground timeout, so **run each in the background** — the Bash
-tool's background mode, or `… > /tmp/release.log 2>&1 &` — and read the log on completion.
-The concrete version (e.g. `0.11.1`) is chosen by step 1 and printed at the end; `publish`
-reads it from `package.json` itself, so you only need it for the verify command. Artifacts
-are Apple-Silicon only: `Delta_X.Y.Z_aarch64.dmg`.
-
-**0. Prep** (from Preconditions): `cd /Users/dario.ielardi/projects/delta && git checkout main && git pull --ff-only`, tree clean.
+Each platform's build is long (Rust release compiles; Linux under emulation);
+**run in the background** and read the log when done. Re-run per platform with
+`--only mac|windows|linux` — completed platforms don't need rebuilding.
 
 **1. Build** — pick one bump: `--patch` | `--minor` | `--major` | `--version X.Y.Z`
 
 ```bash
-source ~/.zshrc && cd /Users/dario.ielardi/projects/delta && \
-  scripts/build-release-dmg.sh --patch
+scripts/build-release.sh --minor            # or --version X.Y.Z
+scripts/build-release.sh --only linux --skip-checks   # retry just one platform
 ```
 
-Runs `tsc --noEmit`, `pnpm test`, `cargo test`, then bumps `package.json`, builds +
-signs + notarizes + staples + verifies the DMG. On success it prints the version,
-DMG path, and SHA-256, and leaves the version bump **uncommitted** so you can test the
-DMG locally first. On any failure it reverts the bump (keeps the tree clean for a retry).
+Runs `tsc --noEmit`, `pnpm test`, `cargo test`, bumps `package.json`, builds
+all platforms into `release/<version>/`, and writes `SHA256SUMS.txt`. The bump
+stays **uncommitted** so artifacts can be tested first; a failed run reverts it.
+On failure mid-way, fix and re-run — cargo caches make retries cheap.
 
-> The `Warn skipping app notarization, no APPLE_ID … or APPLE_API_KEY …` line during
-> `tauri build` is **intentional, not an error**: the script strips notary creds for the
-> bundle step (`env -u …`) and notarizes the *DMG* exactly once, explicitly, afterward.
-> Confirm you see `status: Accepted`, `The staple and validate action worked!`, and
-> `accepted / source=Notarized Developer ID`.
-
-**2. Publish** — publishes the DMG for whatever version `package.json` currently holds
+**2. Publish**
 
 ```bash
-source ~/.zshrc && cd /Users/dario.ielardi/projects/delta && \
-  scripts/publish-release.sh
+scripts/publish-release.sh
 ```
 
-Re-verifies the DMG, commits the bump as `chore(release): vX.Y.Z`, tags `vX.Y.Z`,
-pushes `HEAD` + tag, creates the GitHub release with the DMG attached, and bumps the
-Homebrew cask in `darioielardi/homebrew-tap` (via `update-cask.sh`). Flags: `--skip-cask`
-to skip the cask bump, `--remote <name>` for a non-`origin` remote.
-
-The `pnpm` aliases `build:release-dmg` / `publish:release` map to these scripts, but
-calling the scripts directly makes flag forwarding unambiguous.
+Commits the bump as `chore(release): vX.Y.Z` (everything else must already be
+committed), tags `vX.Y.Z`, pushes `HEAD` + tag to `origin`, and creates the
+release with all artifacts, `SHA256SUMS.txt`, and `latest.json` assembled from
+the `.sig` files. Release notes come from the `## X.Y.Z` section of
+`CHANGELOG.md` — write that section **before** publishing.
 
 ## Verify when done
 
 ```bash
-cd /Users/dario.ielardi/projects/delta && git status --porcelain && git log --oneline -1 && \
-  gh release view vX.Y.Z --json tagName,url,assets --jq '{tag:.tagName, url:.url, assets:[.assets[].name]}'
+git status --porcelain && git log --oneline -1 && \
+gh release view vX.Y.Z --repo snatvb/delta-review --json tagName,url,assets \
+  --jq '{tag:.tagName, url:.url, assets:[.assets[].name]}'
 ```
 
-Expect: clean worktree, HEAD = `chore(release): vX.Y.Z`, release live with:
-- `Delta_X.Y.Z_aarch64.dmg` (signed, notarized)
-- `Delta.app.tar.gz`, `Delta.app.tar.gz.sig` (updater bundle + detached signature)
-- `latest.json` (updater manifest)
-
-Also confirm "Bumped darioielardi/homebrew-tap to version X.Y.Z" in the publish log.
-
-**Cask update note:** The Homebrew cask gains `auto_updates true` **only after** the release
-is marked current. Never flip it before — existing installs would orphan if they ran before
-the updater ships. It's a separate operator task (gated in Step 4 of the release procedure).
+Expect a clean tree and the release to carry: the DMG, `Delta.app.tar.gz` +
+`.sig`, the Windows setup + `.sig`, the `.deb`, the `.AppImage` + `.sig`,
+`SHA256SUMS.txt`, and `latest.json`.
 
 ## Common mistakes
 
 | Mistake | Consequence / fix |
 |---|---|
-| Running without `source ~/.zshrc` | Build dies: "notarization credentials are missing". Prefix every command. |
-| Treating the app-bundle notarization warning as a failure | It's intentional — the DMG gets notarized separately. Check for `status: Accepted`. |
-| Running from a `.claude/worktrees/*` worktree | Wrong tree / dirty-tree abort. Always `cd` to the main worktree on `main`. |
-| Foreground run hits the tool timeout | The build/notarize can exceed 10 min. Run in the background and read the log. |
-| Re-running publish after a mid-publish failure | The `vX.Y.Z` tag guard blocks it. Inspect/delete the partial tag before retrying. |
-| Editing files other than `package.json` before publish | `publish-release.sh` refuses ("only package.json may be changed"). Commit or stash unrelated changes first. |
+| Docker Rosetta off | Linux build: libuv assert / `Exec format error` in AppImage tools. Enable Rosetta, restart Docker. |
+| Forgetting the CHANGELOG section | Release notes come up empty. Add `## X.Y.Z` first. |
+| Editing files other than `package.json` before publish | `publish-release.sh` refuses ("only package.json may be changed"). Commit the rest first. |
+| Foreground run hits the tool timeout | Builds can exceed 10 min. Run in the background and read the log. |
+| Re-running publish after a mid-publish failure | The tag guard blocks it. Inspect/delete the partial tag before retrying. |
+| Losing `~/.tauri/delta-review-updater.key` | Future releases can't sign updates; auto-update breaks. Back it up. |
