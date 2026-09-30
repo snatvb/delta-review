@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Monitor, Moon, Sun, X } from "lucide-react";
 import { useThemePref, type ThemePref } from "../theme";
@@ -8,6 +8,8 @@ import { usePickerOpenMode, type PickerOpenMode } from "../windowMode";
 import { reloadWindowPerBranch, useWindowPerBranch } from "../windowPerBranch";
 import { useChangeDetection } from "../changeDetection";
 import { useUpdateCheck } from "../updater/updateCheckPref";
+import { api } from "../api";
+import type { Target } from "../types";
 import type { OnOff } from "../lib/onOffPref";
 
 const THEMES: { value: ThemePref; label: string; Icon: typeof Monitor }[] = [
@@ -37,7 +39,16 @@ const selectClass =
 // "settings takes ~1s" report). This hand-rolled overlay — the same shape the
 // command palette uses — opens in a single frame regardless of the diff behind
 // it. Escape and click-outside close; the card grabs focus so Escape works.
-export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+export function SettingsDialog({
+  open,
+  onOpenChange,
+  target,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  /** The review this window shows — enables the per-repo local ignore editor. */
+  target?: Target;
+}) {
   const [theme, setTheme] = useThemePref();
   const [editor, setEditor] = useEditorPref();
   const [openMode, setOpenMode] = usePickerOpenMode();
@@ -103,7 +114,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           </button>
         </div>
 
-        <div className="px-5 pb-4 pt-2">
+        <div className="max-h-[70vh] overflow-y-auto px-5 pb-4 pt-2">
           <Row
             label="Theme"
             hint="Match the system, or force light/dark."
@@ -208,6 +219,12 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
           <div className="h-px bg-border/50" />
 
+          {/* key: a target switch remounts the section, so its loaded state
+              resets by remount instead of prop-syncing inside an effect. */}
+          <DeltaIgnoreSection key={target?.repoPath ?? ""} target={target} />
+
+          <div className="h-px bg-border/50" />
+
           <Row
             label="Code font"
             hint="Font family for diffs and code."
@@ -274,6 +291,141 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
 const toggleItemClass =
   "h-7 gap-1.5 rounded-md border-0 px-2.5 text-[12px] text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm";
+
+const rulesTextareaClass =
+  "min-h-[76px] w-full resize-y rounded-md border border-input bg-background px-2.5 py-2 font-mono text-[12px] leading-relaxed text-foreground outline-none transition-colors placeholder:text-muted-foreground/50 focus-visible:ring-1 focus-visible:ring-ring";
+
+const saveBtnClass =
+  "h-7 shrink-0 rounded-md border border-border px-2.5 text-[12px] font-medium text-foreground transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-40";
+
+// Delta Ignore editors: machine-wide rules and, when a review window has a
+// target, this checkout's never-committed local rules. Saving tells the
+// backend, which invalidates diff snapshots and offers Refresh in open
+// reviews — the window does not swap its diff under the user.
+function DeltaIgnoreSection({ target }: { target?: Target }) {
+  const [globalRules, setGlobalRules] = useState("");
+  const [globalSaved, setGlobalSaved] = useState<string | null>(null);
+  const [localRules, setLocalRules] = useState("");
+  const [localSaved, setLocalSaved] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [flash, setFlash] = useState<"global" | "local" | null>(null);
+
+  useEffect(() => {
+    if (flash == null) return;
+    const t = setTimeout(() => setFlash(null), 1400);
+    return () => clearTimeout(t);
+  }, [flash]);
+
+  // Load both sources on mount (the dialog unmounts us when closed, and the
+  // parent keys us by repoPath, so target never changes under a live instance).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const g = await api.getGlobalDeltaIgnore();
+        if (!cancelled) {
+          setGlobalRules(g);
+          setGlobalSaved(g);
+        }
+      } catch (e) {
+        if (!cancelled) setError(String(e));
+      }
+      if (!target) return;
+      try {
+        const l = await api.getLocalDeltaIgnore(target.repoPath);
+        if (!cancelled) {
+          setLocalRules(l);
+          setLocalSaved(l);
+        }
+      } catch (e) {
+        if (!cancelled) setError(String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [target]);
+
+  const save = async (which: "global" | "local") => {
+    try {
+      if (which === "global") {
+        await api.setGlobalDeltaIgnore(globalRules);
+        setGlobalSaved(globalRules);
+      } else if (target) {
+        await api.setLocalDeltaIgnore(target.repoPath, localRules);
+        setLocalSaved(localRules);
+      }
+      setError(null);
+      setFlash(which);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  return (
+    <div className="py-2.5">
+      <div className="text-[13px] font-medium text-foreground">Delta Ignore</div>
+      <div className="mt-0.5 text-[12px] leading-snug text-muted-foreground">
+        Gitignore-style rules that mute files from reviews. Precedence: global &lt; project{" "}
+        <code>.deltaignore</code> &lt; local.
+      </div>
+      {error && <div className="mt-1 text-[12px] text-destructive">{error}</div>}
+
+      <div className="mt-2.5">
+        <div className="mb-1 flex items-center justify-between gap-3">
+          <span className="text-[12px] font-medium text-muted-foreground">Global — every repository</span>
+          <button
+            type="button"
+            className={saveBtnClass}
+            disabled={globalSaved == null || globalRules === globalSaved}
+            onClick={() => void save("global")}
+          >
+            {flash === "global" ? "Saved ✓" : "Save"}
+          </button>
+        </div>
+        <textarea
+          aria-label="Global Delta Ignore rules"
+          className={rulesTextareaClass}
+          spellCheck={false}
+          value={globalRules}
+          onChange={(e) => setGlobalRules(e.target.value)}
+          placeholder={"*.gen.ts\ndist/\nvendor/"}
+        />
+      </div>
+
+      {target ? (
+        <div className="mt-3">
+          <div className="mb-1 flex items-center justify-between gap-3">
+            <span className="text-[12px] font-medium text-muted-foreground">This repository — local</span>
+            <button
+              type="button"
+              className={saveBtnClass}
+              disabled={localSaved == null || localRules === localSaved}
+              onClick={() => void save("local")}
+            >
+              {flash === "local" ? "Saved ✓" : "Save"}
+            </button>
+          </div>
+          <textarea
+            aria-label="Local Delta Ignore rules"
+            className={rulesTextareaClass}
+            spellCheck={false}
+            value={localRules}
+            onChange={(e) => setLocalRules(e.target.value)}
+            placeholder={"huge-monorepo/\ncodegen-output/"}
+          />
+          <div className="mt-1 text-[12px] leading-snug text-muted-foreground">
+            Stored in <code>.git/info/deltaignore</code> — this checkout only, never committed or shared.
+          </div>
+        </div>
+      ) : (
+        <div className="mt-2 text-[12px] text-muted-foreground">
+          Open a review to edit that repository's local rules.
+        </div>
+      )}
+    </div>
+  );
+}
 
 function OnOffToggle({
   label,

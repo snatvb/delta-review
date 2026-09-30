@@ -496,6 +496,59 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), Str
     crate::settings::save(&app, &settings)
 }
 
+/// Where the global Delta Ignore file lives (app data dir). Also wired into the
+/// ignore engine at startup — see lib.rs setup.
+pub fn global_deltaignore_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let base = app.path().app_data_dir().map_err(|e| format!("app data dir: {e}"))?;
+    Ok(base.join(crate::git::deltaignore::GLOBAL_DELTAIGNORE_FILE))
+}
+
+/// Delta Ignore sources, editable from Settings: the global rules (every repo
+/// on this machine) and this checkout's never-committed local rules (stored in
+/// `<git dir>/info/deltaignore`, like git's `info/exclude`). Saving bumps the
+/// rules epoch, invalidates the affected diff snapshots, and tells open review
+/// windows like an fs change so they offer Refresh.
+
+#[tauri::command]
+pub fn get_global_delta_ignore() -> String {
+    crate::git::deltaignore::DeltaIgnore::global_rules()
+}
+
+#[tauri::command]
+pub fn set_global_delta_ignore(
+    app: tauri::AppHandle,
+    cache: tauri::State<'_, DiffCache>,
+    rules: String,
+) -> Result<(), String> {
+    let path = global_deltaignore_path(&app)?;
+    crate::git::deltaignore::DeltaIgnore::write_global_rules(&path, &rules)?;
+    crate::git::deltaignore::notify_rules_changed();
+    cache.invalidate_all();
+    crate::watch::emit_ignore_changed(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_local_delta_ignore(repo_path: String) -> Result<String, String> {
+    let repo = open_repo(&repo_path)?;
+    Ok(crate::git::deltaignore::DeltaIgnore::local_rules(&repo))
+}
+
+#[tauri::command]
+pub fn set_local_delta_ignore(
+    app: tauri::AppHandle,
+    cache: tauri::State<'_, DiffCache>,
+    repo_path: String,
+    rules: String,
+) -> Result<(), String> {
+    let repo = open_repo(&repo_path)?;
+    crate::git::deltaignore::DeltaIgnore::write_local_rules(&repo, &rules)?;
+    crate::git::deltaignore::notify_rules_changed();
+    cache.invalidate(&repo_path);
+    crate::watch::emit_ignore_changed(&app);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn install_cli() -> Result<InstallOutcome, String> {
     launch_install_cli()

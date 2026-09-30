@@ -115,6 +115,10 @@ pub fn run() {
             commands::rewatch_window,
             commands::get_settings,
             commands::set_settings,
+            commands::get_global_delta_ignore,
+            commands::set_global_delta_ignore,
+            commands::get_local_delta_ignore,
+            commands::set_local_delta_ignore,
             commands::list_registry,
             commands::list_picker,
             commands::list_worktrees,
@@ -130,6 +134,11 @@ pub fn run() {
             commands::telemetry_allowed
         ])
         .setup(|app| {
+            // The global Delta Ignore file is read on the diff hot path where
+            // no AppHandle exists, so hand its path to the ignore engine once.
+            if let Ok(path) = crate::commands::global_deltaignore_path(app.handle()) {
+                crate::git::deltaignore::set_global_file(path);
+            }
             let args: Vec<String> = std::env::args().skip(1).collect();
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             crate::launch::route_launch(app.handle(), &args, &cwd);

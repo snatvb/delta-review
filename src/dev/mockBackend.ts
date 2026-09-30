@@ -443,6 +443,10 @@ const REVIEW: Review = {
 
 let mockSettings: AppSettings = { windowPerBranch: true };
 
+// Delta Ignore rules for the Settings editor (mock defaults show the flavor).
+let mockGlobalDeltaIgnore = "*.gen.ts\n";
+let mockLocalDeltaIgnore = "vendor/\n";
+
 const REGISTRY: Registry = {
   version: 1,
   home: "/Users/me",
@@ -681,6 +685,16 @@ export function installMockBackend(): void {
         return { ...mockSettings } as T;
       case "set_settings":
         mockSettings = (args as { settings: AppSettings }).settings;
+        return undefined as T;
+      case "get_global_delta_ignore":
+        return mockGlobalDeltaIgnore as T;
+      case "set_global_delta_ignore":
+        mockGlobalDeltaIgnore = (args as { rules: string }).rules;
+        return undefined as T;
+      case "get_local_delta_ignore":
+        return mockLocalDeltaIgnore as T;
+      case "set_local_delta_ignore":
+        mockLocalDeltaIgnore = (args as { rules: string }).rules;
         return undefined as T;
       case "list_registry":
         return structuredClone(REGISTRY) as T;

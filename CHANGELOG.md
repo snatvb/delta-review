@@ -8,6 +8,8 @@ The terminal CLI is now **`dr`** (short for delta-review; `dr-dev` for the debug
 
 In-app analytics are now **dormant**: nothing is collected or sent, the Settings toggle is gone, and the README no longer mentions telemetry. The whole pipeline (event taxonomy, gate, Aptabase plugin wiring) is kept in the tree, now keyed to a fork-owned `DELTA_REVIEW_TELEMETRY_KEY` build-time env var — upstream's `APTABASE_KEY` pathway is removed — so it can be revived later against an endpoint we own (checklist in `src/analytics.ts`). Attribution: Andrei Avsenin is credited as fork co-author alongside upstream author Dario Ielardi (LICENSE, README). Installs are now documented as releases-only (no Homebrew tap).
 
+**Delta Ignore grows two more layers.** Settings now edits a **global** ruleset (app-data `deltaignore` file) that applies to every repository — the home for common offenders like codegen output — and each checkout gets **local** rules in `.git/info/deltaignore` (git's `info/exclude` slot): mute a huge vendored monorepo or local codegen without touching the project. Precedence: global < project `.deltaignore` < local, all gitignore syntax; a bad line is now skipped instead of disabling every rule. Saving from Settings invalidates diff snapshots and offers Refresh in open reviews, hand-edits to the local file are picked up by the watcher, and compiled rules are memoized per worktree (mtime-keyed), so the layered load costs three stat()s on the snapshot hot path.
+
 ## 0.18.0 — 2026-09-30
 
 The fork gets its own identity: the app is now **delta-review** (identifier `com.snatvb.delta-review`, binary `DeltaReview`, CLI command `delta-review`). Up to and including 0.17.0 it still carried the upstream name and bundle ID (`Delta` / `com.darioielardi.delta`).

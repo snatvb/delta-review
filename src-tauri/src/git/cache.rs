@@ -271,6 +271,15 @@ impl DiffCache {
             );
         }
     }
+
+    /// Drop the hot snapshots for EVERY worktree — used when global Delta
+    /// Ignore rules change, since those affect every repo's summary. Served
+    /// copies survive per the module doc, like a scoped `invalidate`.
+    pub fn invalidate_all(&self) {
+        let mut inner = self.lock();
+        inner.epoch += 1; // disqualify any snapshot still being built
+        inner.hot.clear();
+    }
 }
 
 #[cfg(test)]
@@ -301,6 +310,32 @@ mod tests {
         let fd = cache.file(&t, "gen/api.ts").unwrap();
         assert_eq!(fd.new_content.as_deref(), Some("export const generated = 1;
 "));
+    }
+
+    /// Local `.git/info/deltaignore` rules flow through the same path, and
+    /// editing them (then invalidating, like the Settings save does) rebuilds
+    /// the summary against the new rules instead of the memoized snapshot.
+    #[test]
+    fn local_deltaignore_takes_effect_after_invalidate() {
+        let (dir, _repo) = repo_with_commit();
+        write(dir.path(), "gen/api.ts", "export const generated = 1;
+");
+        write(dir.path(), ".git/info/deltaignore", "gen/
+");
+        let repo_path = dir.path().to_str().unwrap().to_string();
+        let t = target(&repo_path, DiffMode::Uncommitted);
+        let cache = DiffCache::default();
+
+        let entry = |cache: &DiffCache| {
+            cache.summary(&t).unwrap().files.into_iter().find(|f| f.path == "gen/api.ts").unwrap()
+        };
+        assert!(entry(&cache).ignored);
+
+        // The Settings editor rewrites the local rules; the save invalidates.
+        write(dir.path(), ".git/info/deltaignore", "nothing-here/
+");
+        cache.invalidate(&repo_path);
+        assert!(!entry(&cache).ignored);
     }
 
     #[test]

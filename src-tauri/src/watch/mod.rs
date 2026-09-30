@@ -53,7 +53,10 @@ fn classify(path: &Path, root: &Path, ig: &Gitignore) -> Option<Option<String>> 
         let meta = rel_str == ".git/HEAD"
             || rel_str == ".git/MERGE_HEAD"
             || rel_str == ".git/index"
-            || rel_str.starts_with(".git/refs/");
+            || rel_str.starts_with(".git/refs/")
+            // Hand-edited local Delta Ignore rules shift the whole file list,
+            // exactly like a ref move — treat the edit as repo meta, not noise.
+            || rel_str == ".git/info/deltaignore";
         return if meta { Some(None) } else { None };
     }
     // `matched_path_or_any_parents` (not `matched`) so a file *inside* an ignored
@@ -133,6 +136,13 @@ pub fn start(app: &AppHandle, label: &str, worktree: &Path) {
     state.0.lock().unwrap().insert(label.to_string(), (watched_root, watcher));
 }
 
+/// Broadcast an `fs:changed` git-meta event to every open window — used after
+/// Delta Ignore rules change in Settings, so each review offers Refresh
+/// exactly as if the watcher had seen the edit.
+pub fn emit_ignore_changed(app: &AppHandle) {
+    let _ = app.emit("fs:changed", ChangePayload { paths: Vec::new(), git_meta: true });
+}
+
 /// The review window showing `worktree`, whichever branch it was opened on.
 pub fn window_watching(app: &AppHandle, worktree: &Path) -> Option<String> {
     let state = app.try_state::<Watchers>()?;
@@ -173,5 +183,7 @@ mod tests {
         // .git meta → relevant, no path
         assert_eq!(classify(Path::new("/repo/.git/HEAD"), root, &ig), Some(None));
         assert_eq!(classify(Path::new("/repo/.git/refs/heads/main"), root, &ig), Some(None));
+        // hand-edited local Delta Ignore → repo meta, offers Refresh
+        assert_eq!(classify(Path::new("/repo/.git/info/deltaignore"), root, &ig), Some(None));
     }
 }

@@ -50,4 +50,21 @@ describe("api", () => {
     expect(invokeMock).toHaveBeenCalledWith("export_review", { review });
     expect(md).toBe("# md");
   });
+
+  it("delta ignore rules round-trip the right commands", async () => {
+    invokeMock.mockResolvedValue("vendor/\n");
+    expect(await api.getGlobalDeltaIgnore()).toBe("vendor/\n");
+    expect(invokeMock).toHaveBeenCalledWith("get_global_delta_ignore");
+
+    invokeMock.mockResolvedValue(undefined);
+    await api.setGlobalDeltaIgnore("vendor/\n");
+    expect(invokeMock).toHaveBeenCalledWith("set_global_delta_ignore", { rules: "vendor/\n" });
+
+    invokeMock.mockResolvedValue("");
+    expect(await api.getLocalDeltaIgnore("/r")).toBe("");
+    expect(invokeMock).toHaveBeenCalledWith("get_local_delta_ignore", { repoPath: "/r" });
+
+    await api.setLocalDeltaIgnore("/r", "gen/\n");
+    expect(invokeMock).toHaveBeenCalledWith("set_local_delta_ignore", { repoPath: "/r", rules: "gen/\n" });
+  });
 });

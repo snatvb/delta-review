@@ -80,6 +80,14 @@ export const api = {
     invokeImpl("rewatch_window", { repoPath }),
   getSettings: (): Promise<AppSettings> => invokeImpl("get_settings"),
   setSettings: (settings: AppSettings): Promise<void> => invokeImpl("set_settings", { settings }),
+  // Delta Ignore sources (Settings): global rules apply to every repo on this
+  // machine; local rules live in <git>/info/deltaignore and never get committed.
+  // Saving invalidates diff snapshots and offers Refresh in open reviews.
+  getGlobalDeltaIgnore: (): Promise<string> => invokeImpl("get_global_delta_ignore"),
+  setGlobalDeltaIgnore: (rules: string): Promise<void> => invokeImpl("set_global_delta_ignore", { rules }),
+  getLocalDeltaIgnore: (repoPath: string): Promise<string> => invokeImpl("get_local_delta_ignore", { repoPath }),
+  setLocalDeltaIgnore: (repoPath: string, rules: string): Promise<void> =>
+    invokeImpl("set_local_delta_ignore", { repoPath, rules }),
   deleteReview: (id: string): Promise<void> => invokeImpl("delete_review", { id }),
   installCli: (): Promise<InstallOutcome> => invokeImpl("install_cli"),
   cliStatus: (): Promise<CliStatus> => invokeImpl("cli_status"),

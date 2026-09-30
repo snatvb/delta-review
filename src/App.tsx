@@ -112,7 +112,11 @@ export default function App() {
         <Home onOpenSettings={() => setSettingsOpen(true)} />
       )}
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} current={route.kind === "review" ? route.target : undefined} />}
-      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <SettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        target={route.kind === "review" ? route.target : undefined}
+      />
       <NoticeDialog
         open={notice != null}
         title={notice?.title ?? ""}
