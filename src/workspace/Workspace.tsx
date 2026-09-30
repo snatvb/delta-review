@@ -125,7 +125,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   const [copyState, setCopyState] = useState<"idle" | "ok" | "err">("idle");
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const { review, setReview, addComment, updateCommentBody, deleteComment, clearComments, toggleViewed, toggleResolved } = useReview(null);
+  const { review, setReview, addComment, updateCommentBody, deleteComment, clearComments, toggleViewed, setViewedBulk, toggleResolved } = useReview(null);
 
   // Auto-refresh plumbing (#9): reviewRef lets the once-mounted fs-watcher
   // listener always refresh the *current* review; sigRef skips no-op state
@@ -522,6 +522,8 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   const onPrefetchFile = useCallback((p: string) => setPrefetch({ file: p, n: Date.now() }), []);
   const onVisibleFileChange = useCallback((p: string) => setVisibleFile(p), []);
   const onToggleViewedFile = useCallback((file: string) => toggleViewed(file, ""), [toggleViewed]);
+  // Folder checkbox in the tree: one bulk update (and one save) for all files under a dir.
+  const onSetViewedBulk = useCallback((files: string[], viewed: boolean) => setViewedBulk(files, viewed), [setViewedBulk]);
   const onAddComment = useCallback(
     (anchor: Anchor, body: string) => addComment(anchor.endLine != null ? "range" : "line", anchor, body, commitOid),
     [addComment, commitOid],
@@ -942,6 +944,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                     onPrefetch={onPrefetchFile}
                     viewedFiles={viewedFiles}
                     onToggleViewed={onToggleViewedFile}
+                    onSetViewedBulk={onSetViewedBulk}
                     commentCounts={commentCountsByFile}
                   />
                   <PaneResizer edge="right" label="Resize file panel" {...fileResize} />

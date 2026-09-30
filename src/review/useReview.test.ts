@@ -68,6 +68,30 @@ describe("useReview", () => {
     expect(saveMock).toHaveBeenCalledTimes(1);
   });
 
+  it("setViewedBulk marks many files in one update and one save", () => {
+    const { result } = renderHook(() => useReview(base));
+    saveMock.mockReset();
+    act(() => { result.current.setViewedBulk(["a.ts", "b.ts", "c.ts"], true); });
+    expect(result.current.review!.viewed).toHaveLength(3);
+    expect(result.current.review!.viewed.map((v) => v.file)).toEqual(["a.ts", "b.ts", "c.ts"]);
+    expect(saveMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("setViewedBulk clears a batch without touching other files", () => {
+    const seeded: Review = { ...base, viewed: [{ file: "a.ts", diffHash: "" }, { file: "keep.ts", diffHash: "" }] };
+    const { result } = renderHook(() => useReview(seeded));
+    act(() => { result.current.setViewedBulk(["a.ts"], false); });
+    expect(result.current.review!.viewed).toEqual([{ file: "keep.ts", diffHash: "" }]);
+  });
+
+  it("setViewedBulk is a no-op (no save) for an empty batch", () => {
+    const { result } = renderHook(() => useReview(base));
+    saveMock.mockReset();
+    act(() => { result.current.setViewedBulk([], true); });
+    expect(result.current.review!.viewed).toEqual([]);
+    expect(saveMock).not.toHaveBeenCalled();
+  });
+
   it("toggleResolved flips resolved and saves immediately", async () => {
     const { result } = renderHook(() => useReview(base));
     act(() => result.current.addComment("line", null, "fix this"));

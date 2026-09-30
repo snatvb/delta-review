@@ -2,7 +2,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Kbd } from "@/components/ui/kbd";
-import { ChevronRight, ChevronsDownUp, ChevronsUpDown, EyeOff, Folder, FolderOpen, Check, List, ListTree, MessageSquare, Search, X } from "lucide-react";
+import { ChevronRight, ChevronsDownUp, ChevronsUpDown, EyeOff, Folder, FolderOpen, Check, List, ListTree, MessageSquare, Minus, Search, X } from "lucide-react";
 import type { FileEntry, FileStatus } from "../types";
 import { buildTree, type TreeNode } from "./buildTree";
 import { FileTypeIcon } from "./fileTypeIcons";
@@ -52,13 +52,38 @@ interface RowHandlers {
   activePath: string | null;
   collapsed: Set<string>;
   viewedFiles: Set<string>;
+  // Per-folder rollup of reviewable descendants → the folder's tri-state checkbox.
+  dirViewed: Map<string, DirViewed>;
   commentCounts: Map<string, number>;
   flat: boolean;
   onToggleDir: (path: string) => void;
   onSelectFile: (path: string) => void;
   onToggleViewed: (file: string) => void;
+  // Folder checkbox: mark/clear every file under a folder in one update.
+  onSetViewedBulk: (files: string[], viewed: boolean) => void;
   // Pointer rested on / left a file row — drives hover-prefetch of its diff.
   onHoverFile: (path: string | null) => void;
+}
+
+// Reviewable (checkbox-bearing) files under a folder: `total` sizes the set the
+// folder checkbox acts on, `viewed` picks the tri-state — all → check, some →
+// dash, none → empty (total 0, e.g. the Ignored group, renders no checkbox).
+interface DirViewed {
+  total: number;
+  viewed: number;
+}
+
+// Reviewable file paths under a folder node, tree order — what the folder
+// checkbox marks/clears. Pure tree walk, no state.
+function dirFiles(node: TreeNode): string[] {
+  const out: string[] = [];
+  (function walk(nodes: TreeNode[]) {
+    for (const n of nodes) {
+      if (n.kind === "file" && n.entry && !n.entry.ignored) out.push(n.entry.path);
+      else if (n.kind === "dir") walk(n.children);
+    }
+  })(node.children);
+  return out;
 }
 
 // One flattened tree row, absolutely positioned at `top` inside the spacer. Depth
@@ -73,6 +98,11 @@ function Row({ node, depth, top, h }: { node: TreeNode; depth: number; top: numb
   const isViewed = !isDir && node.entry ? h.viewedFiles.has(node.entry.path) : false;
   const commentN = !isDir && node.entry ? h.commentCounts.get(node.entry.path) ?? 0 : 0;
   const paddingLeft = h.flat ? FLAT_PL : depth * INDENT + ROW_PL;
+  // Folder tri-state: all → check, some → dash, none → empty (and no checkbox at
+  // all when the folder has no reviewable descendants, e.g. the Ignored group).
+  const dirAgg = isDir ? h.dirViewed.get(node.path) : undefined;
+  const dirAll = !!dirAgg && dirAgg.viewed === dirAgg.total;
+  const dirSome = !!dirAgg && dirAgg.viewed > 0 && !dirAll;
   // Renamed file → tooltip names the source path (the sky icon already flags the
   // rename; the old path isn't shown inline to keep the narrow rows uncluttered).
   const renamedFrom = !isDir && node.entry?.status === "renamed" && node.entry.oldPath ? node.entry.oldPath : null;
@@ -115,6 +145,20 @@ function Row({ node, depth, top, h }: { node: TreeNode; depth: number; top: numb
       <span className={`flex-1 truncate text-[13px] ${isIgnoredGroup ? "font-medium text-muted-foreground" : isDir ? "font-medium text-foreground" : isIgnoredFile ? "text-muted-foreground" : "text-foreground"}`}>
         {node.name}
       </span>
+      {/* Folder checkbox marks/clears every reviewable descendant at once —
+          standard tri-state cycle: empty marks all viewed, check/dash clears. */}
+      {isDir && dirAgg && dirAgg.total > 0 && (
+        <button
+          type="button"
+          aria-label={`viewed folder ${node.path}`}
+          title={dirAll || dirSome ? `Clear viewed (${dirAgg.viewed}/${dirAgg.total})` : `Mark all viewed (${dirAgg.total} ${dirAgg.total === 1 ? "file" : "files"})`}
+          onClick={(e) => { e.stopPropagation(); h.onSetViewedBulk(dirFiles(node), !dirAll && !dirSome); }}
+          className={`flex size-4 shrink-0 items-center justify-center rounded-[5px] border transition-colors ${dirAll || dirSome ? "border-primary bg-primary text-primary-foreground" : "border-border/80 bg-card dark:bg-transparent group-hover:border-foreground/40 hover:!border-foreground/60"}`}
+        >
+          {dirAll && <Check className="size-2.5" strokeWidth={3} />}
+          {dirSome && <Minus className="size-2.5" strokeWidth={3} />}
+        </button>
+      )}
       {!isDir && node.entry && !isIgnoredFile && (
         <>
           {commentN > 0 && (
@@ -145,7 +189,7 @@ function Row({ node, depth, top, h }: { node: TreeNode; depth: number; top: numb
 }
 
 export function FilesPanel({
-  files, selected, onSelect, onPrefetch, viewedFiles, onToggleViewed, commentCounts,
+  files, selected, onSelect, onPrefetch, viewedFiles, onToggleViewed, onSetViewedBulk, commentCounts,
 }: {
   files: FileEntry[];
   selected: string | null;
@@ -154,6 +198,8 @@ export function FilesPanel({
   onPrefetch?: (path: string) => void;
   viewedFiles: Set<string>;
   onToggleViewed: (file: string) => void;
+  // Folder checkbox: mark/clear every file under a folder in one update.
+  onSetViewedBulk: (files: string[], viewed: boolean) => void;
   // Per-file comment counts → a small badge on rows that have any. (#1)
   commentCounts?: Map<string, number>;
 }) {
@@ -235,6 +281,31 @@ export function FilesPanel({
     }
     return nodes;
   }, [filteredFiles, mode]);
+
+  // Per-folder viewed rollup for the folder checkbox: {total, viewed} over the
+  // reviewable (non-ignored) file descendants of every dir, in one bottom-up tree
+  // walk. Ignored-only folders (the Ignored group and its subtree) end up with
+  // total 0 and render no checkbox. Empty in list mode (no dir nodes).
+  const dirViewed = useMemo(() => {
+    const m = new Map<string, DirViewed>();
+    (function walk(nodes: TreeNode[]): DirViewed {
+      let total = 0;
+      let viewed = 0;
+      for (const n of nodes) {
+        if (n.kind === "dir") {
+          const a = walk(n.children);
+          m.set(n.path, a);
+          total += a.total;
+          viewed += a.viewed;
+        } else if (n.entry && !n.entry.ignored) {
+          total++;
+          if (viewedFiles.has(n.entry.path)) viewed++;
+        }
+      }
+      return { total, viewed };
+    })(roots);
+    return m;
+  }, [roots, viewedFiles]);
 
   // Flatten the currently-visible rows (with depth) for both keyboard nav and row
   // windowing. While searching, every dir is force-open so matches are never hidden
@@ -369,11 +440,13 @@ export function FilesPanel({
     activePath,
     collapsed: searching ? NO_COLLAPSE : collapsed,
     viewedFiles,
+    dirViewed,
     commentCounts: commentCounts ?? EMPTY_COUNTS,
     flat: mode === "list",
     onToggleDir: toggleDir,
     onSelectFile: selectFile,
     onToggleViewed,
+    onSetViewedBulk,
     onHoverFile,
   };
 

@@ -115,5 +115,18 @@ export function useReview(initial: Review | null) {
     }, "now");
   }, [mutate]);
 
-  return { review, setReview, addComment, updateCommentBody, deleteComment, clearComments, toggleResolved, toggleViewed };
+  // Folder-level tri-state checkbox: set or clear many files in one mutate + one
+  // save, instead of N toggleViewed calls (N saves and N re-renders). `viewed`
+  // entries carry diffHash "" — the folder checkbox means "mark viewed as-is",
+  // same as the tree's per-file checkbox which also passes "".
+  const setViewedBulk = useCallback((files: string[], viewed: boolean, diffHash = "") => {
+    if (files.length === 0) return;
+    const batch = new Set(files);
+    mutate((r) => {
+      const kept = r.viewed.filter((v) => !batch.has(v.file));
+      return { ...r, viewed: viewed ? [...kept, ...files.map((file) => ({ file, diffHash }))] : kept };
+    }, "now");
+  }, [mutate]);
+
+  return { review, setReview, addComment, updateCommentBody, deleteComment, clearComments, toggleResolved, toggleViewed, setViewedBulk };
 }

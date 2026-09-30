@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+**Folder-level "viewed" checkboxes in the file tree.** Every folder row now carries the standard tri-state checkbox: filled check when all files beneath it (nested folders included) are viewed, a dash when only some are, empty when none are. Clicking an empty checkbox marks every file in the subtree viewed in one update; clicking a check or dash clears them all. Folders with nothing to mark (the Ignored group) show no checkbox, and the list view is unaffected.
+
 The terminal CLI is now **`dr`** (short for delta-review; `dr-dev` for the debug build). Installing from the app also removes a legacy `delta-review` shim symlink when it points at this app, so the old long-form command doesn't linger. `dr --help` and `--version` print the new name.
 
 **Linux: the CLI now works end-to-end.** A cold start (app not running) used to fail with `could not launch delta-review` because it shelled out to the macOS-only `open -b`; it now re-execs the app binary detached (own process group, null stdio), preferring `$APPIMAGE` so AppImages relaunch correctly. Warm forwarding over the unix socket was already POSIX-fine; the socket now lives at `~/.local/share/<identifier>/cli.sock` (XDG, next to the app's data dir) instead of a `Library/Application Support` path, and a second GUI instance no longer steals the first one's socket. On macOS nothing changes (`open -b` cold start, same socket path).
