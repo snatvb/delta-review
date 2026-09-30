@@ -619,7 +619,7 @@ export function installMockBackend(): void {
       }
       case "open_review":
       case "refresh_review": {
-        const session: ReviewSession = { review: ds.review, summary: ds.summary, repoName: "demo" };
+        const session: ReviewSession = { review: ds.review, summary: ds.summary, repoName: "demo", vcs: "git" };
         return structuredClone(session) as T;
       }
       case "save_review":
@@ -692,7 +692,7 @@ export function installMockBackend(): void {
         mockGlobalDeltaIgnore = (args as { rules: string }).rules;
         return undefined as T;
       case "get_local_delta_ignore":
-        return mockLocalDeltaIgnore as T;
+        return { storage: "gitInfo", rules: mockLocalDeltaIgnore } as T;
       case "set_local_delta_ignore":
         mockLocalDeltaIgnore = (args as { rules: string }).rules;
         return undefined as T;

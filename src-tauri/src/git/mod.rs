@@ -129,6 +129,25 @@ pub fn resolve_worktree(repo: &Repository) -> Result<String, GitError> {
     Ok(short_oid(oid))
 }
 
+/// The shared `.git` directory for a repo and all its linked worktrees.
+/// git2 0.19 has no `commondir()`, so derive it from `path()`:
+/// main worktree → `<root>/.git`; linked worktree → `<root>/.git/worktrees/<name>`
+/// (strip at the `worktrees` segment). Canonicalized so both forms match.
+pub fn common_git_dir(repo: &git2::Repository) -> std::path::PathBuf {
+    let p = repo.path();
+    let base = match p.iter().position(|c| c == std::ffi::OsStr::new("worktrees")) {
+        Some(pos) => p.iter().take(pos).collect::<std::path::PathBuf>(),
+        None => p.to_path_buf(),
+    };
+    std::fs::canonicalize(&base).unwrap_or(base)
+}
+
+/// The main worktree directory = parent of the shared `.git` dir. Same for every
+/// linked worktree of the repo, so it yields the canonical repo name.
+pub fn main_worktree_dir(repo: &git2::Repository) -> Option<std::path::PathBuf> {
+    common_git_dir(repo).parent().map(|p| p.to_path_buf())
+}
+
 fn short_oid(oid: Oid) -> String {
     oid.to_string().chars().take(7).collect()
 }

@@ -1,6 +1,6 @@
 use crate::git::diff::looks_binary;
 use crate::git::model::{DiffMode, Target};
-use crate::git::open_repo;
+use crate::vcs::Repo;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,9 +20,8 @@ pub fn edit_file_line(
     replacement: &str,
 ) -> Result<(), String> {
     require_working_tree(target)?;
-    let repo = open_repo(&target.repo_path)?;
-    let workdir = repo.workdir().ok_or("repository has no working directory")?;
-    let resolved = resolve_in_workdir(workdir, path)?;
+    let root = crate::vcs::Repo::open(&target.repo_path)?.root();
+    let resolved = resolve_in_workdir(&root, path)?;
     replace_line_on_disk(&resolved, line, expected, replacement)
 }
 
@@ -63,9 +62,8 @@ fn read_verified(resolved: &Path) -> Result<(Vec<u8>, String), String> {
 
 pub fn read_file_text(target: &Target, path: &str) -> Result<FileText, String> {
     require_working_tree(target)?;
-    let repo = open_repo(&target.repo_path)?;
-    let workdir = repo.workdir().ok_or("repository has no working directory")?;
-    let resolved = resolve_in_workdir(workdir, path)?;
+    let root = Repo::open(&target.repo_path)?.root();
+    let resolved = resolve_in_workdir(&root, path)?;
     let (bytes, raw) = read_verified(&resolved)?;
     let (content, _crlf) = normalize_to_lf(&raw);
     Ok(FileText { content, hash: hash_bytes(&bytes) })
@@ -78,9 +76,8 @@ pub fn write_file_text(
     content: &str,
 ) -> Result<FileText, String> {
     require_working_tree(target)?;
-    let repo = open_repo(&target.repo_path)?;
-    let workdir = repo.workdir().ok_or("repository has no working directory")?;
-    let resolved = resolve_in_workdir(workdir, path)?;
+    let root = Repo::open(&target.repo_path)?.root();
+    let resolved = resolve_in_workdir(&root, path)?;
     let (bytes, raw) = read_verified(&resolved)?;
     if hash_bytes(&bytes) != expected_hash {
         return Err("file changed on disk — refusing to overwrite".into());

@@ -21,12 +21,10 @@
 //! content rather than absorbing the unseen edit waiting on disk.
 use std::sync::{Arc, Condvar, Mutex};
 
-use git2::Repository;
-
-use crate::git::diff::{compute_diff_full, extract_file_diff, get_file_diff, with_fresh_sources, DiffSummary, FileDiff, FileSources, FullDiff};
-use crate::git::open_repo;
+use crate::git::diff::{DiffSummary, FileDiff, FileSources, FullDiff};
 use crate::git::model::{DiffMode, Target};
 use crate::git::GitError;
+use crate::vcs::Repo;
 
 /// Most recent snapshots to retain. A small LRU (not a single slot) so multiple
 /// review windows on different targets don't evict each other. Per-snapshot content
@@ -161,7 +159,7 @@ impl DiffCache {
         drop(cache); // build with the lock released
 
         let build = std::time::Instant::now();
-        let diff = compute_diff_full(target);
+        let diff = Repo::open(&target.repo_path).and_then(|repo| repo.compute_diff_full(target));
         let build_ms = build.elapsed().as_secs_f64() * 1e3;
         let mut cache = self.lock();
         cache.building.remove(&key);
@@ -203,9 +201,10 @@ impl DiffCache {
         if let Some(fd) = snap.diff.files.get(path) {
             return Ok(fd.clone());
         }
+        let repo = Repo::open(&target.repo_path)?;
         match (snap.diff.headers.get(path), snap.diff.sources.get(path)) {
-            (Some(header), Some(sources)) => extract_file_diff(&open_repo(&target.repo_path)?, header, sources),
-            _ => get_file_diff(target, path),
+            (Some(header), Some(sources)) => repo.extract_file_diff(header, sources),
+            _ => repo.get_file_diff(target, path),
         }
     }
 
@@ -225,16 +224,16 @@ impl DiffCache {
         &self,
         target: &Target,
         path: &str,
-        f: impl FnOnce(&Repository, &FileSources) -> T,
+        f: impl FnOnce(&Repo, &FileSources) -> T,
     ) -> Result<T, GitError> {
         let key = key_of(target);
         let served = self.lock().served.iter().rev().find(|s| s.key == key).cloned();
         if let Some(snap) = served {
             if let Some(sources) = snap.diff.sources.get(path) {
-                return Ok(f(&open_repo(&target.repo_path)?, sources));
+                return Ok(f(&Repo::open(&target.repo_path)?, sources));
             }
         }
-        with_fresh_sources(target, path, f)
+        Repo::with_fresh_sources(target, path, f)
     }
 
     /// One file's diff from the last snapshot *served* for `target` — the version
@@ -249,7 +248,7 @@ impl DiffCache {
         let snap = self.lock().served.iter().rev().find(|s| s.key == key)?.clone();
         match snap.diff.files.get(path) {
             Some(fd) => Some(Ok(fd.clone())),
-            None => Some(get_file_diff(target, path)),
+            None => Some(Repo::open(&target.repo_path).and_then(|repo| repo.get_file_diff(target, path))),
         }
     }
 
@@ -285,7 +284,7 @@ impl DiffCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::diff::{binary_sizes, BlobSide, MAX_CACHED_FILE_BYTES};
+    use crate::git::diff::{BlobSide, MAX_CACHED_FILE_BYTES};
     use crate::git::model::{DiffMode, Target};
     use crate::git::test_support::*;
 
@@ -427,7 +426,14 @@ mod tests {
         let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
         let cache = DiffCache::default();
 
-        let sizes = |cache: &DiffCache| cache.with_sources(&t, "logo.png", binary_sizes).unwrap().new_size;
+        let sizes =
+            |cache: &DiffCache| {
+                cache
+                    .with_sources(&t, "logo.png", |r, s| r.binary_sizes(s))
+                    .and_then(|sizes| sizes)
+                    .unwrap()
+                    .new_size
+            };
         assert_eq!(sizes(&cache), Some(4));
         std::fs::write(dir.path().join("logo.png"), [0x89u8, b'P', 0x00, 0x01, 0x02, 0x03]).unwrap();
         assert_eq!(sizes(&cache), Some(6));
@@ -446,7 +452,14 @@ mod tests {
         let cache = DiffCache::default();
 
         cache.summary(&t).unwrap(); // the review opens — snapshot becomes served
-        let sizes = |cache: &DiffCache| cache.with_sources(&t, "logo.png", binary_sizes).unwrap().new_size;
+        let sizes =
+            |cache: &DiffCache| {
+                cache
+                    .with_sources(&t, "logo.png", |r, s| r.binary_sizes(s))
+                    .and_then(|sizes| sizes)
+                    .unwrap()
+                    .new_size
+            };
         assert_eq!(sizes(&cache), Some(4));
 
         // The agent edits; the watcher invalidates. No rebuild may be triggered
@@ -603,7 +616,8 @@ mod tests {
         // the snapshot, then read the new side's bytes off the worktree.
         fn read_img(cache: &DiffCache, t: &Target, path: &str) -> usize {
             cache
-                .with_sources(t, path, |repo, s| s.read(repo, BlobSide::New))
+                .with_sources(t, path, |r, s| r.read_source(s, BlobSide::New))
+                .and_then(|bytes| bytes)
                 .unwrap()
                 .expect("image bytes")
                 .len()

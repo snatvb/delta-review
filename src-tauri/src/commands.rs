@@ -1,19 +1,18 @@
 use crate::export::export_markdown;
 use crate::git::cache::DiffCache;
 use crate::git::diff::{BinaryFileDiff, DiffSummary, FileDiff};
-use crate::git::log::{list_commits as engine_list_commits, CommitPage};
+use crate::git::log::CommitPage;
 use crate::git::model::{DiffMode, Target};
-use crate::git::{open_repo, resolve_worktree};
 use crate::launch::{
     cli_status as launch_cli_status, install_cli as launch_install_cli,
-    list_worktrees as launch_list_worktrees, open_target_window, rewatch_target,
-    repo_display_name, repo_entry, CliStatus, InstallOutcome,
+    open_target_window, rewatch_target, repo_display_name, CliStatus, InstallOutcome,
 };
 use crate::registry::model::{Registry, RepoEntry, ReviewEntry, WorktreeEntry};
 use crate::review::model::{review_id, Review, Snapshot};
 use crate::review::reconcile::{adopt_persisted_viewed_hashes, reconcile, restore_persisted_comments, stamp_viewed_baselines, ReviewSession};
 use crate::settings::Settings;
 use crate::storage::{JsonRegistryStore, JsonStorage, RegistryStore, Storage};
+use crate::vcs::{Repo, VcsKind};
 use std::path::PathBuf;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -72,7 +71,7 @@ pub(crate) fn telemetry_allowed_from_env(
 }
 
 pub fn list_commits_impl(target: Target, skip: usize, limit: usize) -> Result<CommitPage, String> {
-    engine_list_commits(&target, skip, limit)
+    Repo::open(&target.repo_path)?.list_commits(&target, skip, limit)
 }
 
 fn reviews_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -81,9 +80,12 @@ fn reviews_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 pub fn open_review_impl(cache: &DiffCache, storage: &dyn Storage, input: Target) -> Result<ReviewSession, String> {
-    let repo = open_repo(&input.repo_path)?;
-    let worktree = resolve_worktree(&repo)?;
+    let repo = Repo::open(&input.repo_path)?;
+    let worktree = repo.worktree_label()?;
     let mut target = input;
+    // A mode this backend can't compute (stale persisted review, deep link)
+    // degrades to its working-copy diff instead of erroring the open.
+    target.mode = repo.coerce_mode(target.mode);
     target.worktree = Some(worktree.clone());
     let id = review_id(&target.repo_path, &worktree);
 
@@ -162,16 +164,41 @@ pub fn worktree_has_review(w: &WorktreeEntry, repo_name: &str, recents: &[Review
 fn sync_registry_after_open(reg_store: &dyn RegistryStore, review: &Review, file_count: u32) {
     let result = (|| -> Result<(), String> {
         let mut reg = reg_store.load()?;
-        if let Ok(entry) = repo_entry(&review.target.repo_path) {
+        if let Ok(entry) = Repo::open(&review.target.repo_path).and_then(|r| r.repo_entry()) {
             reg.upsert_repo(entry);
         }
         let name = repo_display_name(&review.target.repo_path);
         reg.upsert_review(ReviewEntry::from_review(review, file_count, name));
         reg_store.save(&reg)
+            .and_then(|_| sync_vcs_overrides(&reg))
     })();
     if let Err(e) = result {
         eprintln!("[delta] registry sync (open) failed: {e}");
     }
+}
+
+/// Refresh the detection-override table from the registry (startup and every
+/// registry save). Overrides are keyed by canonical repo root, matching how
+/// `vcs::Repo::open` probes them; a root that no longer exists never matches.
+/// The registry, for startup wiring (VCS override loading).
+pub fn registry_of(app: &tauri::AppHandle) -> Result<Registry, String> {
+    reg_store(app)?.load()
+}
+
+pub fn sync_vcs_overrides(reg: &Registry) -> Result<(), String> {
+    let overrides: HashMap<PathBuf, VcsKind> = reg
+        .repos
+        .iter()
+        .filter_map(|r| {
+            r.vcs_override.map(|kind| {
+                let root = std::fs::canonicalize(&r.root)
+                    .unwrap_or_else(|_| PathBuf::from(&r.root));
+                (root, kind)
+            })
+        })
+        .collect();
+    crate::vcs::set_overrides(overrides);
+    Ok(())
 }
 
 /// Update counts, preserving the prior file_count (autosave path). Non-fatal.
@@ -298,7 +325,9 @@ pub async fn get_binary_file_diff(
     cache: tauri::State<'_, DiffCache>,
 ) -> Result<BinaryFileDiff, String> {
     let cache = cache.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || cache.with_sources(&target, &path, crate::git::diff::binary_sizes))
+    tauri::async_runtime::spawn_blocking(move || {
+        cache.with_sources(&target, &path, |repo, s| repo.binary_sizes(s)).and_then(|sizes| sizes)
+    })
         .await
         .map_err(|e| format!("get_binary_file_diff task: {e}"))?
 }
@@ -406,7 +435,7 @@ pub fn list_picker_impl(reg_store: &dyn RegistryStore, home: Option<String>) -> 
     let mut worktrees = Vec::new();
     for repo in &reg.repos {
         // Best-effort: a repo whose worktrees can't be listed (moved/deleted) is skipped.
-        let wts = launch_list_worktrees(&repo.root).unwrap_or_default();
+        let wts = Repo::open(&repo.root).and_then(|r| r.list_worktrees()).unwrap_or_default();
         for w in wts {
             if worktree_has_review(&w, &repo.name, &recents) {
                 continue;
@@ -431,7 +460,7 @@ pub async fn list_picker(app: tauri::AppHandle) -> Result<PickerData, String> {
 
 #[tauri::command]
 pub fn list_worktrees(repo_path: String) -> Result<Vec<WorktreeEntry>, String> {
-    launch_list_worktrees(&repo_path)
+    Repo::open(&repo_path)?.list_worktrees()
 }
 
 #[tauri::command]
@@ -456,16 +485,16 @@ pub async fn import_repo(app: tauri::AppHandle) -> Result<Option<RepoEntry>, Str
         .display()
         .to_string();
     // Reject a non-repo selection with a clean, user-facing message (the UI shows it in
-    // a modal) rather than the raw git2 error repo_entry would surface. discover walks
-    // up, so picking a subdir of a repo still imports that repo.
-    if open_repo(&repo_path).is_err() {
-        return Err(format!("{repo_path} is not a git repository."));
-    }
-    let entry = repo_entry(&repo_path)?;
+    // a modal) rather than the raw backend error repo_entry would surface. Detection
+    // walks up, so picking a subdir of a repo still imports that repo.
+    let entry = match Repo::open(&repo_path) {
+        Ok(repo) => repo.repo_entry()?,
+        Err(_) => return Err(format!("{repo_path} is not a git or svn working copy.")),
+    };
     let store = reg_store(&app)?;
     let mut reg = store.load()?;
     reg.upsert_repo(entry.clone());
-    store.save(&reg)?;
+    store.save(&reg).and_then(|_| sync_vcs_overrides(&reg))?;
     Ok(Some(entry))
 }
 
@@ -504,10 +533,18 @@ pub fn global_deltaignore_path(app: &tauri::AppHandle) -> Result<PathBuf, String
 }
 
 /// Delta Ignore sources, editable from Settings: the global rules (every repo
-/// on this machine) and this checkout's never-committed local rules (stored in
-/// `<git dir>/info/deltaignore`, like git's `info/exclude`). Saving bumps the
-/// rules epoch, invalidates the affected diff snapshots, and tells open review
-/// windows like an fs change so they offer Refresh.
+/// on this machine) and this checkout's never-committed local rules (git:
+/// `<git dir>/info/deltaignore`, like git's `info/exclude`; SVN: the app data
+/// dir). Saving bumps the rules epoch, invalidates the affected diff
+/// snapshots, and tells open review windows like an fs change so they offer
+/// Refresh.
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "storage")]
+pub enum LocalDeltaIgnore {
+    GitInfo { rules: String },
+    AppData { rules: String },
+}
 
 #[tauri::command]
 pub fn get_global_delta_ignore() -> String {
@@ -529,9 +566,12 @@ pub fn set_global_delta_ignore(
 }
 
 #[tauri::command]
-pub fn get_local_delta_ignore(repo_path: String) -> Result<String, String> {
-    let repo = open_repo(&repo_path)?;
-    Ok(crate::git::deltaignore::DeltaIgnore::local_rules(&repo))
+pub fn get_local_delta_ignore(repo_path: String) -> Result<LocalDeltaIgnore, String> {
+    use crate::git::deltaignore::DeltaIgnore;
+    match Repo::open(&repo_path)? {
+        Repo::Git(repo) => Ok(LocalDeltaIgnore::GitInfo { rules: DeltaIgnore::local_rules(&repo) }),
+        Repo::Svn(svn) => Ok(LocalDeltaIgnore::AppData { rules: DeltaIgnore::svn_local_rules(svn.root()) }),
+    }
 }
 
 #[tauri::command]
@@ -541,8 +581,11 @@ pub fn set_local_delta_ignore(
     repo_path: String,
     rules: String,
 ) -> Result<(), String> {
-    let repo = open_repo(&repo_path)?;
-    crate::git::deltaignore::DeltaIgnore::write_local_rules(&repo, &rules)?;
+    use crate::git::deltaignore::DeltaIgnore;
+    match Repo::open(&repo_path)? {
+        Repo::Git(repo) => DeltaIgnore::write_local_rules(&repo, &rules)?,
+        Repo::Svn(svn) => DeltaIgnore::write_svn_local_rules(svn.root(), &rules)?,
+    }
     crate::git::deltaignore::notify_rules_changed();
     cache.invalidate(&repo_path);
     crate::watch::emit_ignore_changed(&app);
@@ -670,7 +713,7 @@ mod tests {
 
         let store_dir = tempfile::TempDir::new().unwrap();
         let (_storage, reg_store) = stores(store_dir.path());
-        let entry = repo_entry(&root).unwrap();
+        let entry = Repo::open(&root).unwrap().repo_entry().unwrap();
         let repo_name = entry.name.clone();
         let mut reg = reg_store.load().unwrap();
         reg.upsert_repo(entry);

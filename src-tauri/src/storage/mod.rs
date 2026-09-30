@@ -206,7 +206,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = JsonRegistryStore::new(dir.path().join("registry.json"), dir.path().join("reviews"));
         let mut reg = Registry::empty();
-        reg.upsert_repo(RepoEntry { id: "r1".into(), root: "/p".into(), name: "p".into(), default_branch: Some("main".into()), worktrees: vec![] });
+        reg.upsert_repo(RepoEntry {
+            id: "r1".into(),
+            root: "/p".into(),
+            name: "p".into(),
+            default_branch: Some("main".into()),
+            worktrees: vec![],
+            vcs: Default::default(),
+            vcs_override: None,
+        });
         store.save(&reg).unwrap();
         let loaded = store.load().unwrap();
         assert_eq!(loaded.repos.len(), 1);

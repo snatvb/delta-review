@@ -21,7 +21,7 @@ export function FirstRun({ onOpenRepo }: { onOpenRepo: () => void }) {
         </span>
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="text-[14px] font-semibold leading-tight text-foreground">Open a repository</span>
-          <span className="text-[12.5px] leading-snug text-muted-foreground">Pick a git repo to review its changes.</span>
+          <span className="text-[12.5px] leading-snug text-muted-foreground">Pick a repository to review its changes.</span>
         </span>
         <ArrowRight className="size-4 shrink-0 text-muted-foreground/50 transition-[translate,color] group-hover:translate-x-0.5 group-hover:text-primary" />
       </button>

@@ -49,6 +49,7 @@ const target: Target = { repoPath: "/r", mode: "all-changes" };
 const minimalSession = {
   review: { id: "x", target: { repoPath: "/r", worktree: "main", mode: "all-changes" }, comments: [], viewed: [], snapshot: { baseOid: "b", capturedAt: "t" }, createdAt: "t", lastOpenedAt: "t", version: 1 },
   summary: { files: [], baseLabel: "main", headLabel: "wt" },
+  vcs: "git",
 };
 const fileSession = {
   ...minimalSession,
@@ -252,6 +253,32 @@ describe("Workspace", () => {
     // pass by never matching even when the button is present.)
     expect(screen.queryByRole("button", { name: /refresh/i })).toBeNull();
     await waitFor(() => expect(screen.getByRole("button", { name: /re-diff now/i })).toBeEnabled());
+  });
+
+  it("coalesces fs events that arrive during a re-diff into one follow-up", async () => {
+    openReview.mockResolvedValue(fileSession);
+    let finishFirst: (s: typeof fileSession) => void = () => {};
+    refreshReview
+      .mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve; }))
+      .mockResolvedValue(fileSession);
+    render(<Workspace target={target} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /copy for agents/i })).toBeInTheDocument());
+
+    await act(async () => {
+      fsChanged?.({ payload: { paths: ["src/a.ts"], gitMeta: false } });
+      fsChanged?.({ payload: { paths: ["src/b.ts"], gitMeta: false } });
+      fsChanged?.({ payload: { paths: [], gitMeta: true } });
+    });
+    expect(refreshReview).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      finishFirst(fileSession);
+    });
+    await waitFor(() => expect(refreshReview).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(refreshReview).toHaveBeenCalledTimes(2);
   });
 
   it("skips the background re-diff when change detection is off", async () => {

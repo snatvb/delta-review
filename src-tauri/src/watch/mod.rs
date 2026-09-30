@@ -40,16 +40,13 @@ fn build_ignore(root: &Path) -> Gitignore {
 }
 
 /// Classify a changed path: `Some(Some(rel))` for a relevant working-tree file,
-/// `Some(None)` for a relevant `.git` meta change, `None` to ignore.
+/// `Some(None)` for a relevant repo-meta change (`.git` refs / SVN `wc.db`),
+/// `None` to ignore.
 fn classify(path: &Path, root: &Path, ig: &Gitignore) -> Option<Option<String>> {
     let rel = path.strip_prefix(root).unwrap_or(path);
     let rel_str = rel.to_string_lossy().replace('\\', "/");
-    let in_git = rel
-        .components()
-        .next()
-        .map(|c| c.as_os_str() == std::ffi::OsStr::new(".git"))
-        .unwrap_or(false);
-    if in_git {
+    let first = rel.components().next().map(|c| c.as_os_str().to_os_string());
+    if first.as_deref() == Some(std::ffi::OsStr::new(".git")) {
         let meta = rel_str == ".git/HEAD"
             || rel_str == ".git/MERGE_HEAD"
             || rel_str == ".git/index"
@@ -59,12 +56,34 @@ fn classify(path: &Path, root: &Path, ig: &Gitignore) -> Option<Option<String>> 
             || rel_str == ".git/info/deltaignore";
         return if meta { Some(None) } else { None };
     }
+    if first.as_deref() == Some(std::ffi::OsStr::new(".svn")) {
+        // wc.db (and its journal) move on every commit/update/switch — the
+        // SVN equivalents of a ref move. Everything else under `.svn`
+        // (pristine churn, locks, tmp) is noise.
+        let meta = rel_str == ".svn/wc.db"
+            || rel_str == ".svn/wc.db-journal"
+            || rel_str.starts_with(".svn/wc.db-");
+        return if meta { Some(None) } else { None };
+    }
     // `matched_path_or_any_parents` (not `matched`) so a file *inside* an ignored
     // directory (e.g. node_modules/x.js) is caught, not just the directory entry.
     if ig.matched_path_or_any_parents(path, path.is_dir()).is_ignore() {
         return None;
     }
     Some(Some(rel_str))
+}
+
+fn svn_changed_path(path: &Path, root: &Path) -> Option<String> {
+    let rel = path.strip_prefix(root).ok()?;
+    let first = rel.components().next()?.as_os_str();
+    if first == std::ffi::OsStr::new(".svn") || first == std::ffi::OsStr::new(".git") {
+        return None;
+    }
+    Some(rel.to_string_lossy().replace('\\', "/"))
+}
+
+fn is_svn_root(root: &Path) -> bool {
+    crate::vcs::Repo::open(&root.to_string_lossy()).is_ok_and(|r| r.kind() == crate::vcs::VcsKind::Svn)
 }
 
 /// Begin watching `worktree` for the window `label`. No-op if a watcher can't be
@@ -86,6 +105,10 @@ pub fn start(app: &AppHandle, label: &str, worktree: &Path) {
         return;
     }
 
+    let svn = is_svn_root(&root);
+    if svn {
+        crate::vcs::svn::status::watch_started(&root);
+    }
     let watched_root = root.clone();
     let app = app.clone();
     let label_str = label.to_string();
@@ -102,6 +125,15 @@ pub fn start(app: &AppHandle, label: &str, worktree: &Path) {
                 Err(RecvTimeoutError::Timeout) => break,
                 Err(RecvTimeoutError::Disconnected) => return,
             }
+        }
+        if svn {
+            let overflowed = batch.iter().any(|ev| ev.as_ref().map_or(true, |e| e.need_rescan()));
+            let changed = batch
+                .iter()
+                .flatten()
+                .flat_map(|ev| ev.paths.iter())
+                .filter_map(|p| svn_changed_path(p, &root));
+            crate::vcs::svn::status::record_changes(&root, changed, overflowed);
         }
         let mut paths: Vec<String> = Vec::new();
         let mut git_meta = false;
@@ -133,7 +165,10 @@ pub fn start(app: &AppHandle, label: &str, worktree: &Path) {
         }
     });
 
-    state.0.lock().unwrap().insert(label.to_string(), (watched_root, watcher));
+    let replaced = state.0.lock().unwrap().insert(label.to_string(), (watched_root, watcher));
+    if let Some((old_root, _)) = replaced {
+        crate::vcs::svn::status::watch_stopped(&old_root);
+    }
 }
 
 /// Broadcast an `fs:changed` git-meta event to every open window — used after
@@ -141,6 +176,33 @@ pub fn start(app: &AppHandle, label: &str, worktree: &Path) {
 /// exactly as if the watcher had seen the edit.
 pub fn emit_ignore_changed(app: &AppHandle) {
     let _ = app.emit("fs:changed", ChangePayload { paths: Vec::new(), git_meta: true });
+}
+
+/// The repo at `root` changed without a filesystem event reaching the
+/// watcher (a background SVN status verification found a different change
+/// list): drop its cached snapshot and offer Refresh in every window on it.
+pub fn notify_repo_changed(app: &AppHandle, root: &Path) {
+    if let Some(cache) = app.try_state::<crate::git::cache::DiffCache>() {
+        cache.invalidate(&root.to_string_lossy());
+    }
+    let Some(state) = app.try_state::<Watchers>() else {
+        return;
+    };
+    let labels: Vec<String> = state
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, (watched, _))| watched == root)
+        .map(|(label, _)| label.clone())
+        .collect();
+    for label in labels {
+        let _ = app.emit_to(
+            EventTarget::webview_window(label.as_str()),
+            "fs:changed",
+            ChangePayload { paths: Vec::new(), git_meta: true },
+        );
+    }
 }
 
 /// The review window showing `worktree`, whichever branch it was opened on.
@@ -156,7 +218,10 @@ pub fn window_watching(app: &AppHandle, worktree: &Path) -> Option<String> {
 /// Stop watching for `label` (drops the watcher → ends its debounce thread).
 pub fn stop(app: &AppHandle, label: &str) {
     if let Some(state) = app.try_state::<Watchers>() {
-        state.0.lock().unwrap().remove(label);
+        let removed = state.0.lock().unwrap().remove(label);
+        if let Some((root, _)) = removed {
+            crate::vcs::svn::status::watch_stopped(&root);
+        }
     }
 }
 

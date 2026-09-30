@@ -47,7 +47,7 @@ pub fn migrate_legacy_data_dir() {
     }
 }
 
-fn conf_identifier() -> Option<String> {
+pub(crate) fn conf_identifier() -> Option<String> {
     let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).ok()?;
     conf.get("identifier")?.as_str().map(str::to_owned)
 }

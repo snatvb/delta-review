@@ -1,5 +1,6 @@
 use crate::git::model::Target;
 use crate::review::model::{CommentScope, Review};
+use crate::vcs::VcsKind;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -26,6 +27,13 @@ pub struct RepoEntry {
     pub default_branch: Option<String>,
     #[serde(default)]
     pub worktrees: Vec<WorktreeEntry>,
+    /// Which backend detected this repo (stamped on every metadata refresh).
+    #[serde(default)]
+    pub vcs: VcsKind,
+    /// Manual detection override — edited by hand in registry.json, never
+    /// from the UI. Preserved across `upsert_repo` metadata refreshes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vcs_override: Option<VcsKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -75,7 +83,14 @@ impl Registry {
 
     pub fn upsert_repo(&mut self, entry: RepoEntry) {
         match self.repos.iter_mut().find(|r| r.id == entry.id) {
-            Some(slot) => *slot = entry,
+            // Metadata refreshes (worktrees, name, vcs stamp) replace the
+            // entry wholesale — except the manual override, which belongs to
+            // the user and must survive every automated rewrite.
+            Some(slot) => {
+                let override_kept = slot.vcs_override;
+                *slot = entry;
+                slot.vcs_override = override_kept;
+            }
             None => self.repos.push(entry),
         }
     }
