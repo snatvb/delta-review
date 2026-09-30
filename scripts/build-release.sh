@@ -15,10 +15,10 @@ Usage:
                            [--only mac|windows|linux] [--skip-checks]
 
 Builds fork release artifacts into release/<version>/:
-  mac      Delta_<v>_aarch64.dmg (+ Delta.app.tar.gz + .sig updater artifact)
-  windows  Delta_<v>_x64-setup.exe (+ .sig) — cross-compiled via mingw-w64
-           Delta_<v>_x64.msi — WiX definition compiled with wixl in Docker
-  linux    Delta_<v>_amd64.deb + Delta_<v>_amd64.AppImage (+ .sig) — built in Docker
+  mac      delta-review_<v>_aarch64.dmg (+ delta-review.app.tar.gz + .sig)
+  windows  delta-review_<v>_x64-setup.exe (+ .sig) — cross-compiled via mingw-w64
+           delta-review_<v>_x64.msi — WiX definition compiled with wixl in Docker
+  linux    delta-review_<v>_amd64.deb + delta-review_<v>_amd64.AppImage (+ .sig)
 
 Signing is best-effort:
   - macOS codesigning/notarization is skipped (pass APPLE_SIGNING_IDENTITY to sign)

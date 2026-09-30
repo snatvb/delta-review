@@ -13,23 +13,23 @@
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*"
-           Name="Delta"
+           Name="delta-review"
            Language="1033"
            Codepage="1252"
            Version="$(var.Version)"
-           Manufacturer="delta-review fork"
+           Manufacturer="snatvb"
            UpgradeCode="684CEF52-1025-44F9-BF2E-7460FC12B053">
     <Package InstallerVersion="200"
              Compressed="yes"
              InstallScope="perMachine"
-             Description="Delta — review your agents work and leave structured comments"/>
+             Description="delta-review — review your agents work and leave structured comments"/>
     <MajorUpgrade DowngradeErrorMessage="A newer version of Delta is already installed."/>
     <Icon Id="Delta.ico" SourceFile="$(var.IconPath)"/>
     <Property Id="ARPPRODUCTICON" Value="Delta.ico"/>
     <Property Id="ARPHELPLINK" Value="https://github.com/snatvb/delta-review"/>
     <Media Id="1" Cabinet="Delta.cab" EmbedCab="yes"/>
 
-    <Feature Id="Main" Title="Delta" Level="1">
+    <Feature Id="Main" Title="delta-review" Level="1">
       <ComponentRef Id="MainExe"/>
       <ComponentRef Id="StartMenuShortcut"/>
     </Feature>
@@ -38,11 +38,11 @@
   <Fragment>
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
-        <Directory Id="INSTALLDIR" Name="Delta">
+        <Directory Id="INSTALLDIR" Name="delta-review">
           <Component Id="MainExe"
                      Guid="5EB46517-4B90-45B7-A814-C4FBBE0549CD"
                      Win64="yes">
-            <File Id="DeltaExe" Name="Delta.exe" Source="$(var.ExePath)" KeyPath="yes"/>
+            <File Id="DeltaExe" Name="DeltaReview.exe" Source="$(var.ExePath)" KeyPath="yes"/>
           </Component>
         </Directory>
       </Directory>
@@ -51,12 +51,12 @@
                    Guid="60F98C1D-C70D-42F5-95B9-1E092D08C044"
                    Win64="yes">
           <Shortcut Id="DeltaShortcut"
-                    Name="Delta"
+                    Name="delta-review"
                     Target="[INSTALLDIR]Delta.exe"
                     WorkingDirectory="INSTALLDIR"
                     Icon="Delta.ico"/>
           <RegistryValue Root="HKMU"
-                         Key="Software\Delta"
+                         Key="Software\delta-review"
                          Name="startMenuShortcut"
                          Type="integer"
                          Value="1"

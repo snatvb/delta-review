@@ -189,7 +189,7 @@ fi
 
 gh release create "$tag" "${assets[@]}" \
   --repo "$REPO_SLUG" \
-  --title "Delta ${tag}" \
+  --title "delta-review ${tag}" \
   --notes-file "$notes_file"
 
 printf '\nPublished %s on %s with %s assets.\n' "$tag" "$REPO_SLUG" "$((${#assets[@]}))"

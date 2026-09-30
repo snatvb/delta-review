@@ -11,7 +11,7 @@ Guidance for working in this repo.
 - `pnpm dev` — Vite dev server (port 1420). Renders the UI but IPC calls fail outside Tauri.
 - `pnpm dev:mock` — **the UI dev/validation entry point**: `VITE_MOCK_IPC=1` on port 5599. Runs the whole UI in a plain browser against fixtures in [src/dev/mockBackend.ts](src/dev/mockBackend.ts), no Rust/Tauri needed. Open a review with `?view=review&repo=demo` (add `&large=N` for an N-file fixture).
 - `pnpm tauri dev` — the real app (Rust + webview). Shares identity with the installed release; prefer `dev:app` below when the release is installed.
-- `pnpm dev:app` — **the isolated dev build**: `tauri dev` merged with [tauri.dev.conf.json](src-tauri/tauri.dev.conf.json) so it runs as a *separate* app — `Delta Dev`, id `com.darioielardi.delta.dev`, CLI `delta-dev`, its own app-data dir, and a "DEV" badge. Use this so developing never collides with a release build you're using for work (separate single-instance, dock entry, recents).
+- `pnpm dev:app` — **the isolated dev build**: `tauri dev` merged with [tauri.dev.conf.json](src-tauri/tauri.dev.conf.json) so it runs as a *separate* app — `delta-review dev`, id `com.snatvb.delta-review.dev`, CLI `delta-review-dev`, its own app-data dir, and a "DEV" badge. Use this so developing never collides with a release build you're using for work (separate single-instance, dock entry, recents).
 - `pnpm build` — `tsc && vite build` (typecheck + bundle).
 - `pnpm test` / `pnpm test:watch` — Vitest (happy-dom). Rust tests: `cargo test` in `src-tauri/`.
 - `pnpm doctor` — react-doctor lint.
@@ -48,7 +48,7 @@ The body is wrapped in an async IIFE, so `await` works; `?w=<window-label>` targ
 
 ### Window model
 
-Singleton `home` launcher + one `review-{id}` window per target. Opening a review closes `home`. Closing the last window does **not** reopen `home`: on macOS the app stays alive with no window (Tauri would otherwise exit, so `ExitRequested`/`code.is_none()` → `prevent_exit` holds it) — the `delta` shim stays warm and a dock-click reopens `home`; other platforms exit to avoid a windowless orphan ([App.tsx](src/App.tsx), [src-tauri/src/lib.rs](src-tauri/src/lib.rs)).
+Singleton `home` launcher + one `review-{id}` window per target. Opening a review closes `home`. Closing the last window does **not** reopen `home`: on macOS the app stays alive with no window (Tauri would otherwise exit, so `ExitRequested`/`code.is_none()` → `prevent_exit` holds it) — the `delta-review` shim stays warm and a dock-click reopens `home`; other platforms exit to avoid a windowless orphan ([App.tsx](src/App.tsx), [src-tauri/src/lib.rs](src-tauri/src/lib.rs)).
 
 ## Conventions & gotchas
 

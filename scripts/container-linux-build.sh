@@ -7,7 +7,6 @@ set -euo pipefail
 # named volumes for node_modules and the tauri target dir.
 
 version="$1"
-product="Delta"
 staging="release/${version}"
 
 export RUSTUP_HOME=/usr/local/rustup
