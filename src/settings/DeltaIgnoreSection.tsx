@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { Target } from "../types";
+import type { LocalDeltaIgnore, Target } from "../types";
 
 const rulesTextareaClass =
   "min-h-[76px] w-full resize-y rounded-md border border-input bg-background px-2.5 py-2 font-mono text-[12px] leading-relaxed text-foreground outline-none transition-colors placeholder:text-muted-foreground/50 focus-visible:ring-1 focus-visible:ring-ring";
@@ -17,6 +17,7 @@ export function DeltaIgnoreSection({ target }: { target?: Target }) {
   const [globalSaved, setGlobalSaved] = useState<string | null>(null);
   const [localRules, setLocalRules] = useState("");
   const [localSaved, setLocalSaved] = useState<string | null>(null);
+  const [localStore, setLocalStore] = useState<LocalDeltaIgnore["storage"]>("gitInfo");
   const [error, setError] = useState<string | null>(null);
   const [flash, setFlash] = useState<"global" | "local" | null>(null);
 
@@ -46,8 +47,9 @@ export function DeltaIgnoreSection({ target }: { target?: Target }) {
       try {
         const l = await api.getLocalDeltaIgnore(target.repoPath);
         if (!cancelled) {
-          setLocalRules(l);
-          setLocalSaved(l);
+          setLocalRules(l.rules);
+          setLocalSaved(l.rules);
+          setLocalStore(l.storage);
         }
       } catch (e) {
         if (!cancelled) setError(String(e));
@@ -126,7 +128,13 @@ export function DeltaIgnoreSection({ target }: { target?: Target }) {
             placeholder={"huge-monorepo/\ncodegen-output/"}
           />
           <div className="mt-1 text-[12px] leading-snug text-muted-foreground">
-            Stored in <code>.git/info/deltaignore</code> — this checkout only, never committed or shared.
+            {localStore === "gitInfo" ? (
+              <>
+                Stored in <code>.git/info/deltaignore</code> — this checkout only, never committed or shared.
+              </>
+            ) : (
+              <>Stored in Delta's app data, not in the working copy — this checkout only, never committed or shared.</>
+            )}
           </div>
         </div>
       ) : (

@@ -33,6 +33,21 @@ pub const GLOBAL_DELTAIGNORE_FILE: &str = "deltaignore";
 
 /// Set once at app startup (lib.rs); absent in tests and before setup.
 static GLOBAL_FILE: RwLock<Option<PathBuf>> = RwLock::new(None);
+static SVN_LOCAL_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+pub fn set_svn_local_dir(dir: PathBuf) {
+    *SVN_LOCAL_DIR.write().unwrap_or_else(|e| e.into_inner()) = Some(dir);
+}
+
+/// An SVN working copy's never-committed rules. `.svn` belongs to svn, so
+/// they live in the app data dir, one file per working-copy root.
+pub fn svn_local_file(root: &Path) -> Option<PathBuf> {
+    use sha2::{Digest, Sha256};
+    let dir = SVN_LOCAL_DIR.read().unwrap_or_else(|e| e.into_inner()).clone()?;
+    let digest = Sha256::digest(root.display().to_string().as_bytes());
+    let name: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+    Some(dir.join(name))
+}
 
 pub fn set_global_file(path: PathBuf) {
     *GLOBAL_FILE.write().unwrap_or_else(|e| e.into_inner()) = Some(path);
@@ -117,11 +132,9 @@ impl DeltaIgnore {
         )
     }
 
-    /// Rules for a non-git working copy (SVN): global + project layers —
-    /// there is no never-committed local slot outside git in v1, so callers
-    /// pass `None`. Memoized like `for_repo`.
-    pub fn for_worktree(root: &Path, local: Option<PathBuf>) -> Self {
-        Self::memoized(root, [global_file(), Some(root.join(DELTAIGNORE_FILE)), local])
+    /// All three layers for an SVN working copy, memoized like `for_repo`.
+    pub fn for_svn(root: &Path) -> Self {
+        Self::memoized(root, [global_file(), Some(root.join(DELTAIGNORE_FILE)), svn_local_file(root)])
     }
 
     /// Build (or serve the memoized) ruleset for `root` from up to three
@@ -151,6 +164,15 @@ impl DeltaIgnore {
 
     pub fn write_local_rules(repo: &Repository, rules: &str) -> Result<(), String> {
         write_rules(&commondir(repo).join(LOCAL_DELTAIGNORE_FILE), rules)
+    }
+
+    pub fn svn_local_rules(root: &Path) -> String {
+        svn_local_file(root).map(|p| read_rules(&p)).unwrap_or_default()
+    }
+
+    pub fn write_svn_local_rules(root: &Path, rules: &str) -> Result<(), String> {
+        let path = svn_local_file(root).ok_or("app data dir is not available")?;
+        write_rules(&path, rules)
     }
 
     /// The machine-wide rules, for the Settings editor.

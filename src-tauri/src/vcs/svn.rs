@@ -77,7 +77,7 @@ impl SvnRepo {
     pub fn compute_diff_full(&self, _target: &Target) -> Result<FullDiff, VcsError> {
         let t0 = Instant::now();
         let plans = self.uncommitted_plans()?;
-        let ignore = DeltaIgnore::for_worktree(&self.root, None);
+        let ignore = DeltaIgnore::for_svn(&self.root);
 
         // Per-file work is independent and `svn cat` is a process spawn
         // (~tens of ms each), so slots are extracted in bounded parallel
@@ -131,7 +131,7 @@ impl SvnRepo {
 
     pub fn get_file_diff(&self, _target: &Target, path: &str) -> Result<FileDiff, VcsError> {
         let plan = self.plan_for(path)?;
-        let ignore = DeltaIgnore::for_worktree(&self.root, None);
+        let ignore = DeltaIgnore::for_svn(&self.root);
         // One-off resolution: no snapshot to bound, so caps don't apply
         // (mirrors git's over-cap fallback) and BASE reads stay live.
         Ok(self.extract_slot(&plan, &ignore, false)?.file_diff)
@@ -139,7 +139,7 @@ impl SvnRepo {
 
     pub fn fresh_sources(&self, _target: &Target, path: &str) -> Result<FileSources, VcsError> {
         let plan = self.plan_for(path)?;
-        Ok(self.extract_slot(&plan, &DeltaIgnore::for_worktree(&self.root, None), false)?.sources)
+        Ok(self.extract_slot(&plan, &DeltaIgnore::for_svn(&self.root), false)?.sources)
     }
 
     fn plan_for(&self, path: &str) -> Result<FilePlan, VcsError> {
@@ -1307,6 +1307,25 @@ mod tests {
         // …but still extractable on demand, like git.
         let fd = repo.get_file_diff(&target(&wc), "gen/g.ts").unwrap();
         assert_eq!(fd.new_content.as_deref(), Some("generated more\n"));
+    }
+
+    #[test]
+    fn local_deltaignore_for_svn_lives_outside_the_working_copy() {
+        let Some((dir, repo)) = scratch_wc() else { return };
+        let wc = dir.path().join("wc");
+        let app_data = tempfile::TempDir::new().unwrap();
+        crate::git::deltaignore::set_svn_local_dir(app_data.path().join("svn-local-deltaignore"));
+        write(&wc, "src/a.txt", b"one\n");
+        write(&wc, "vendor/big.txt", b"vendored\n");
+
+        DeltaIgnore::write_svn_local_rules(&wc, "vendor/\n").unwrap();
+        let full = repo.compute_diff_full(&target(&wc)).unwrap();
+        let ignored = |p: &str| full.summary.files.iter().find(|f| f.path == p).unwrap().ignored;
+        assert!(ignored("vendor/big.txt"));
+        assert!(!ignored("src/a.txt"));
+        assert_eq!(DeltaIgnore::svn_local_rules(&wc), "vendor/\n");
+        assert!(!wc.join(".svn").join("deltaignore").exists());
+        assert!(!wc.join(".git").exists());
     }
 
     #[test]

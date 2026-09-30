@@ -533,10 +533,18 @@ pub fn global_deltaignore_path(app: &tauri::AppHandle) -> Result<PathBuf, String
 }
 
 /// Delta Ignore sources, editable from Settings: the global rules (every repo
-/// on this machine) and this checkout's never-committed local rules (stored in
-/// `<git dir>/info/deltaignore`, like git's `info/exclude`). Saving bumps the
-/// rules epoch, invalidates the affected diff snapshots, and tells open review
-/// windows like an fs change so they offer Refresh.
+/// on this machine) and this checkout's never-committed local rules (git:
+/// `<git dir>/info/deltaignore`, like git's `info/exclude`; SVN: the app data
+/// dir). Saving bumps the rules epoch, invalidates the affected diff
+/// snapshots, and tells open review windows like an fs change so they offer
+/// Refresh.
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "storage")]
+pub enum LocalDeltaIgnore {
+    GitInfo { rules: String },
+    AppData { rules: String },
+}
 
 #[tauri::command]
 pub fn get_global_delta_ignore() -> String {
@@ -558,12 +566,11 @@ pub fn set_global_delta_ignore(
 }
 
 #[tauri::command]
-pub fn get_local_delta_ignore(repo_path: String) -> Result<String, String> {
+pub fn get_local_delta_ignore(repo_path: String) -> Result<LocalDeltaIgnore, String> {
+    use crate::git::deltaignore::DeltaIgnore;
     match Repo::open(&repo_path)? {
-        Repo::Git(repo) => Ok(crate::git::deltaignore::DeltaIgnore::local_rules(&repo)),
-        // SVN has no never-committed local slot in v1 — the editor reads
-        // empty rather than editing a file nothing would read.
-        Repo::Svn(_) => Ok(String::new()),
+        Repo::Git(repo) => Ok(LocalDeltaIgnore::GitInfo { rules: DeltaIgnore::local_rules(&repo) }),
+        Repo::Svn(svn) => Ok(LocalDeltaIgnore::AppData { rules: DeltaIgnore::svn_local_rules(svn.root()) }),
     }
 }
 
@@ -574,19 +581,15 @@ pub fn set_local_delta_ignore(
     repo_path: String,
     rules: String,
 ) -> Result<(), String> {
+    use crate::git::deltaignore::DeltaIgnore;
     match Repo::open(&repo_path)? {
-        Repo::Git(repo) => {
-            crate::git::deltaignore::DeltaIgnore::write_local_rules(&repo, &rules)?;
-            crate::git::deltaignore::notify_rules_changed();
-            cache.invalidate(&repo_path);
-            crate::watch::emit_ignore_changed(&app);
-            Ok(())
-        }
-        Repo::Svn(_) => Err(
-            "Local ignore rules need a git repository — global and project rules apply everywhere."
-                .into(),
-        ),
+        Repo::Git(repo) => DeltaIgnore::write_local_rules(&repo, &rules)?,
+        Repo::Svn(svn) => DeltaIgnore::write_svn_local_rules(svn.root(), &rules)?,
     }
+    crate::git::deltaignore::notify_rules_changed();
+    cache.invalidate(&repo_path);
+    crate::watch::emit_ignore_changed(&app);
+    Ok(())
 }
 
 #[tauri::command]

@@ -692,7 +692,7 @@ export function installMockBackend(): void {
         mockGlobalDeltaIgnore = (args as { rules: string }).rules;
         return undefined as T;
       case "get_local_delta_ignore":
-        return mockLocalDeltaIgnore as T;
+        return { storage: "gitInfo", rules: mockLocalDeltaIgnore } as T;
       case "set_local_delta_ignore":
         mockLocalDeltaIgnore = (args as { rules: string }).rules;
         return undefined as T;

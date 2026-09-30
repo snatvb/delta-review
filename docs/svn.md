@@ -75,6 +75,13 @@ data dir (bounded at 2 MB):
 If the "not found" error appears while `svn` works in your terminal, that log
 records the exact `PATH` and locations the app searched.
 
+## Delta Ignore
+
+All three layers apply to SVN. The local layer (Settings → Ignore → This
+repository) can't live in git's `info/deltaignore` slot, and `.svn` belongs
+to svn, so it is stored in the app data dir under `svn-local-deltaignore/`,
+one file per working-copy root. Nothing is written into the working copy.
+
 ## Status refresh
 
 A whole-copy `svn status` walks every versioned file and can take seconds on
@@ -118,8 +125,6 @@ a large checkout, so Delta avoids repeating it (`src-tauri/src/vcs/svn/status.rs
   untouched file's props) don't appear in the diff.
 - **No externals traversal.** `svn:externals` checkouts are skipped.
 - **Renames are delete + add.** SVN's copy-based renames aren't paired.
-- **Local `.deltaignore` layer is git-only** (it lives in git's
-  `info/deltaignore` slot). Global and project rules apply to SVN.
 - **Label fallback.** If the CLI is missing when a review opens, the worktree
   label falls back to `svn`; installing the CLI mid-review starts a fresh
   review (the label participates in the review id).

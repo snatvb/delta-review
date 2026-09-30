@@ -4,6 +4,8 @@ export type DiffMode = "all-changes" | "uncommitted" | "last-commit" | "branch-v
  *  mode and has no commit history — everything else is git behavior. */
 export type VcsKind = "git" | "svn";
 
+export type LocalDeltaIgnore = { storage: "gitInfo" | "appData"; rules: string };
+
 export interface Target {
   repoPath: string;
   mode: DiffMode;

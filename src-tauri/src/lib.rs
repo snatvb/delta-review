@@ -146,6 +146,7 @@ pub fn run() {
             // reviews and needs the override table loaded.
             if let Ok(dir) = app.path().app_data_dir() {
                 crate::vcs::svn::status::set_persist_dir(dir.join("svn-status"));
+                crate::git::deltaignore::set_svn_local_dir(dir.join("svn-local-deltaignore"));
             }
             let handle = app.handle().clone();
             crate::vcs::svn::status::on_verified_change(move |root| crate::watch::notify_repo_changed(&handle, root));

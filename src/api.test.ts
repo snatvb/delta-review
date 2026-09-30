@@ -60,8 +60,8 @@ describe("api", () => {
     await api.setGlobalDeltaIgnore("vendor/\n");
     expect(invokeMock).toHaveBeenCalledWith("set_global_delta_ignore", { rules: "vendor/\n" });
 
-    invokeMock.mockResolvedValue("");
-    expect(await api.getLocalDeltaIgnore("/r")).toBe("");
+    invokeMock.mockResolvedValue({ storage: "appData", rules: "" });
+    expect(await api.getLocalDeltaIgnore("/r")).toEqual({ storage: "appData", rules: "" });
     expect(invokeMock).toHaveBeenCalledWith("get_local_delta_ignore", { repoPath: "/r" });
 
     await api.setLocalDeltaIgnore("/r", "gen/\n");
