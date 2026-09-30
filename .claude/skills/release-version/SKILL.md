@@ -24,6 +24,7 @@ first, then publish.
 |---|---|---|
 | macOS (aarch64) | `Delta_X.Y.Z_aarch64.dmg` + `Delta.app.tar.gz(.sig)` | native `tauri build` |
 | Windows (x64) | `Delta_X.Y.Z_x64-setup.exe(.sig)` | cross-compiled via `mingw-w64` (`x86_64-pc-windows-gnu`) |
+| Windows (x64) | `Delta_X.Y.Z_x64.msi` | hand-authored WiX file built with `wixl` in the `delta-review-msi-builder` Debian container (tauri-bundler makes MSIs only on Windows) |
 | Linux (x86_64) | `Delta_X.Y.Z_amd64.deb` + `Delta_X.Y.Z_amd64.AppImage(.sig)` | Docker `ubuntu:22.04` amd64, emulated |
 
 Builds are **unsigned** (no Apple certificates); the release notes tell users
@@ -81,8 +82,8 @@ gh release view vX.Y.Z --repo snatvb/delta-review --json tagName,url,assets \
 ```
 
 Expect a clean tree and the release to carry: the DMG, `Delta.app.tar.gz` +
-`.sig`, the Windows setup + `.sig`, the `.deb`, the `.AppImage` + `.sig`,
-`SHA256SUMS.txt`, and `latest.json`.
+`.sig`, the Windows setup + `.sig` and the `.msi`, the `.deb`, the `.AppImage`
++ `.sig`, `SHA256SUMS.txt`, and `latest.json`.
 
 ## Common mistakes
 

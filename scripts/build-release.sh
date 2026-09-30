@@ -16,8 +16,9 @@ Usage:
 
 Builds fork release artifacts into release/<version>/:
   mac      Delta_<v>_aarch64.dmg (+ Delta.app.tar.gz + .sig updater artifact)
-  windows  Delta_<v>_x64-setup.exe (+ .nsis.zip/.sig) — cross-compiled via mingw-w64
-  linux    delta_<v>_amd64.deb + Delta_<v>_amd64.AppImage (+ .sig) — built in Docker
+  windows  Delta_<v>_x64-setup.exe (+ .sig) — cross-compiled via mingw-w64
+           Delta_<v>_x64.msi — WiX definition compiled with wixl in Docker
+  linux    Delta_<v>_amd64.deb + Delta_<v>_amd64.AppImage (+ .sig) — built in Docker
 
 Signing is best-effort:
   - macOS codesigning/notarization is skipped (pass APPLE_SIGNING_IDENTITY to sign)
@@ -200,6 +201,15 @@ collect() { # collect <bundle-subdir> <glob...>
   [ "$found" -eq 1 ] || die "no artifacts matched in $dir (patterns: $*)"
 }
 
+bake_builder_image() {
+  local image="delta-review-linux-builder:latest"
+  if ! docker image inspect "$image" >/dev/null 2>&1; then
+    printf 'Baking %s (one-time, ~10 min under emulation)...\n' "$image"
+    docker build --platform linux/amd64 -t "$image" -f scripts/linux-builder.Dockerfile scripts
+  fi
+  printf '%s' "$image"
+}
+
 if [ "$build_mac" -eq 1 ]; then
   printf '\n=== macOS (aarch64) ===\n'
   pnpm tauri build --bundles app,dmg
@@ -227,15 +237,25 @@ if [ "$build_windows" -eq 1 ]; then
            src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/*.sig; do
     [ -f "$f" ] && cp "$f" "$staging/" || true
   done
+
+  # MSI: tauri-bundler only produces MSIs on Windows hosts, so compile a
+  # hand-authored WiX definition with msitools' wixl in a Debian container,
+  # against the exe the cross-build just produced. No target-dir volume here —
+  # the container must see the host-built Windows exe.
+  msi_image="delta-review-msi-builder:latest"
+  if ! docker image inspect "$msi_image" >/dev/null 2>&1; then
+    printf 'Baking %s (one-time)...\n' "$msi_image"
+    docker build --platform linux/amd64 -t "$msi_image" -f scripts/msi-builder.Dockerfile scripts
+  fi
+  docker run --rm --platform linux/amd64 \
+    -v "$ROOT_DIR":/work -w /work \
+    -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+    "$msi_image" bash scripts/container-windows-msi.sh "$new_version"
+  [ -f "$staging/${product}_${new_version}_x64.msi" ] || die "Windows MSI was not produced"
 fi
 
 if [ "$build_linux" -eq 1 ]; then
   printf '\n=== Linux (x86_64, Docker ubuntu:22.04) ===\n'
-  image="delta-review-linux-builder:latest"
-  if ! docker image inspect "$image" >/dev/null 2>&1; then
-    printf 'Baking %s (one-time, ~10 min under emulation)...\n' "$image"
-    docker build --platform linux/amd64 -t "$image" -f scripts/linux-builder.Dockerfile scripts
-  fi
   docker run --rm --platform linux/amd64 \
     -v "$ROOT_DIR":/work -w /work \
     -v delta-review-node-modules:/work/node_modules \
@@ -243,7 +263,7 @@ if [ "$build_linux" -eq 1 ]; then
     -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
     -e TAURI_SIGNING_PRIVATE_KEY="${TAURI_SIGNING_PRIVATE_KEY:-}" \
     -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
-    "$image" bash scripts/container-linux-build.sh "$new_version"
+    "$(bake_builder_image)" bash scripts/container-linux-build.sh "$new_version"
   [ -f "$staging/${product}_${new_version}_amd64.AppImage" ] || die "Linux AppImage was not produced"
   [ -f "$staging/${product}_${new_version}_amd64.deb" ] || die "Linux deb was not produced"
 fi

@@ -2,7 +2,7 @@
 
 ## 0.17.0 — 2026-09-30
 
-First release from the [snatvb/delta-review](https://github.com/snatvb/delta-review) fork. Packages are built locally, without CI: an **unsigned** macOS DMG (Apple silicon), a **Windows x64** NSIS installer, and **Linux x86_64** `.deb` / `.AppImage` packages. The in-app updater now tracks this fork's releases.
+First release from the [snatvb/delta-review](https://github.com/snatvb/delta-review) fork. Packages are built locally, without CI: an **unsigned** macOS DMG (Apple silicon), **Windows x64** NSIS and MSI installers, and **Linux x86_64** `.deb` / `.AppImage` packages. The in-app updater now tracks this fork's releases.
 
 Installing unsigned builds: on **macOS** right-click the app and choose *Open* the first time; on **Windows** pass SmartScreen via *More info → Run anyway*; on **Linux** install the `.deb` (`sudo apt install ./Delta_0.17.0_amd64.deb`) or `chmod +x` the `.AppImage` and run it.
 

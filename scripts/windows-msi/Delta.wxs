@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  MSI definition for the fork's Windows x64 build, authored for msitools'
+  `wixl` (WiX v3 dialect subset) and compiled inside the Linux MSI-builder
+  container — tauri-bundler itself can only produce MSIs on a Windows host.
+
+  Built by scripts/container-windows-msi.sh; variables come from `wixl -D`
+  and MUST be paths relative to this file (wixl resolves SourceFile against
+  the .wxs location and rejects absolute paths):
+    Version  package version (X.Y.Z)
+    ExePath  ../../src-tauri/target/x86_64-pc-windows-gnu/release/Delta.exe
+    IconPath ../../src-tauri/icons/icon.ico
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="Delta"
+           Language="1033"
+           Codepage="1252"
+           Version="$(var.Version)"
+           Manufacturer="delta-review fork"
+           UpgradeCode="684CEF52-1025-44F9-BF2E-7460FC12B053">
+    <Package InstallerVersion="200"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Description="Delta — review your agents work and leave structured comments"/>
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Delta is already installed."/>
+    <Icon Id="Delta.ico" SourceFile="$(var.IconPath)"/>
+    <Property Id="ARPPRODUCTICON" Value="Delta.ico"/>
+    <Property Id="ARPHELPLINK" Value="https://github.com/snatvb/delta-review"/>
+    <Media Id="1" Cabinet="Delta.cab" EmbedCab="yes"/>
+
+    <Feature Id="Main" Title="Delta" Level="1">
+      <ComponentRef Id="MainExe"/>
+      <ComponentRef Id="StartMenuShortcut"/>
+    </Feature>
+  </Product>
+
+  <Fragment>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="Delta">
+          <Component Id="MainExe"
+                     Guid="5EB46517-4B90-45B7-A814-C4FBBE0549CD"
+                     Win64="yes">
+            <File Id="DeltaExe" Name="Delta.exe" Source="$(var.ExePath)" KeyPath="yes"/>
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Component Id="StartMenuShortcut"
+                   Guid="60F98C1D-C70D-42F5-95B9-1E092D08C044"
+                   Win64="yes">
+          <Shortcut Id="DeltaShortcut"
+                    Name="Delta"
+                    Target="[INSTALLDIR]Delta.exe"
+                    WorkingDirectory="INSTALLDIR"
+                    Icon="Delta.ico"/>
+          <RegistryValue Root="HKMU"
+                         Key="Software\Delta"
+                         Name="startMenuShortcut"
+                         Type="integer"
+                         Value="1"
+                         KeyPath="yes"/>
+        </Component>
+      </Directory>
+    </Directory>
+  </Fragment>
+</Wix>
