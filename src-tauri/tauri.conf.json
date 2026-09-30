@@ -32,9 +32,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU4NEY5QkFCQzNDQTMwMTQKUldRVU1NckRxNXRQV05oR2FTb0N3K0N5T2YvOHBaYzdBTlJBR2lKbFlXNFBhQTJzQit6Q1A2MWMK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc5ODk4RDAwRDBBNzk1OQpSV1JaZVFvTjBKaVlCK3FpRlFHdUVKVmlXNTZQeEdQTjNzd2o5dDJpZlBuYlhYZVhxZFZDSXRyZgo=",
       "endpoints": [
-        "https://github.com/darioielardi/delta/releases/latest/download/latest.json"
+        "https://github.com/snatvb/delta-review/releases/latest/download/latest.json"
       ]
     }
   }
