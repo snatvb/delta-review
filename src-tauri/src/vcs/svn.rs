@@ -354,23 +354,35 @@ const MISSING_SVN_MESSAGE: &str = "SVN working copy detected, but the `svn` comm
 were not found. Install them (macOS: `brew install subversion`; Windows: the VisualSVN or \
 TortoiseSVN command line client tools) and restart the app.";
 
-static SVN_BINARY: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
-    let path_var = std::env::var("PATH").unwrap_or_default();
-    std::env::split_paths(&path_var)
-        .map(|dir| dir.join("svn"))
-        .find(|bin| bin.is_file())
-        .or_else(|| {
-            // A GUI-launched app can carry a minimal PATH that omits the
-            // conventional Homebrew locations.
-            ["/opt/homebrew/bin/svn", "/usr/local/bin/svn"]
-                .iter()
-                .map(PathBuf::from)
-                .find(|bin| bin.is_file())
-        })
-});
+/// Why the resolution failed, with the evidence — a GUI-launched app sees
+/// launchd's minimal PATH, so the message carries what this process actually
+/// looked at and turns "works in my terminal" reports into one-glance answers.
+fn missing_svn_error() -> VcsError {
+    format!(
+        "{MISSING_SVN_MESSAGE} (this process' PATH: {}; also probed /opt/homebrew/bin, \
+/usr/local/bin and /opt/local/bin)",
+        std::env::var("PATH").unwrap_or_else(|_| "<unset>".into())
+    )
+}
+
+/// Locate `svn`: every PATH entry first, then the conventional
+/// package-manager locations — a GUI-launched app inherits launchd's minimal
+/// PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), which omits all of them.
+/// Splits on both `:` and `;` so a Windows PATH parses too.
+fn find_svn(path_var: &str) -> Option<PathBuf> {
+    path_var
+        .split([':', ';'])
+        .filter(|s| !s.is_empty())
+        .chain(["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"])
+        .map(|dir| PathBuf::from(dir).join("svn"))
+        .find(|bin| bin.exists())
+}
+
+static SVN_BINARY: LazyLock<Option<PathBuf>> =
+    LazyLock::new(|| find_svn(&std::env::var("PATH").unwrap_or_default()));
 
 fn run_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, VcsError> {
-    let bin = SVN_BINARY.as_deref().ok_or_else(|| MISSING_SVN_MESSAGE.to_string())?;
+    let bin = SVN_BINARY.as_deref().ok_or_else(missing_svn_error)?;
     let output = std::process::Command::new(bin)
         .arg("--non-interactive")
         .args(args)
@@ -805,6 +817,21 @@ mod tests {
     fn missing_cli_message_names_the_fix() {
         assert!(MISSING_SVN_MESSAGE.contains("svn"));
         assert!(MISSING_SVN_MESSAGE.contains("brew install subversion"));
+    }
+
+    #[test]
+    fn find_svn_scans_path_entries_and_survives_empty_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let bin = dir.path().join("svn");
+        std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
+        let path_var = dir.path().display().to_string();
+        assert_eq!(find_svn(&path_var), Some(bin.clone()));
+        // A longer PATH keeps scanning entries in order.
+        assert_eq!(find_svn(&format!("/nonexistent:{path_var}")), Some(bin));
+        // An empty PATH falls through to the package-manager locations; on a
+        // machine without any of them that's a clean None (the error then
+        // carries the PATH for diagnosis).
+        let _ = find_svn("");
     }
 
     // --- integration: a real throwaway repository (skipped when svn absent) ---

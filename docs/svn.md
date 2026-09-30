@@ -57,8 +57,11 @@ The `svn` command line client (1.8+) must be installed:
   tools" option
 
 Delta does not bundle the CLI in v1. Its location is resolved once per app
-launch (a GUI-launched app gets a minimal `PATH`, so the usual Homebrew
-locations are probed as well).
+launch: every `PATH` entry, then `/opt/homebrew/bin`, `/usr/local/bin` and
+`/opt/local/bin` (MacPorts) — a GUI-launched app inherits launchd's minimal
+`PATH`, which omits all of them. If the CLI still isn't found, the error
+message includes the `PATH` the app process actually saw, which pinpoints
+unusual install locations immediately.
 
 ## Known v1 limitations
 
