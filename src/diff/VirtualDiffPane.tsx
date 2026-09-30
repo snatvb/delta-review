@@ -48,6 +48,7 @@ import { splitRowChanged, splitSideChanged } from "./splitChanged";
 import { anchorScrollTopOnCollapse } from "./anchorScroll";
 import { isGiant, isGiantBySize } from "./giant";
 import { useCodeFont, rowHeightFor } from "../codeFont";
+import { FileTypeIcon } from "../files/fileTypeIcons";
 
 const HEADER_H = 40; // sticky file header (border-box); content is vertically centered. (#card)
 // Row height + char width are derived from the code-font-size pref at render (the
@@ -970,6 +971,7 @@ const VFileSection = memo(function VFileSection({
           <ChevronRight className={`size-4 transition-transform duration-200 ${collapsed ? "" : "rotate-90"}`} />
         </span>
         <span className={`pointer-events-none relative flex min-w-0 flex-1 items-center gap-1 ${viewed ? "opacity-55 group-hover/h:opacity-100" : ""}`}>
+          <FileTypeIcon name={base} />
           {isRenamed ? (
             <RenameLabel oldPath={entry.oldPath!} newPath={entry.path} className="text-[13px]" />
           ) : (

@@ -54,6 +54,17 @@ const SUMMARY: DiffSummary = {
     { path: "assets/banner.png", status: "modified", additions: 0, deletions: 0, binary: true },
     // A NON-image binary → the centered size-only placeholder (no compare card). (#binary)
     { path: "assets/model.bin", status: "modified", additions: 0, deletions: 0, binary: true },
+    // File-type variety for the icon column (manifests, configs, languages) —
+    // each exercises a different vendored file-type icon in the tree/header.
+    { path: "package.json", status: "modified", additions: 3, deletions: 1, binary: false },
+    { path: ".gitignore", status: "added", additions: 4, deletions: 0, binary: false },
+    { path: "Dockerfile", status: "added", additions: 9, deletions: 0, binary: false },
+    { path: "styles/theme.css", status: "modified", additions: 4, deletions: 2, binary: false },
+    { path: "scripts/build.sh", status: "added", additions: 6, deletions: 0, binary: false },
+    { path: "tools/lint_report.py", status: "modified", additions: 5, deletions: 1, binary: false },
+    { path: "src/app/main.tsx", status: "added", additions: 12, deletions: 0, binary: false },
+    { path: "src/engine/state.rs", status: "modified", additions: 4, deletions: 4, binary: false },
+    { path: "config/settings.json", status: "deleted", additions: 0, deletions: 7, binary: false },
   ],
 };
 
@@ -194,6 +205,80 @@ const FILES: Record<string, FileDiff> = {
     binary: false,
     oldContent: null,
     newContent: 'export const routes = ["/login", "/logout"];\n',
+  },
+  // File-type icon variety: small bodies for the manifest/config/language files
+  // added to SUMMARY so each icon can be eyeballed in dev:mock.
+  "package.json": {
+    oldFileName: "package.json",
+    newFileName: "package.json",
+    status: "modified",
+    binary: false,
+    oldContent: '{\n  "name": "demo",\n  "version": "1.2.0",\n  "private": true\n}\n',
+    newContent: '{\n  "name": "demo",\n  "version": "1.3.0",\n  "private": true,\n  "engines": { "node": ">=22" }\n}\n',
+  },
+  ".gitignore": {
+    oldFileName: null,
+    newFileName: ".gitignore",
+    status: "added",
+    binary: false,
+    oldContent: null,
+    newContent: "node_modules\ndist\n.env\n*.log\n",
+  },
+  "Dockerfile": {
+    oldFileName: null,
+    newFileName: "Dockerfile",
+    status: "added",
+    binary: false,
+    oldContent: null,
+    newContent: "FROM node:22-alpine\nWORKDIR /app\nCOPY package.json ./\nRUN npm ci\nCOPY . .\nRUN npm run build\nEXPOSE 3000\nCMD [\"node\", \"dist/server.js\"]\n",
+  },
+  "styles/theme.css": {
+    oldFileName: "styles/theme.css",
+    newFileName: "styles/theme.css",
+    status: "modified",
+    binary: false,
+    oldContent: ":root {\n  --bg: #ffffff;\n  --fg: #111111;\n  --radius: 8px;\n}\n",
+    newContent: ":root {\n  --bg: #ffffff;\n  --fg: #111111;\n  --radius: 10px;\n  --accent: oklch(0.62 0.19 250);\n  --accent-fg: #ffffff;\n}\n",
+  },
+  "scripts/build.sh": {
+    oldFileName: null,
+    newFileName: "scripts/build.sh",
+    status: "added",
+    binary: false,
+    oldContent: null,
+    newContent: "#!/usr/bin/env bash\nset -euo pipefail\n\ncd \"$(dirname \"$0\")/..\"\nrm -rf dist\n./node_modules/.bin/vite build\necho \"built → dist/\"\n",
+  },
+  "tools/lint_report.py": {
+    oldFileName: "tools/lint_report.py",
+    newFileName: "tools/lint_report.py",
+    status: "modified",
+    binary: false,
+    oldContent: "import json\nimport sys\n\n\ndef main(paths):\n    findings = lint(paths)\n    print(json.dumps(findings, indent=2))\n    return 1 if findings else 0\n",
+    newContent: "import json\nimport sys\nfrom pathlib import Path\n\n\ndef main(paths):\n    findings = lint([Path(p) for p in paths])\n    print(json.dumps(findings, indent=2, sort_keys=True))\n    return 1 if findings else 0\n",
+  },
+  "src/app/main.tsx": {
+    oldFileName: null,
+    newFileName: "src/app/main.tsx",
+    status: "added",
+    binary: false,
+    oldContent: null,
+    newContent: "import { createRoot } from \"react-dom/client\"\nimport { App } from \"./App\"\n\nconst el = document.getElementById(\"root\")\nif (!el) throw new Error(\"#root missing\")\n\ncreateRoot(el).render(<App />)\n",
+  },
+  "src/engine/state.rs": {
+    oldFileName: "src/engine/state.rs",
+    newFileName: "src/engine/state.rs",
+    status: "modified",
+    binary: false,
+    oldContent: "pub struct State {\n    pub level: u32,\n    pub score: u64,\n}\n\nimpl State {\n    pub fn new() -> Self {\n        State { level: 1, score: 0 }\n    }\n}\n",
+    newContent: "pub struct State {\n    pub level: u32,\n    pub score: u64,\n    pub combo: u8,\n}\n\nimpl State {\n    pub fn new() -> Self {\n        State { level: 1, score: 0, combo: 1 }\n    }\n}\n",
+  },
+  "config/settings.json": {
+    oldFileName: "config/settings.json",
+    newFileName: null,
+    status: "deleted",
+    binary: false,
+    oldContent: '{\n  "theme": "dark",\n  "telemetry": false,\n  "limits": {\n    "maxFiles": 500,\n    "maxLineLength": 400\n  }\n}\n',
+    newContent: null,
   },
   // GDScript diff for the in-repo .gd grammar: keeps the Godot-4 idioms in one
   // place so the diff view's highlighting can be checked at a glance.

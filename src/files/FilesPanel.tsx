@@ -2,9 +2,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Kbd } from "@/components/ui/kbd";
-import { ChevronRight, ChevronsDownUp, ChevronsUpDown, EyeOff, Folder, FolderOpen, FileCode, FileJson, FileText, Check, List, ListTree, MessageSquare, Search, X } from "lucide-react";
+import { ChevronRight, ChevronsDownUp, ChevronsUpDown, EyeOff, Folder, FolderOpen, Check, List, ListTree, MessageSquare, Search, X } from "lucide-react";
 import type { FileEntry, FileStatus } from "../types";
 import { buildTree, type TreeNode } from "./buildTree";
+import { FileTypeIcon } from "./fileTypeIcons";
 
 const STATUS_COLOR: Record<FileStatus, string> = {
   added: "text-emerald-500",
@@ -13,10 +14,15 @@ const STATUS_COLOR: Record<FileStatus, string> = {
   renamed: "text-sky-500",
 };
 
-const CODE_EXT = new Set([
-  "ts", "tsx", "js", "jsx", "mjs", "cjs", "rs", "go", "py", "rb", "java", "kt", "swift",
-  "c", "cc", "cpp", "h", "hpp", "css", "scss", "html", "vue", "svelte", "sh", "toml", "yml", "yaml",
-]);
+// Status letters ride in the +/− counts cluster (one scan zone for change info);
+// the icon's color is reserved for the file type. The letter keeps the status
+// readable without relying on hue alone (A/M/D/R vs. just a color).
+const STATUS_LETTER: Record<FileStatus, string> = {
+  added: "A",
+  modified: "M",
+  deleted: "D",
+  renamed: "R",
+};
 
 // Stable empty set so search-mode (force-open) rendering doesn't allocate per render.
 const NO_COLLAPSE: Set<string> = new Set();
@@ -41,13 +47,6 @@ const ROW_PL = 4;         // base row padding-left in tree mode (old pl-1 = 0.25
 const FLAT_PL = 10;       // list-mode padding-left (old pl-2.5 = 0.625rem)
 const TREE_PAD_Y = 6;     // top/bottom breathing room in the scroller (old py-1.5)
 const OVERSCAN_ROWS = 16; // rows rendered beyond the viewport each way
-
-function FileGlyph({ name, status }: { name: string; status: FileStatus }) {
-  const ext = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
-  const Icon = ext === "json" ? FileJson : CODE_EXT.has(ext) ? FileCode : FileText;
-  // Icon colored by git status — one glyph carries both file type and change kind.
-  return <Icon className={`size-3.5 shrink-0 ${STATUS_COLOR[status]}`} />;
-}
 
 interface RowHandlers {
   activePath: string | null;
@@ -111,7 +110,7 @@ function Row({ node, depth, top, h }: { node: TreeNode; depth: number; top: numb
           ? <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
           : <Folder className="size-3.5 shrink-0 text-muted-foreground" />
       ) : (
-        <FileGlyph name={node.name} status={node.entry!.status} />
+        <FileTypeIcon name={node.name} muted={isIgnoredFile} />
       )}
       <span className={`flex-1 truncate text-[13px] ${isIgnoredGroup ? "font-medium text-muted-foreground" : isDir ? "font-medium text-foreground" : isIgnoredFile ? "text-muted-foreground" : "text-foreground"}`}>
         {node.name}
@@ -127,8 +126,9 @@ function Row({ node, depth, top, h }: { node: TreeNode; depth: number; top: numb
               {commentN}
             </span>
           )}
-          <span className="shrink-0 text-[11px] tabular-nums">
-            {node.entry.additions > 0 && <span className="text-emerald-500">+{node.entry.additions}</span>}{" "}
+          <span className="flex shrink-0 items-center gap-1 text-[11px] tabular-nums" title={node.entry.status}>
+            <span className={`font-semibold ${STATUS_COLOR[node.entry.status]}`}>{STATUS_LETTER[node.entry.status]}</span>
+            {node.entry.additions > 0 && <span className="text-emerald-500">+{node.entry.additions}</span>}
             {node.entry.deletions > 0 && <span className="text-rose-500">−{node.entry.deletions}</span>}
           </span>
           <button
