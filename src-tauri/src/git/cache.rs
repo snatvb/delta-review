@@ -109,14 +109,39 @@ impl DiffCache {
     /// returned `Arc` then lets callers clone content out *after* the lock is dropped.
     fn snapshot(&self, target: &Target) -> Result<Arc<Snapshot>, GitError> {
         let key = key_of(target);
+        let t0 = std::time::Instant::now();
         let mut cache = self.lock();
+        let lock_wait = t0.elapsed();
         if let Some(pos) = cache.hot.iter().position(|s| s.key == key) {
             let hit = cache.hot.remove(pos);
             cache.hot.push(hit.clone()); // most-recently-used at the back
             upsert_served(&mut cache.served, &hit);
+            if crate::perf::enabled() && lock_wait.as_millis() > 0 {
+                eprintln!(
+                    "[perf] snapshot hit  {}/{:?} lock_wait={:.1}ms",
+                    target.repo_path.rsplit('/').next().unwrap_or(&target.repo_path),
+                    target.mode,
+                    lock_wait.as_secs_f64() * 1e3,
+                );
+            }
             return Ok(hit);
         }
-        let snap = Arc::new(Snapshot { key, diff: compute_diff_full(target)? });
+        // The build itself runs under the lock by design (see the doc above); the
+        // perf stamp splits lock_wait from build so a convoy shows up as N hits
+        // with lock_wait ~= the one miss's build time.
+        let build = std::time::Instant::now();
+        let diff = compute_diff_full(target);
+        if crate::perf::enabled() {
+            let n = diff.as_ref().map_or(0, |d| d.summary.files.len());
+            eprintln!(
+                "[perf] snapshot MISS {}/{:?} files={n} lock_wait={:.1}ms build={:.1}ms",
+                target.repo_path.rsplit('/').next().unwrap_or(&target.repo_path),
+                target.mode,
+                lock_wait.as_secs_f64() * 1e3,
+                build.elapsed().as_secs_f64() * 1e3,
+            );
+        }
+        let snap = Arc::new(Snapshot { key, diff: diff? });
         cache.hot.push(snap.clone());
         if cache.hot.len() > MAX_SNAPSHOTS {
             cache.hot.remove(0); // evict least-recently-used (front)
@@ -181,14 +206,24 @@ impl DiffCache {
     /// current content. The served copies survive — see the module doc. A no-op for
     /// snapshots of other worktrees.
     pub fn invalidate(&self, worktree: &str) {
-        self.lock().hot.retain(|s| !same_worktree(&s.key.repo_path, worktree));
+        let t = std::time::Instant::now();
+        let mut inner = self.lock();
+        let dropped = inner.hot.len();
+        inner.hot.retain(|s| !same_worktree(&s.key.repo_path, worktree));
+        if crate::perf::enabled() {
+            eprintln!(
+                "[perf] invalidate {worktree} dropped={} held={:.1}ms",
+                dropped - inner.hot.len(),
+                t.elapsed().as_secs_f64() * 1e3,
+            );
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::diff::{binary_sizes, MAX_CACHED_FILE_BYTES};
+    use crate::git::diff::{binary_sizes, BlobSide, MAX_CACHED_FILE_BYTES};
     use crate::git::model::{DiffMode, Target};
     use crate::git::test_support::*;
 
@@ -323,6 +358,121 @@ mod tests {
         cache.invalidate("/some/other/worktree");
         write(dir_a.path(), "file.txt", "A2\n");
         assert_eq!(cache.file(&t, "file.txt").unwrap().new_content.as_deref(), Some("A1\n"), "unrelated invalidate must not evict");
+    }
+
+    /// Perf probe for the slow-image-previews investigation. Not part of the
+    /// normal suite (ignored): builds a "busy agent" repo — hundreds of modified
+    /// text files plus a screenful of modified images — then contrasts concurrent
+    /// blob reads on a hot cache against the same reads re-run after every
+    /// watcher `invalidate`. After an invalidate the first request rebuilds the
+    /// whole-repo snapshot *while holding the global cache lock*, so the rest of
+    /// the screen's image reads serialize behind it: per-round wall time ~= one
+    /// full snapshot rebuild. Run it in release:
+    ///   cargo test --release blob_convoy -- --ignored --nocapture
+    #[test]
+    #[ignore = "perf probe — slow by design; run explicitly in release with --nocapture"]
+    fn blob_convoy_under_invalidation() {
+        // Shape is tunable via env so the probe can be sized like a real repo:
+        //   CONVOY_TEXT=2000 CONVOY_IMG=40 CONVOY_IMG_BYTES=1048576 cargo test …
+        let envn = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+        let (n_text, n_img) = (envn("CONVOY_TEXT", 400), envn("CONVOY_IMG", 20));
+        let (img_bytes, rounds) = (envn("CONVOY_IMG_BYTES", 256 * 1024), envn("CONVOY_ROUNDS", 8));
+        const READERS: usize = 16;
+
+        // Deterministic pseudo-random bytes (no rand dep): NUL-rich so both git's
+        // delta flagging and looks_binary treat them as binary, like real PNGs.
+        fn noise(seed: u64, len: usize) -> Vec<u8> {
+            let (mut s, mut buf) = (seed, Vec::with_capacity(len));
+            for _ in 0..len {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                buf.push((s >> 56) as u8);
+            }
+            buf
+        }
+        fn png_like(seed: u64, len: usize) -> Vec<u8> {
+            let mut b = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+            b.extend(noise(seed, len - 8));
+            b
+        }
+
+        let (dir, repo) = repo_with_commit();
+        let text_path = |i: usize| format!("src/mod-{i:03}.ts");
+        let img_path = |i: usize| format!("shots/shot-{i:03}.png");
+
+        // Base commit: every file clean and committed…
+        for i in 0..n_text {
+            write(dir.path(), &text_path(i), &format!("// module {i}\nexport const v{i} = {i};\n"));
+        }
+        std::fs::create_dir_all(dir.path().join("shots")).unwrap();
+        for i in 0..n_img {
+            std::fs::write(dir.path().join(img_path(i)), png_like(i as u64 + 1, img_bytes)).unwrap();
+        }
+        commit_all(&repo, "base");
+
+        // …then the whole tree modified at once — the review-a-busy-agent shape.
+        for i in 0..n_text {
+            write(dir.path(), &text_path(i), &format!("// module {i} CHANGED\nexport const v{i} = {};\n", i * 7 + 1));
+        }
+        for i in 0..n_img {
+            std::fs::write(dir.path().join(img_path(i)), png_like(i as u64 + 1_000_000, img_bytes)).unwrap();
+        }
+
+        let repo_path = dir.path().to_str().unwrap().to_string();
+        let t = target(&repo_path, DiffMode::Uncommitted);
+        let cache = DiffCache::default();
+
+        // What the delta-blob scheme handler does per <img>: resolve sources via
+        // the snapshot, then read the new side's bytes off the worktree.
+        fn read_img(cache: &DiffCache, t: &Target, path: &str) -> usize {
+            cache
+                .with_sources(t, path, |repo, s| s.read(repo, BlobSide::New))
+                .unwrap()
+                .expect("image bytes")
+                .len()
+        }
+
+        // Phase 1 — cold: the first blob request pays the whole-repo snapshot build.
+        let cold = std::time::Instant::now();
+        let n = read_img(&cache, &t, &img_path(0));
+        let cold_ms = cold.elapsed().as_secs_f64() * 1e3;
+        let files = cache.summary(&t).unwrap().files.len();
+        println!("repo shape: {n_text} modified text files + {n_img} images of {}KB each", img_bytes / 1024);
+        println!("cold first blob read:  {cold_ms:8.1}ms  ({files} changed files, image {n} bytes)");
+
+        let run_round = |tag: &str| -> f64 {
+            let (c, tt) = (&cache, &t);
+            let wall = std::time::Instant::now();
+            std::thread::scope(|sc| {
+                for r in 0..READERS {
+                    let img = img_path(r % n_img);
+                    sc.spawn(move || assert_eq!(read_img(c, tt, &img), img_bytes));
+                }
+            });
+            let ms = wall.elapsed().as_secs_f64() * 1e3;
+            println!("{tag} {READERS} concurrent reads: {ms:8.1}ms");
+            ms
+        };
+
+        // Phase 2 — control: cache hot, no invalidation — every read is a map read.
+        let hot: f64 = (0..rounds).map(|_| run_round("hot    ")).sum();
+
+        // Phase 3 — watcher storm: like an agent writing while the user scrolls.
+        // Each invalidate drops the snapshot, so every round's first request
+        // rebuilds it under the lock while the other reads queue behind.
+        let mut storm = 0.0;
+        for r in 0..rounds {
+            write(dir.path(), &text_path(r), &format!("// module {r} EDITED AGAIN\n"));
+            cache.invalidate(&repo_path);
+            storm += run_round("storm  ");
+        }
+
+        println!();
+        println!("summary: {rounds} rounds × {READERS} reads — hot total {hot:.0}ms vs storm total {storm:.0}ms");
+        println!(
+            "convoy factor: storm/hot = {:.0}× (per-round storm {:.0}ms ≈ one snapshot rebuild of {cold_ms:.0}ms)",
+            storm / hot.max(1e-9),
+            storm / rounds as f64,
+        );
     }
 
     #[test]

@@ -375,12 +375,14 @@ pub fn with_fresh_sources<T>(
     path: &str,
     f: impl FnOnce(&Repository, &FileSources) -> T,
 ) -> Result<T, GitError> {
+    let t = std::time::Instant::now();
     let repo = open_repo(&target.repo_path)?;
     let ep = resolve_endpoints(&repo, target)?;
     let diff = build_diff(&repo, &ep)?;
 
     let delta = delta_for_path(&diff, path).ok_or_else(|| format!("file not in diff: {path}"))?;
     let sources = delta_sources(&repo, &ep, &delta)?;
+    crate::perf::log("fresh_sources", path, t);
     Ok(f(&repo, &sources))
 }
 

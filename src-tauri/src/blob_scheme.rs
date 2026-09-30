@@ -48,6 +48,7 @@ fn status(code: StatusCode) -> Response<Vec<u8>> {
 }
 
 fn respond(cache: &DiffCache, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+    let t = std::time::Instant::now();
     let Some(q) = parse(request) else {
         return status(StatusCode::BAD_REQUEST);
     };
@@ -55,7 +56,7 @@ fn respond(cache: &DiffCache, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
         Some(size) if size > MAX_IMAGE_PREVIEW_BYTES => Err(StatusCode::PAYLOAD_TOO_LARGE),
         _ => Ok(sources.read(repo, q.side)),
     };
-    match cache.with_sources(&q.target, &q.path, read) {
+    let response = match cache.with_sources(&q.target, &q.path, read) {
         Ok(Err(code)) => status(code),
         Ok(Ok(Some(bytes))) => Response::builder()
             .header(header::CONTENT_TYPE, q.mime)
@@ -64,5 +65,16 @@ fn respond(cache: &DiffCache, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
             .unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR)),
         Ok(Ok(None)) => status(StatusCode::NOT_FOUND),
         Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+    if crate::perf::enabled() {
+        eprintln!(
+            "[perf] blob {} {:?} {} bytes={} {:.1}ms",
+            q.path,
+            q.side,
+            response.status(),
+            response.body().len(),
+            t.elapsed().as_secs_f64() * 1e3,
+        );
     }
+    response
 }

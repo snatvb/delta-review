@@ -10,6 +10,7 @@ mod git;
 mod ipc;
 mod launch;
 mod migrate;
+mod perf;
 mod registry;
 mod review;
 mod settings;
