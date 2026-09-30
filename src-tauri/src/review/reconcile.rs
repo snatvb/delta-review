@@ -2,8 +2,8 @@ use crate::anchor::{diff_hash, reanchor};
 use crate::git::cache::DiffCache;
 use crate::git::diff::DiffSummary;
 use crate::git::model::Target;
-use crate::git::{open_repo, resolve_endpoints, resolve_worktree, GitError, RightSide};
-use crate::review::model::{review_id, Review, Side, Snapshot};
+use crate::review::model::{review_id, Review, Side};
+use crate::vcs::{Repo, VcsError, VcsKind};
 use git2::{Oid, Repository, Sort};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -13,6 +13,10 @@ use std::collections::{HashMap, HashSet};
 pub struct ReviewSession {
     pub review: Review,
     pub summary: DiffSummary,
+    /// Which backend produced this session — the frontend derives its whole
+    /// capability profile (available modes, history features) from this.
+    #[serde(default)]
+    pub vcs: VcsKind,
     /// Canonical repo display name (the main worktree's dir name). Filled by the
     /// command layer; reconcile itself leaves it empty.
     #[serde(default)]
@@ -32,9 +36,10 @@ fn now() -> String {
 /// Reconcile a review against the current repo state: re-resolve worktree/id,
 /// recompute the diff, re-anchor comments (best-effort, else stale), reset viewed
 /// where the file's diff changed, and refresh the snapshot.
-pub fn reconcile(cache: &DiffCache, mut review: Review) -> Result<ReviewSession, GitError> {
-    let repo = open_repo(&review.target.repo_path)?;
-    let worktree = resolve_worktree(&repo)?;
+pub fn reconcile(cache: &DiffCache, mut review: Review) -> Result<ReviewSession, VcsError> {
+    let repo = Repo::open(&review.target.repo_path)?;
+    let vcs = repo.kind();
+    let worktree = repo.worktree_label()?;
     review.target.worktree = Some(worktree.clone());
     review.id = review_id(&review.target.repo_path, &worktree);
 
@@ -44,18 +49,24 @@ pub fn reconcile(cache: &DiffCache, mut review: Review) -> Result<ReviewSession,
     let ignored: std::collections::HashSet<String> =
         summary.files.iter().filter(|f| f.ignored).map(|f| f.path.clone()).collect();
 
-    // Hand untagged comments to the commits that landed since the last snapshot
-    // (before the stale loop, so freshly-tagged comments take the frozen path).
-    let head_commit_oid = hand_off_to_new_commits(&repo, &mut review);
+    // History maintenance is git-only: handing untagged comments to newly
+    // landed commits, and freezing commit-tagged ones against reachability.
+    // SVN's v1 has no history features, so no comment is ever commit-tagged
+    // and there is nothing to maintain.
+    if let Repo::Git(git_repo) = &repo {
+        let head_commit_oid = hand_off_to_new_commits(git_repo, &mut review);
+        for comment in &mut review.comments {
+            if let Some(oid) = comment.commit.clone() {
+                comment.stale = !commit_reachable_from_head(git_repo, head_commit_oid, &oid);
+            }
+        }
+    }
 
     // Re-anchor comments.
     let target = review.target.clone();
     for comment in &mut review.comments {
-        // Commit-tagged comments are frozen: the commit is immutable, so the anchor
-        // never needs re-checking — it's stale only if the commit is no longer
-        // reachable from HEAD (history was rewritten away).
-        if let Some(oid) = comment.commit.clone() {
-            comment.stale = !commit_reachable_from_head(&repo, head_commit_oid, &oid);
+        // Commit-tagged comments were handled above (git) / cannot exist (svn).
+        if comment.commit.is_some() {
             continue;
         }
         let Some(anchor) = comment.anchor.as_mut() else {
@@ -123,19 +134,10 @@ pub fn reconcile(cache: &DiffCache, mut review: Review) -> Result<ReviewSession,
         .collect();
 
     // Refresh snapshot.
-    let ep = resolve_endpoints(&repo, &review.target)?;
-    review.snapshot = Snapshot {
-        base_oid: ep.from_tree.map(|o| o.to_string()).unwrap_or_default(),
-        head_oid: match ep.right {
-            RightSide::Tree(o) => Some(o.to_string()),
-            RightSide::WorkTree => None,
-        },
-        head_commit: head_commit_oid.map(|o| o.to_string()),
-        captured_at: now(),
-    };
+    review.snapshot = repo.snapshot_of(&review.target)?;
     review.last_opened_at = now();
 
-    Ok(ReviewSession { review, summary, repo_name: String::new() })
+    Ok(ReviewSession { review, summary, vcs, repo_name: String::new() })
 }
 
 /// Hand untagged comments over to the commits that landed since the last
@@ -516,7 +518,12 @@ mod tests {
         let first = reconcile(&DiffCache::default(), r.clone()).unwrap();
         // mark viewed with the correct current hash
         let fd =
-            crate::git::diff::get_file_diff(&first.review.target, "file.txt").unwrap();
+            crate::git::diff::get_file_diff(
+                &crate::git::open_repo(&first.review.target.repo_path).unwrap(),
+                &first.review.target,
+                "file.txt",
+            )
+            .unwrap();
         let h = crate::anchor::diff_hash(
             fd.old_content.as_deref().unwrap_or(""),
             fd.new_content.as_deref().unwrap_or(""),

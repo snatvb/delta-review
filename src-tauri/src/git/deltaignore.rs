@@ -107,11 +107,26 @@ impl DeltaIgnore {
     /// All three layers for the repo's worktree, memoized (see module doc).
     pub fn for_repo(repo: &Repository) -> Self {
         let Some(root) = repo.workdir() else { return Self::empty() };
-        let sources: [Option<PathBuf>; 3] = [
-            global_file(),
-            Some(root.join(DELTAIGNORE_FILE)),
-            Some(commondir(repo).join(LOCAL_DELTAIGNORE_FILE)),
-        ];
+        Self::memoized(
+            root,
+            [
+                global_file(),
+                Some(root.join(DELTAIGNORE_FILE)),
+                Some(commondir(repo).join(LOCAL_DELTAIGNORE_FILE)),
+            ],
+        )
+    }
+
+    /// Rules for a non-git working copy (SVN): global + project layers —
+    /// there is no never-committed local slot outside git in v1, so callers
+    /// pass `None`. Memoized like `for_repo`.
+    pub fn for_worktree(root: &Path, local: Option<PathBuf>) -> Self {
+        Self::memoized(root, [global_file(), Some(root.join(DELTAIGNORE_FILE)), local])
+    }
+
+    /// Build (or serve the memoized) ruleset for `root` from up to three
+    /// layered sources, weakest first.
+    fn memoized(root: &Path, sources: [Option<PathBuf>; 3]) -> Self {
         let stamps = sources.each_ref().map(|p| p.as_deref().and_then(stamp));
         let epoch = RULES_EPOCH.load(Ordering::Relaxed);
         let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());

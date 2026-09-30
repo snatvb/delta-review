@@ -20,6 +20,7 @@ import { prefetchPicker } from "../picker/pickerData";
 import { mergeRefreshedReview } from "../review/mergeRefreshedReview";
 import { useReview } from "../review/useReview";
 import { useResolvedTheme } from "../theme";
+import { vcsProfile } from "../vcsProfile";
 import { useDiffLayout } from "../diff/useDiffLayout";
 import { useResizableWidth, usePaneResize, PaneResizer, FILE_PANE } from "../lib/resizablePane";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Columns2, Copy, ExternalLink, GitBranch, Loader2, MessageSquare, RefreshCw, Rows2, Search, Settings } from "lucide-react";
@@ -30,19 +31,12 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuCheck,
 } from "@/components/ui/dropdown-menu";
-import type { Anchor, Comment, CommitMeta, DiffMode, DiffSummary, Review, ReviewSession, Target } from "../types";
+import type { Anchor, Comment, CommitMeta, DiffMode, DiffSummary, Review, ReviewSession, Target, VcsKind } from "../types";
 
 const COMMIT_PAGE = 100;
 
 const ICON_BUTTON =
   "inline-flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-muted hover:text-foreground active:bg-muted/60 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 dark:bg-transparent dark:hover:bg-input/60 dark:active:bg-input/90";
-
-const MODES: { id: DiffMode; label: string }[] = [
-  { id: "all-changes", label: "All changes" },
-  { id: "uncommitted", label: "Uncommitted" },
-  { id: "last-commit", label: "Last commit" },
-  { id: "branch-vs-base", label: "Branch vs base" },
-];
 
 // Bucketed for analytics — never the raw file count/list. (#analytics)
 function fileCountBucket(n: number): string {
@@ -104,6 +98,10 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   const commitsLoadingMore = useRef(false);
   const [commitSummary, setCommitSummary] = useState<DiffSummary | null>(null);
   const [loadedCommitOid, setLoadedCommitOid] = useState<string | null>(null);
+  // The session's VCS — "git" until a session lands and says otherwise. Everything
+  // VCS-conditional here goes through `profile`, never a raw vcs comparison.
+  const [vcs, setVcs] = useState<VcsKind>("git");
+  const profile = vcsProfile(vcs);
   const [diffLoading, setDiffLoading] = useState(false);
   const openSeq = useRef(0);
   const [summary, setSummary] = useState<DiffSummary | null>(null);
@@ -134,6 +132,9 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // churn; diffInval is the bump-able reload signal handed to the diff pane.
   const reviewRef = useRef(review);
   const summaryRef = useRef(summary);
+  // Mirror of the profile for the once-mounted listeners (they can't close over
+  // fresh state — same idiom as reviewRef).
+  const profileRef = useRef(profile);
   const sigRef = useRef("");
   const invalNonce = useRef(0);
   const [diffInval, setDiffInval] = useState<{ paths: string[] | null; n: number } | null>(null);
@@ -158,7 +159,8 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   useEffect(() => {
     reviewRef.current = review;
     summaryRef.current = summary;
-  }, [review, summary]);
+    profileRef.current = profile;
+  }, [review, summary, profile]);
 
   // Warm the ⌘K picker cache once the review window is up, so the first open is
   // instant (the picker's live worktree enumeration is the slow part).
@@ -178,8 +180,24 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       }
       setReview(session.review);
       setSummary(session.summary);
+      setVcs(session.vcs);
       track("review_opened", { file_count_bucket: fileCountBucket(session.summary.files.length) });
       setRepoName(session.repoName);
+      // diffMode/commitOid are seeded once from the URL-derived target and never
+      // revisit the session — so a deep link (mode=commit&commit=abc) or a
+      // persisted branch-vs-base review opened on a history-less VCS (SVN) would
+      // aim at features that don't exist. The backend coerces target.mode at
+      // open_review, so adopt the coerced mode and drop the commit overlay when
+      // the session's own profile has no history; the mode change re-runs open()
+      // via its effect dep. Git never enters this branch — its seeded state (and
+      // URL) stay untouched.
+      const sessionProfile = vcsProfile(session.vcs);
+      if (!sessionProfile.history && (diffMode !== session.review.target.mode || commitOid != null)) {
+        setDiffMode(session.review.target.mode);
+        syncModeParam(session.review.target.mode);
+        setCommitOid(null);
+        syncCommitParam(null);
+      }
       sigRef.current = reviewSig(session.summary, session.review);
       pendingRef.current = null;
       setPendingRefresh(false);
@@ -225,7 +243,8 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     loadedCommitCount.current = commits.length;
   }, [commits]);
   useEffect(() => {
-    if (!review) return;
+    // No commit history (SVN) → no list to fetch, ever.
+    if (!review || !profile.history) return;
     let cancelled = false;
     const generation = ++commitsGeneration.current;
     void api.listCommits(review.target, 0, Math.max(COMMIT_PAGE, loadedCommitCount.current)).then(
@@ -252,7 +271,8 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     // Only fetch when pinned. When not in commit mode `viewSummary` uses `summary`,
     // so a leftover `commitSummary` is never shown — no need to reset it here (a
     // synchronous reset would force an extra render with stale UI between commits).
-    if (!review || !commitOid) return;
+    // History-less VCS (SVN) never pins a commit; the gate is belt-and-braces.
+    if (!review || !commitOid || !profile.history) return;
     let cancelled = false;
     const vt: Target = { ...review.target, mode: "commit", commit: commitOid };
     void api.computeDiff(vt).then(
@@ -332,6 +352,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     setReview((prev) => (prev ? mergeRefreshedReview(prev, p.session.review) : p.session.review));
     setSummary(p.session.summary);
     setRepoName(p.session.repoName);
+    setVcs(p.session.vcs);
     setDiffInval({ paths: p.paths, n: ++invalNonce.current });
     pendingRef.current = null;
     setPendingRefresh(false);
@@ -353,6 +374,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       setReview((prev) => (prev ? mergeRefreshedReview(prev, session.review) : session.review));
       setSummary(session.summary);
       setRepoName(session.repoName);
+      setVcs(session.vcs);
       setDiffInval({ paths: null, n: ++invalNonce.current });
       pendingRef.current = null;
       setPendingRefresh(false);
@@ -407,7 +429,11 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     let cancelled = false;
     void (async () => {
       try {
-        const un = await listen<DiffMode>("cli:set-mode", (e) => setDiffMode(e.payload));
+        const un = await listen<DiffMode>("cli:set-mode", (e) => {
+          // A history-less VCS only has "uncommitted" — coerce any other requested
+          // mode instead of switching somewhere the profile can't render.
+          setDiffMode(profileRef.current.history ? e.payload : "uncommitted");
+        });
         if (cancelled) un();
         else unlisten = un;
       } catch {
@@ -492,7 +518,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // Commit-mode navigation. "Last commit" is the same diff as the newest commit, so
   // it steps too (from HEAD / index 0); stepping back to the top returns to last-commit.
   const loadMoreCommits = useCallback(async (): Promise<CommitMeta[] | null> => {
-    if (!review || !commitsHasMore || commitsLoadingMore.current) return null;
+    if (!profile.history || !review || !commitsHasMore || commitsLoadingMore.current) return null;
     commitsLoadingMore.current = true;
     const generation = commitsGeneration.current;
     const page = await api.listCommits(review.target, commits.length, COMMIT_PAGE).catch(() => null);
@@ -502,7 +528,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     setCommits(next);
     setCommitsHasMore(page.hasMore);
     return next;
-  }, [review, commits, commitsHasMore]);
+  }, [profile.history, review, commits, commitsHasMore]);
   const onCommitListScroll = useCallback((e: UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     if (el.scrollHeight - el.scrollTop - el.clientHeight < 64) void loadMoreCommits();
@@ -562,7 +588,9 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // The stepper also shows in "Last commit" mode — it's the newest commit (index 0).
   const isLastCommit = diffMode === "last-commit";
   const stepIndex = inCommitMode ? commitIndex : (isLastCommit ? 0 : -1);
-  const stepperVisible = commits.length > 0 && (inCommitMode || isLastCommit);
+  // The profile gate here also keeps the [ / ] keys inert (they check this flag),
+  // so a history-less VCS (SVN) gets no stepper and no commit navigation.
+  const stepperVisible = profile.history && commits.length > 0 && (inCommitMode || isLastCommit);
   // Commit mode renders the pinned commit's isolated diff over the canonical review.
   const viewTarget = useMemo<Target | undefined>(
     () => (review ? (inCommitMode ? { ...review.target, mode: "commit", commit: commitOid! } : review.target) : undefined),
@@ -696,45 +724,55 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
               >
                 {/* Hidden reservers size the trigger to the widest possible label, so
                     its width is constant across every mode; the visible label overlays,
-                    left-aligned (the chevron stays put → the stepper never shifts). */}
+                    left-aligned (the chevron stays put → the stepper never shifts).
+                    The commit reserver renders only when the VCS has history, so an
+                    SVN trigger isn't sized for commit labels it can never show. */}
                 <span className="grid justify-items-start">
-                  {MODES.map((m) => (
+                  {profile.modes.map((m) => (
                     <span key={m.id} aria-hidden className="invisible col-start-1 row-start-1 whitespace-nowrap">{m.label}</span>
                   ))}
-                  <span aria-hidden className="invisible col-start-1 row-start-1 whitespace-nowrap">Commit <span className="font-mono">0000000</span></span>
+                  {profile.history && (
+                    <span aria-hidden className="invisible col-start-1 row-start-1 whitespace-nowrap">Commit <span className="font-mono">0000000</span></span>
+                  )}
                   <span className="col-start-1 row-start-1 whitespace-nowrap">
                     {inCommitMode
                       ? <>Commit <span className="font-mono font-normal text-muted-foreground">{commits[commitIndex]?.shortOid ?? "…"}</span></>
-                      : (MODES.find((m) => m.id === diffMode)?.label ?? diffMode)}
+                      : (profile.modes.find((m) => m.id === diffMode)?.label ?? diffMode)}
                   </span>
                 </span>
                 <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start">
-                {MODES.map((m) => (
+                {profile.modes.map((m) => (
                   <DropdownMenuItem key={m.id} onSelect={() => exitCommitMode(m.id)}>
                     <DropdownMenuCheck checked={!inCommitMode && diffMode === m.id} />
                     {m.label}
                   </DropdownMenuItem>
                 ))}
-                <DropdownMenuSeparator />
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger disabled={commits.length === 0}>
-                    <DropdownMenuCheck checked={inCommitMode} />
-                    Commit
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="max-h-72 max-w-[22rem] overflow-y-auto" onScroll={onCommitListScroll}>
-                    {commits.map((c) => (
-                      <DropdownMenuItem key={c.oid} onSelect={() => pickCommit(c.oid)} className="gap-2.5">
-                        <span className="font-mono text-muted-foreground">{c.shortOid}</span>
-                        <span className="min-w-0 truncate">{c.subject}</span>
-                      </DropdownMenuItem>
-                    ))}
-                    {commitsHasMore && (
-                      <DropdownMenuItem disabled className="justify-center text-muted-foreground">Loading more…</DropdownMenuItem>
-                    )}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
+                {/* The whole commit subtree (picker + its separator) exists only when
+                    the VCS has history — SVN's menu is just its single mode. */}
+                {profile.history && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger disabled={commits.length === 0}>
+                        <DropdownMenuCheck checked={inCommitMode} />
+                        Commit
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent className="max-h-72 max-w-[22rem] overflow-y-auto" onScroll={onCommitListScroll}>
+                        {commits.map((c) => (
+                          <DropdownMenuItem key={c.oid} onSelect={() => pickCommit(c.oid)} className="gap-2.5">
+                            <span className="font-mono text-muted-foreground">{c.shortOid}</span>
+                            <span className="min-w-0 truncate">{c.subject}</span>
+                          </DropdownMenuItem>
+                        ))}
+                        {commitsHasMore && (
+                          <DropdownMenuItem disabled className="justify-center text-muted-foreground">Loading more…</DropdownMenuItem>
+                        )}
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+                  </>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
             {stepperVisible && (
@@ -871,7 +909,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                 <NothingToReview
                   target={review.target}
                   repoName={repoName}
-                  modeLabel={inCommitMode ? `commit ${commits[commitIndex]?.shortOid ?? ""}`.trim() : (MODES.find((m) => m.id === diffMode)?.label ?? diffMode)}
+                  modeLabel={inCommitMode ? `commit ${commits[commitIndex]?.shortOid ?? ""}`.trim() : (profile.modes.find((m) => m.id === diffMode)?.label ?? diffMode)}
                 />
                 <ReloadSettler invalidate={diffInval} onSettled={() => setRefreshing(false)} />
               </>

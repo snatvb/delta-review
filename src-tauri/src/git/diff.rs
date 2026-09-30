@@ -1,11 +1,14 @@
 use crate::git::deltaignore::DeltaIgnore;
 use crate::git::model::Target;
-use crate::git::{open_repo, resolve_endpoints, Endpoints, GitError, RightSide};
+use crate::git::{resolve_endpoints, Endpoints, GitError, RightSide};
 use git2::{Diff, DiffDelta, DiffFindOptions, DiffOptions, Oid, Repository};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+
+// The source-resolution model is VCS-shared and lives in `vcs`; re-exported
+// here so existing imports keep resolving.
+pub use crate::vcs::{BlobSide, FileHeader, FileSources, FullDiff, NewSide, OldSide};
 
 /// Eager-extraction memory bounds for `compute_diff_full` (the cached path). A file
 /// whose recorded size exceeds the per-file cap is left out of the map (served by a
@@ -13,7 +16,7 @@ use std::path::PathBuf;
 /// cap we stop extracting so a huge review can't balloon backend memory. Well above
 /// any hand-reviewable file, so normal diffs are fully cached. (#perf)
 pub(crate) const MAX_CACHED_FILE_BYTES: u64 = 4 * 1024 * 1024;
-const MAX_CACHED_SNAPSHOT_BYTES: usize = 128 * 1024 * 1024;
+pub(crate) const MAX_CACHED_SNAPSHOT_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -123,14 +126,14 @@ fn recorded_bytes(delta: &DiffDelta) -> u64 {
 }
 
 fn source_bytes(repo: &Repository, sources: &FileSources) -> u64 {
-    let old = sources.size(repo, BlobSide::Old).unwrap_or(0);
-    let new = sources.size(repo, BlobSide::New).unwrap_or(0);
+    let old = sources.size_git(repo, BlobSide::Old).unwrap_or(0);
+    let new = sources.size_git(repo, BlobSide::New).unwrap_or(0);
     old.max(new)
 }
 
 #[cfg(test)]
 pub fn compute_diff(target: &Target) -> Result<DiffSummary, GitError> {
-    let repo = open_repo(&target.repo_path)?;
+    let repo = crate::git::open_repo(&target.repo_path)?;
     let ep = resolve_endpoints(&repo, target)?;
     let diff = build_diff(&repo, &ep)?;
     let ignore = DeltaIgnore::for_repo(&repo);
@@ -170,32 +173,11 @@ pub(crate) fn looks_binary(bytes: &[u8]) -> bool {
 /// CRLF (`core.autocrlf=true|input`, the Windows default). The diff libgit2 reports
 /// is filtered, so the content we hand the UI has to be filtered the same way — a
 /// raw CRLF working file against an LF blob renders every line as changed.
-fn normalizes_crlf(repo: &Repository) -> bool {
+pub(crate) fn normalizes_crlf(repo: &Repository) -> bool {
     repo.config()
         .and_then(|c| c.get_string("core.autocrlf"))
         .map(|v| v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("input"))
         .unwrap_or(false)
-}
-
-fn strip_cr(bytes: Vec<u8>) -> Vec<u8> {
-    if !bytes.windows(2).any(|w| w == b"\r\n") {
-        return bytes;
-    }
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut prev_cr = false;
-    for b in bytes {
-        if prev_cr && b != b'\n' {
-            out.push(b'\r');
-        }
-        prev_cr = b == b'\r';
-        if !prev_cr {
-            out.push(b);
-        }
-    }
-    if prev_cr {
-        out.push(b'\r');
-    }
-    out
 }
 
 /// Locate the delta for `path` (match new path, else old path) in an already-built
@@ -216,27 +198,15 @@ fn delta_for_path<'d>(diff: &'d Diff<'d>, path: &str) -> Option<DiffDelta<'d>> {
 /// Where one delta's two sides live: old from the from-tree blob, new from the
 /// working tree (worktree modes) or the new blob (tree modes). Resolved while the
 /// diff is built, so reading the bytes later needs no second whole-repo diff.
-#[derive(Debug, Clone)]
-pub struct FileSources {
-    old: Option<Oid>,
-    new: NewSide,
-}
-
-#[derive(Debug, Clone)]
-enum NewSide {
-    WorkTree(PathBuf),
-    Blob(Oid),
-    Absent,
-}
-
 fn delta_sources(repo: &Repository, ep: &Endpoints, delta: &DiffDelta) -> Result<FileSources, GitError> {
     let old = match (ep.from_tree, delta.old_file().path()) {
         (Some(tree_oid), Some(op)) => {
             let tree = repo.find_tree(tree_oid).map_err(|e| e.to_string())?;
-            tree.get_path(op).ok().map(|entry| entry.id())
+            tree.get_path(op).ok().map(|entry| OldSide::GitBlob(entry.id()))
         }
         _ => None,
-    };
+    }
+    .unwrap_or(OldSide::Absent);
     let new_blob = delta.new_file().id();
     let new = match (&ep.right, delta.new_file().path()) {
         (RightSide::WorkTree, Some(np)) => {
@@ -246,28 +216,20 @@ fn delta_sources(repo: &Repository, ep: &Endpoints, delta: &DiffDelta) -> Result
         (RightSide::Tree(_), Some(_)) if !new_blob.is_zero() => NewSide::Blob(new_blob),
         _ => NewSide::Absent,
     };
-    Ok(FileSources { old, new })
+    Ok(FileSources::new(old, new))
 }
 
 impl FileSources {
-    /// Raw bytes, untouched: CRLF normalization is the caller's job, since stripping
-    /// CR pairs from an image corrupts it.
-    pub fn read(&self, repo: &Repository, side: BlobSide) -> Option<Vec<u8>> {
-        let blob = |oid: Oid| repo.find_blob(oid).ok().map(|b| b.content().to_vec());
+    /// Git-side size access for the hot extraction loop; cross-backend reads
+    /// go through `vcs::Repo::source_size`.
+    pub(crate) fn size_git(&self, repo: &Repository, side: BlobSide) -> Option<u64> {
+        let blob_size =
+            |oid: Oid| repo.odb().ok()?.read_header(oid).ok().map(|(size, _)| size as u64);
         match side {
-            BlobSide::Old => self.old.and_then(blob),
-            BlobSide::New => match &self.new {
-                NewSide::WorkTree(path) => fs::read(path).ok(),
-                NewSide::Blob(oid) => blob(*oid),
-                NewSide::Absent => None,
+            BlobSide::Old => match &self.old {
+                OldSide::GitBlob(oid) => blob_size(*oid),
+                _ => None,
             },
-        }
-    }
-
-    pub fn size(&self, repo: &Repository, side: BlobSide) -> Option<u64> {
-        let blob_size = |oid: Oid| repo.odb().ok()?.read_header(oid).ok().map(|(size, _)| size as u64);
-        match side {
-            BlobSide::Old => self.old.and_then(blob_size),
             BlobSide::New => match &self.new {
                 NewSide::WorkTree(path) => fs::metadata(path).ok().map(|m| m.len()),
                 NewSide::Blob(oid) => blob_size(*oid),
@@ -275,24 +237,26 @@ impl FileSources {
             },
         }
     }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum BlobSide {
-    Old,
-    New,
+    /// Git-side byte access for the hot extraction loop; cross-backend reads
+    /// go through `vcs::Repo::read_source`.
+    pub(crate) fn read_git(&self, repo: &Repository, side: BlobSide) -> Option<Vec<u8>> {
+        let blob = |oid: Oid| repo.find_blob(oid).ok().map(|b| b.content().to_vec());
+        match side {
+            BlobSide::Old => match &self.old {
+                OldSide::GitBlob(oid) => blob(*oid),
+                _ => None,
+            },
+            BlobSide::New => match &self.new {
+                NewSide::WorkTree(path) => fs::read(path).ok(),
+                NewSide::Blob(oid) => blob(*oid),
+                NewSide::Absent => None,
+            },
+        }
+    }
 }
 
 /// Detached from the `Diff` so a cached snapshot can extract one file without rebuilding it.
-#[derive(Debug, Clone)]
-pub struct FileHeader {
-    status: FileStatus,
-    old_path: Option<String>,
-    new_path: Option<String>,
-    binary: bool,
-}
-
 impl FileHeader {
     fn of(delta: &DiffDelta) -> Self {
         let path_of = |f: git2::DiffFile| f.path().map(|p| p.to_string_lossy().to_string());
@@ -305,49 +269,21 @@ impl FileHeader {
     }
 }
 
-pub(crate) fn extract_file_diff(repo: &Repository, header: &FileHeader, sources: &FileSources) -> Result<FileDiff, GitError> {
-    let status = header.status;
-    let old_path = header.old_path.clone();
-    let new_path = header.new_path.clone();
-
-    let old_bytes = sources.read(repo, BlobSide::Old);
-    let new_bytes_raw = sources.read(repo, BlobSide::New);
-    // The working copy is CRLF-normalized for text comparison when git filters to
-    // LF (`core.autocrlf=true|input`, the Windows default) — otherwise a raw CRLF
-    // working file against an LF blob renders every line as changed. Raw bytes are
-    // left alone for the binary path (see `FileSources::read`).
-    let new_bytes = match new_bytes_raw {
-        Some(b) if normalizes_crlf(repo) => Some(strip_cr(b)),
-        other => other,
-    };
-
-    let binary = header.binary
-        || old_bytes.as_deref().map(looks_binary).unwrap_or(false)
-        || new_bytes.as_deref().map(looks_binary).unwrap_or(false);
-
-    // Drop content for binary files — the UI shows an "Unsupported file" placeholder.
-    let old_content = if binary { None } else { old_bytes.map(|b| String::from_utf8_lossy(&b).into_owned()) };
-    let new_content = if binary { None } else { new_bytes.map(|b| String::from_utf8_lossy(&b).into_owned()) };
-
-    Ok(FileDiff {
-        old_file_name: old_path,
-        new_file_name: new_path,
-        old_content,
-        new_content,
-        status,
-        binary,
-    })
-}
-
-pub fn get_file_diff(target: &Target, path: &str) -> Result<FileDiff, GitError> {
-    let repo = open_repo(&target.repo_path)?;
-    let ep = resolve_endpoints(&repo, target)?;
-    let diff = build_diff(&repo, &ep)?;
+pub fn get_file_diff(repo: &Repository, target: &Target, path: &str) -> Result<FileDiff, GitError> {
+    let ep = resolve_endpoints(repo, target)?;
+    let diff = build_diff(repo, &ep)?;
 
     let delta = delta_for_path(&diff, path).ok_or_else(|| format!("file not in diff: {path}"))?;
-    let sources = delta_sources(&repo, &ep, &delta)?;
+    let sources = delta_sources(repo, &ep, &delta)?;
 
-    extract_file_diff(&repo, &FileHeader::of(&delta), &sources)
+    let header = FileHeader::of(&delta);
+    let old_bytes = sources.read_git(repo, BlobSide::Old);
+    let new_raw = sources.read_git(repo, BlobSide::New);
+    let new_bytes = match new_raw {
+        Some(b) if normalizes_crlf(repo) => Some(crate::vcs::strip_cr(b)),
+        other => other,
+    };
+    Ok(crate::vcs::file_diff_from_bytes(&header, old_bytes, new_bytes))
 }
 
 /// Exact byte sizes of one binary file's two sides for the UI's binary/image card.
@@ -361,36 +297,17 @@ pub struct BinaryFileDiff {
     pub new_size: Option<u64>,
 }
 
-pub fn binary_sizes(repo: &Repository, sources: &FileSources) -> BinaryFileDiff {
-    BinaryFileDiff {
-        old_size: sources.size(repo, BlobSide::Old),
-        new_size: sources.size(repo, BlobSide::New),
-    }
-}
-
-/// Run `f` on `path`'s sources resolved by a one-off whole-repo diff — the fallback
+/// Resolve `path`'s byte sources with a one-off whole-repo diff — the fallback
 /// when no cached snapshot has them.
-pub fn with_fresh_sources<T>(
+pub fn fresh_sources(
+    repo: &Repository,
     target: &Target,
     path: &str,
-    f: impl FnOnce(&Repository, &FileSources) -> T,
-) -> Result<T, GitError> {
-    let t = std::time::Instant::now();
-    let repo = open_repo(&target.repo_path)?;
-    let ep = resolve_endpoints(&repo, target)?;
-    let diff = build_diff(&repo, &ep)?;
-
+) -> Result<FileSources, GitError> {
+    let ep = resolve_endpoints(repo, target)?;
+    let diff = build_diff(repo, &ep)?;
     let delta = delta_for_path(&diff, path).ok_or_else(|| format!("file not in diff: {path}"))?;
-    let sources = delta_sources(&repo, &ep, &delta)?;
-    crate::perf::log("fresh_sources", path, t);
-    Ok(f(&repo, &sources))
-}
-
-pub struct FullDiff {
-    pub summary: DiffSummary,
-    pub files: HashMap<String, FileDiff>,
-    pub sources: HashMap<String, FileSources>,
-    pub headers: HashMap<String, FileHeader>,
+    delta_sources(repo, &ep, &delta)
 }
 
 /// Build the whole diff ONCE and return the file-list summary, every file's
@@ -400,11 +317,11 @@ pub struct FullDiff {
 /// detection — with one computation the cache serves per file.
 /// Content is bounded (see the MAX_CACHED_* consts); over-cap and `.deltaignore`d
 /// files are omitted and extracted on demand from their header + sources. (#perf)
-pub fn compute_diff_full(target: &Target) -> Result<FullDiff, GitError> {
-    let repo = open_repo(&target.repo_path)?;
-    let ep = resolve_endpoints(&repo, target)?;
-    let diff = build_diff(&repo, &ep)?;
-    let ignore = DeltaIgnore::for_repo(&repo);
+pub fn compute_diff_full(repo: &Repository, target: &Target) -> Result<FullDiff, GitError> {
+    let ep = resolve_endpoints(repo, target)?;
+    let diff = build_diff(repo, &ep)?;
+    let ignore = DeltaIgnore::for_repo(repo);
+    let normalize = normalizes_crlf(repo);
 
     let mut files = Vec::new();
     let mut contents: HashMap<String, FileDiff> = HashMap::new();
@@ -412,10 +329,10 @@ pub fn compute_diff_full(target: &Target) -> Result<FullDiff, GitError> {
     let mut headers: HashMap<String, FileHeader> = HashMap::new();
     let mut held_bytes: usize = 0;
     for (idx, delta) in diff.deltas().enumerate() {
-        let sources = delta_sources(&repo, &ep, &delta).ok();
+        let sources = delta_sources(repo, &ep, &delta).ok();
         let bytes = sources
             .as_ref()
-            .map_or_else(|| recorded_bytes(&delta), |s| source_bytes(&repo, s));
+            .map_or_else(|| recorded_bytes(&delta), |s| source_bytes(repo, s));
         let entry = summary_entry(&diff, idx, &delta, bytes, &ignore);
         let path = entry.path.clone();
         let ignored = entry.ignored;
@@ -428,13 +345,16 @@ pub fn compute_diff_full(target: &Target) -> Result<FullDiff, GitError> {
         // The post-read length check stays: CRLF normalization and lossy UTF-8 can
         // make the retained text differ from the on-disk size.
         if !ignored && bytes <= MAX_CACHED_FILE_BYTES && held_bytes < MAX_CACHED_SNAPSHOT_BYTES {
-            if let Ok(fd) = extract_file_diff(&repo, &header, &sources) {
-                let n = fd.old_content.as_deref().map_or(0, str::len)
-                    + fd.new_content.as_deref().map_or(0, str::len);
-                if n as u64 <= MAX_CACHED_FILE_BYTES {
-                    held_bytes += n;
-                    contents.insert(path.clone(), fd);
-                }
+            let old_bytes = sources.read_git(repo, BlobSide::Old);
+            let new_raw = sources.read_git(repo, BlobSide::New);
+            let new_bytes =
+                match new_raw { Some(b) if normalize => Some(crate::vcs::strip_cr(b)), other => other };
+            let fd = crate::vcs::file_diff_from_bytes(&header, old_bytes, new_bytes);
+            let n = fd.old_content.as_deref().map_or(0, str::len)
+                + fd.new_content.as_deref().map_or(0, str::len);
+            if n as u64 <= MAX_CACHED_FILE_BYTES {
+                held_bytes += n;
+                contents.insert(path.clone(), fd);
             }
         }
         all_sources.insert(path.clone(), sources);
@@ -459,11 +379,17 @@ mod tests {
         Target { repo_path: repo_path.into(), worktree: None, mode, base: None, commit: None }
     }
 
+    /// Test shim: open the repo the way `vcs::Repo::open` would, then diff one file.
+    fn file_diff_at(t: &Target, path: &str) -> Result<FileDiff, GitError> {
+        let repo = crate::git::open_repo(&t.repo_path)?;
+        get_file_diff(&repo, t, path)
+    }
+
     #[test]
     fn file_diff_returns_old_and_new_content() {
         let (dir, _repo) = repo_with_commit();
         write(dir.path(), "file.txt", "line1\nCHANGED\nline2\n");
-        let fd = get_file_diff(
+        let fd = file_diff_at(
             &Target { repo_path: dir.path().to_str().unwrap().into(), worktree: None, mode: DiffMode::Uncommitted, base: None, commit: None },
             "file.txt",
         ).unwrap();
@@ -477,7 +403,7 @@ mod tests {
         repo.config().unwrap().set_str("core.autocrlf", "true").unwrap();
         write(dir.path(), "file.txt", "line1\r\nCHANGED\r\n");
 
-        let fd = get_file_diff(&target(dir.path().to_str().unwrap(), DiffMode::Uncommitted), "file.txt").unwrap();
+        let fd = file_diff_at(&target(dir.path().to_str().unwrap(), DiffMode::Uncommitted), "file.txt").unwrap();
 
         assert_eq!(fd.old_content.as_deref(), Some("line1\nline2\n"));
         assert_eq!(fd.new_content.as_deref(), Some("line1\nCHANGED\n"));
@@ -489,7 +415,7 @@ mod tests {
         repo.config().unwrap().set_str("core.autocrlf", "false").unwrap();
         write(dir.path(), "file.txt", "line1\r\nCHANGED\r\n");
 
-        let fd = get_file_diff(&target(dir.path().to_str().unwrap(), DiffMode::Uncommitted), "file.txt").unwrap();
+        let fd = file_diff_at(&target(dir.path().to_str().unwrap(), DiffMode::Uncommitted), "file.txt").unwrap();
 
         assert_eq!(fd.new_content.as_deref(), Some("line1\r\nCHANGED\r\n"));
     }
@@ -501,7 +427,8 @@ mod tests {
         write(dir.path(), "new.ts", "export const x = 1;\n");
         let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
 
-        let FullDiff { summary, files, .. } = compute_diff_full(&t).unwrap();
+        let repo = crate::git::open_repo(&t.repo_path).unwrap();
+        let FullDiff { summary, files, .. } = compute_diff_full(&repo, &t).unwrap();
 
         // Summary matches compute_diff: both changed files present with line stats.
         assert_eq!(summary.files.len(), 2);
@@ -526,7 +453,8 @@ mod tests {
         write(dir.path(), "new.ts", "export const x = 1;\n");
         let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
 
-        let FullDiff { summary, .. } = compute_diff_full(&t).unwrap();
+        let repo = crate::git::open_repo(&t.repo_path).unwrap();
+        let FullDiff { summary, .. } = compute_diff_full(&repo, &t).unwrap();
 
         let bytes_of = |path: &str| summary.files.iter().find(|f| f.path == path).unwrap().bytes;
         assert_eq!(bytes_of("file.txt"), "line1\nCHANGED\nline2\n".len() as u64);
@@ -538,7 +466,7 @@ mod tests {
         let (dir, _repo) = repo_with_commit();
         // an untracked "png" with NUL bytes
         std::fs::write(dir.path().join("logo.png"), [0x89u8, b'P', b'N', b'G', 0x00, 0x01, 0x02, 0x00]).unwrap();
-        let fd = get_file_diff(
+        let fd = file_diff_at(
             &target(dir.path().to_str().unwrap(), DiffMode::Uncommitted),
             "logo.png",
         )
@@ -548,11 +476,13 @@ mod tests {
     }
 
     fn get_binary_file_diff(t: &Target, path: &str) -> Result<BinaryFileDiff, GitError> {
-        with_fresh_sources(t, path, binary_sizes)
+        crate::vcs::Repo::with_fresh_sources(t, path, |repo, s| repo.binary_sizes(s)).and_then(|sizes| sizes)
     }
 
     fn read_side(t: &Target, path: &str, side: BlobSide) -> Option<Vec<u8>> {
-        with_fresh_sources(t, path, |repo, s| s.read(repo, side)).unwrap()
+        crate::vcs::Repo::with_fresh_sources(t, path, |repo, s| repo.read_source(s, side))
+            .and_then(|bytes| bytes)
+            .unwrap()
     }
 
     #[test]
@@ -678,7 +608,7 @@ mod tests {
         let f = summary.files.iter().find(|f| f.path == "feature.txt").unwrap();
         assert_eq!(f.status, FileStatus::Modified, "expected Modified, got {:?}", f.status);
 
-        let fd = get_file_diff(
+        let fd = file_diff_at(
             &target(dir.path().to_str().unwrap(), DiffMode::Uncommitted),
             "feature.txt",
         )

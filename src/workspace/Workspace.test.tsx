@@ -49,6 +49,7 @@ const target: Target = { repoPath: "/r", mode: "all-changes" };
 const minimalSession = {
   review: { id: "x", target: { repoPath: "/r", worktree: "main", mode: "all-changes" }, comments: [], viewed: [], snapshot: { baseOid: "b", capturedAt: "t" }, createdAt: "t", lastOpenedAt: "t", version: 1 },
   summary: { files: [], baseLabel: "main", headLabel: "wt" },
+  vcs: "git",
 };
 const fileSession = {
   ...minimalSession,

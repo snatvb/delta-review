@@ -1,5 +1,9 @@
 export type DiffMode = "all-changes" | "uncommitted" | "last-commit" | "branch-vs-base" | "commit";
 
+/** Which version-control system backs a repo. SVN supports only "uncommitted"
+ *  mode and has no commit history — everything else is git behavior. */
+export type VcsKind = "git" | "svn";
+
 export interface Target {
   repoPath: string;
   mode: DiffMode;
@@ -118,6 +122,8 @@ export interface ReviewSession {
   review: Review;
   summary: DiffSummary;
   repoName: string;
+  /** VCS backing this review — drives the workspace's capability profile. */
+  vcs: VcsKind;
 }
 
 export interface WorktreeEntry {
@@ -136,6 +142,8 @@ export interface RepoEntry {
   name: string;
   defaultBranch?: string | null;
   worktrees: WorktreeEntry[];
+  /** Display-only VCS label; absent for registries written before SVN support. */
+  vcs?: VcsKind | null;
 }
 
 export interface ReviewEntry {

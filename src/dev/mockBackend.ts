@@ -619,7 +619,7 @@ export function installMockBackend(): void {
       }
       case "open_review":
       case "refresh_review": {
-        const session: ReviewSession = { review: ds.review, summary: ds.summary, repoName: "demo" };
+        const session: ReviewSession = { review: ds.review, summary: ds.summary, repoName: "demo", vcs: "git" };
         return structuredClone(session) as T;
       }
       case "save_review":

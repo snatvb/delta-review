@@ -40,16 +40,13 @@ fn build_ignore(root: &Path) -> Gitignore {
 }
 
 /// Classify a changed path: `Some(Some(rel))` for a relevant working-tree file,
-/// `Some(None)` for a relevant `.git` meta change, `None` to ignore.
+/// `Some(None)` for a relevant repo-meta change (`.git` refs / SVN `wc.db`),
+/// `None` to ignore.
 fn classify(path: &Path, root: &Path, ig: &Gitignore) -> Option<Option<String>> {
     let rel = path.strip_prefix(root).unwrap_or(path);
     let rel_str = rel.to_string_lossy().replace('\\', "/");
-    let in_git = rel
-        .components()
-        .next()
-        .map(|c| c.as_os_str() == std::ffi::OsStr::new(".git"))
-        .unwrap_or(false);
-    if in_git {
+    let first = rel.components().next().map(|c| c.as_os_str().to_os_string());
+    if first.as_deref() == Some(std::ffi::OsStr::new(".git")) {
         let meta = rel_str == ".git/HEAD"
             || rel_str == ".git/MERGE_HEAD"
             || rel_str == ".git/index"
@@ -57,6 +54,15 @@ fn classify(path: &Path, root: &Path, ig: &Gitignore) -> Option<Option<String>> 
             // Hand-edited local Delta Ignore rules shift the whole file list,
             // exactly like a ref move — treat the edit as repo meta, not noise.
             || rel_str == ".git/info/deltaignore";
+        return if meta { Some(None) } else { None };
+    }
+    if first.as_deref() == Some(std::ffi::OsStr::new(".svn")) {
+        // wc.db (and its journal) move on every commit/update/switch — the
+        // SVN equivalents of a ref move. Everything else under `.svn`
+        // (pristine churn, locks, tmp) is noise.
+        let meta = rel_str == ".svn/wc.db"
+            || rel_str == ".svn/wc.db-journal"
+            || rel_str.starts_with(".svn/wc.db-");
         return if meta { Some(None) } else { None };
     }
     // `matched_path_or_any_parents` (not `matched`) so a file *inside* an ignored

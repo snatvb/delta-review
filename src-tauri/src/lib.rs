@@ -15,6 +15,7 @@ mod registry;
 mod review;
 mod settings;
 mod storage;
+mod vcs;
 mod watch;
 
 #[cfg(debug_assertions)]
@@ -138,6 +139,13 @@ pub fn run() {
             // no AppHandle exists, so hand its path to the ignore engine once.
             if let Ok(path) = crate::commands::global_deltaignore_path(app.handle()) {
                 crate::git::deltaignore::set_global_file(path);
+            }
+            // Manual VCS overrides live in the registry (edited by hand, never
+            // from the UI); the CLI gate only asks "is this a repo at all", so
+            // it runs correctly without them — only the app process opens
+            // reviews and needs the override table loaded.
+            if let Ok(reg) = crate::commands::registry_of(app.handle()) {
+                let _ = crate::commands::sync_vcs_overrides(&reg);
             }
             let args: Vec<String> = std::env::args().skip(1).collect();
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));

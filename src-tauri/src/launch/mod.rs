@@ -1,7 +1,8 @@
 use crate::git::model::DiffMode;
-use crate::git::{open_repo, resolve_base, resolve_worktree};
+use crate::git::{common_git_dir, main_worktree_dir, resolve_base, resolve_worktree};
 use crate::registry::model::{repo_name_from_path, RepoEntry, WorktreeEntry};
 use crate::review::model::review_id;
+use crate::vcs::{Repo, VcsKind};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -64,12 +65,13 @@ pub fn parse_launch(args: &[String], cwd: &Path) -> Launch {
     Launch { repo_path, mode }
 }
 
-/// True when a CLI launch points at a path that isn't inside a git repo — the case a
-/// terminal invocation should reject (warn + do nothing) instead of falling back to the
-/// launcher. `open_repo` discovers upward, so a subdir of a repo still counts as valid.
+/// True when a CLI launch points at a path that isn't inside a repository — the
+/// case a terminal invocation should reject (warn + do nothing) instead of
+/// falling back to the launcher. `Repo::open` discovers upward, so a subdir of
+/// a repo still counts as valid.
 #[cfg(any(unix, test))] // the CLI shim is the only caller; it does not exist on Windows
 pub fn launch_targets_non_repo(launch: &Launch) -> bool {
-    open_repo(&launch.repo_path.to_string_lossy()).is_err()
+    Repo::open(&launch.repo_path.to_string_lossy()).is_err()
 }
 
 /// HEAD commit time (RFC3339) + dirty flag for an open worktree repo handle.
@@ -107,14 +109,13 @@ fn linked_worktree_entry(path: &Path) -> Option<WorktreeEntry> {
 /// The per-worktree metadata (HEAD time + dirty status) is the slow part — a
 /// `git status` scan each — so linked worktrees are opened and scanned in parallel
 /// batches. A repo with dozens of worktrees would otherwise take hundreds of ms.
-pub fn list_worktrees(repo_path: &str) -> Result<Vec<WorktreeEntry>, String> {
-    let repo = open_repo(repo_path)?;
+pub fn list_git_worktrees(repo: &git2::Repository) -> Result<Vec<WorktreeEntry>, String> {
     let mut out = Vec::new();
     if let Some(wd) = repo.workdir() {
-        let (last_commit_at, dirty) = worktree_meta(&repo);
+        let (last_commit_at, dirty) = worktree_meta(repo);
         out.push(WorktreeEntry {
             path: wd.display().to_string(),
-            branch: resolve_worktree(&repo)?,
+            branch: resolve_worktree(repo)?,
             is_main: true,
             last_commit_at,
             dirty,
@@ -138,51 +139,30 @@ pub fn list_worktrees(repo_path: &str) -> Result<Vec<WorktreeEntry>, String> {
     Ok(out)
 }
 
-/// The shared `.git` directory for a repo and all its linked worktrees.
-/// git2 0.19 has no `commondir()`, so derive it from `path()`:
-/// main worktree → `<root>/.git`; linked worktree → `<root>/.git/worktrees/<name>`
-/// (strip at the `worktrees` segment). Canonicalized so both forms match.
-fn common_git_dir(repo: &git2::Repository) -> std::path::PathBuf {
-    let p = repo.path();
-    let base = match p.iter().position(|c| c == std::ffi::OsStr::new("worktrees")) {
-        Some(pos) => p.iter().take(pos).collect::<std::path::PathBuf>(),
-        None => p.to_path_buf(),
-    };
-    std::fs::canonicalize(&base).unwrap_or(base)
-}
-
-/// The main worktree directory = parent of the shared `.git` dir. Same for every
-/// linked worktree of the repo, so it yields the canonical repo name.
-fn main_worktree_dir(repo: &git2::Repository) -> Option<std::path::PathBuf> {
-    common_git_dir(repo).parent().map(|p| p.to_path_buf())
-}
-
 /// Canonical repo display name — the main worktree's directory name (e.g. "delta"),
 /// regardless of which (possibly linked) worktree path was opened.
 pub fn repo_display_name(repo_path: &str) -> String {
-    open_repo(repo_path)
-        .ok()
-        .and_then(|repo| main_worktree_dir(&repo))
-        .map(|p| repo_name_from_path(&p.display().to_string()))
-        .unwrap_or_else(|| repo_name_from_path(repo_path))
+    Repo::open(repo_path)
+        .map(|repo| repo.display_name())
+        .unwrap_or_else(|_| repo_name_from_path(repo_path))
 }
 
-/// Registry repo entry: keyed by the git commondir so linked worktrees group together.
-/// `root`/`name` describe the main worktree, not whichever worktree path was opened.
-pub fn repo_entry(repo_path: &str) -> Result<RepoEntry, String> {
-    let repo = open_repo(repo_path)?;
-    let commondir = common_git_dir(&repo).display().to_string();
+/// Registry repo entry for a git repo: keyed by the git commondir so linked
+/// worktrees group together. `root`/`name` describe the main worktree, not
+/// whichever worktree path was opened.
+pub fn git_repo_entry(repo: &git2::Repository) -> Result<RepoEntry, String> {
+    let commondir = common_git_dir(repo).display().to_string();
     let mut h = Sha256::new();
     h.update(commondir.as_bytes());
     let id: String = h.finalize()[..8].iter().map(|b| format!("{:02x}", b)).collect();
-    let root = main_worktree_dir(&repo)
+    let root = main_worktree_dir(repo)
         .map(|p| p.display().to_string())
         .or_else(|| repo.workdir().map(|p| p.display().to_string()))
-        .unwrap_or_else(|| repo_path.to_string());
+        .unwrap_or_else(|| repo.path().display().to_string());
     let name = repo_name_from_path(&root);
-    let default_branch = resolve_base(&repo, None).ok().map(|(label, _)| label);
-    let worktrees = list_worktrees(repo_path)?;
-    Ok(RepoEntry { id, root, name, default_branch, worktrees })
+    let default_branch = resolve_base(repo, None).ok().map(|(label, _)| label);
+    let worktrees = list_git_worktrees(repo)?;
+    Ok(RepoEntry { id, root, name, default_branch, worktrees, vcs: VcsKind::Git, vcs_override: None })
 }
 
 /// Minimal percent-encoder for URL query values (RFC 3986 unreserved set preserved).
@@ -207,12 +187,12 @@ pub enum Opened {
 
 /// The single choke point for "open this target". Focus-or-create, ≤1 per target.
 pub fn open_target_window(app: &AppHandle, repo_path: &str, mode: DiffMode, base: Option<String>) -> Result<Opened, String> {
-    let repo = open_repo(repo_path)?;
-    let canonical = repo
-        .workdir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| repo_path.to_string());
-    let worktree = resolve_worktree(&repo)?;
+    let repo = Repo::open(repo_path)?;
+    let canonical = repo.root().display().to_string();
+    let worktree = repo.worktree_label()?;
+    // A mode the backend can't compute (e.g. a CLI flag on an SVN working
+    // copy) degrades to its working-copy diff instead of failing the open.
+    let mode = repo.coerce_mode(mode);
     let id = review_id(&canonical, &worktree);
     let label = format!("review-{id}");
     let one_window_per_worktree = !crate::settings::load(app).window_per_branch;
@@ -261,11 +241,7 @@ pub fn open_target_window(app: &AppHandle, repo_path: &str, mode: DiffMode, base
 /// auto-refresh to stay correct. `watch::start` replaces any watcher already
 /// registered under this label, dropping the old one. (#replace)
 pub fn rewatch_target(app: &AppHandle, label: &str, repo_path: &str) -> Result<(), String> {
-    let repo = open_repo(repo_path)?;
-    let canonical = repo
-        .workdir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| repo_path.to_string());
+    let canonical = Repo::open(repo_path)?.root().display().to_string();
     crate::watch::start(app, label, Path::new(&canonical));
     Ok(())
 }
@@ -304,7 +280,7 @@ pub fn route_launch(app: &AppHandle, args: &[String], cwd: &Path) {
     let launch = parse_launch(args, cwd);
     let path = launch.repo_path.to_string_lossy().to_string();
     let mode = launch.mode.unwrap_or(DiffMode::Uncommitted);
-    let opened = open_repo(&path).is_ok() && open_target_window(app, &path, mode, None).is_ok();
+    let opened = Repo::open(&path).is_ok() && open_target_window(app, &path, mode, None).is_ok();
     if !opened {
         let _ = open_home_window(app);
     }
@@ -549,8 +525,9 @@ mod tests {
 
     #[test]
     fn list_worktrees_returns_main_only_for_simple_repo() {
-        let (dir, _repo) = repo_with_commit();
-        let wts = list_worktrees(dir.path().to_str().unwrap()).unwrap();
+        let (dir, repo) = repo_with_commit();
+        let wts = list_git_worktrees(&repo).unwrap();
+        let _ = &dir;
         assert_eq!(wts.len(), 1);
         assert!(wts[0].is_main);
         assert_eq!(wts[0].branch, "main");
@@ -560,7 +537,7 @@ mod tests {
     fn list_worktrees_includes_linked_worktrees() {
         let (dir, repo) = repo_with_commit();
         add_worktree(&repo, dir.path(), "delta-feat", "feat/auth");
-        let mut wts = list_worktrees(dir.path().to_str().unwrap()).unwrap();
+        let mut wts = list_git_worktrees(&repo).unwrap();
         wts.sort_by(|a, b| a.branch.cmp(&b.branch));
         let branches: Vec<&str> = wts.iter().map(|w| w.branch.as_str()).collect();
         assert!(branches.contains(&"main"));
@@ -573,9 +550,9 @@ mod tests {
         // Reproduces the real path: a worktree created via the git CLI AFTER the app
         // already enumerated once must appear on the next enumeration. Each call opens
         // a fresh handle, so this asserts the enumeration is genuinely live (not cached).
-        let (dir, _repo) = repo_with_commit();
+        let (dir, repo) = repo_with_commit();
         let root = dir.path().to_str().unwrap();
-        assert_eq!(list_worktrees(root).unwrap().len(), 1, "main only before add");
+        assert_eq!(list_git_worktrees(&repo).unwrap().len(), 1, "main only before add");
 
         let wt_path = dir
             .path()
@@ -591,7 +568,7 @@ mod tests {
             .expect("run git worktree add");
         assert!(out.status.success(), "git worktree add: {}", String::from_utf8_lossy(&out.stderr));
 
-        let second = list_worktrees(root).unwrap();
+        let second = list_git_worktrees(&git2::Repository::open(root).unwrap()).unwrap();
         let branches: Vec<&str> = second.iter().map(|w| w.branch.as_str()).collect();
         let _ = std::fs::remove_dir_all(&wt_path);
         assert_eq!(second.len(), 2, "new CLI worktree must appear; got {branches:?}");
@@ -600,8 +577,8 @@ mod tests {
 
     #[test]
     fn repo_entry_has_name_default_branch_and_worktrees() {
-        let (dir, _repo) = repo_with_commit();
-        let entry = repo_entry(dir.path().to_str().unwrap()).unwrap();
+        let (dir, repo) = repo_with_commit();
+        let entry = git_repo_entry(&repo).unwrap();
         assert_eq!(entry.default_branch.as_deref(), Some("main"));
         assert!(!entry.id.is_empty());
         assert!(!entry.worktrees.is_empty());

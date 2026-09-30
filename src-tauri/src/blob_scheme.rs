@@ -52,9 +52,14 @@ fn respond(cache: &DiffCache, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     let Some(q) = parse(request) else {
         return status(StatusCode::BAD_REQUEST);
     };
-    let read = |repo: &git2::Repository, sources: &FileSources| match sources.size(repo, q.side) {
-        Some(size) if size > MAX_IMAGE_PREVIEW_BYTES => Err(StatusCode::PAYLOAD_TOO_LARGE),
-        _ => Ok(sources.read(repo, q.side)),
+    // Read failures are real failures (svn CLI missing, pristine unreadable)
+    // and must surface as 5xx — a 404 would claim the side doesn't exist.
+    let read = |repo: &crate::vcs::Repo, sources: &FileSources| {
+        match repo.source_size(sources, q.side) {
+            Ok(Some(size)) if size > MAX_IMAGE_PREVIEW_BYTES => Err(StatusCode::PAYLOAD_TOO_LARGE),
+            Ok(_) => repo.read_source(sources, q.side).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR),
+            Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        }
     };
     let response = match cache.with_sources(&q.target, &q.path, read) {
         Ok(Err(code)) => status(code),

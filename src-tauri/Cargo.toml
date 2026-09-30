@@ -47,6 +47,7 @@ dirs = "6"
 # Tauri setup hook, which needs an ambient Tokio runtime that lib.rs::run() enters
 # (release builds only, matching the plugin's own gate).
 tokio = { version = "1", features = ["rt-multi-thread"] }
+quick-xml = "0.42.0"
 
 # vendored-openssl: statically link OpenSSL so signed/notarized release builds don't
 # depend on Homebrew's libssl (rejected by hardened-runtime library validation -> launch crash).
