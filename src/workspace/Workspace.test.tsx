@@ -255,6 +255,32 @@ describe("Workspace", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /re-diff now/i })).toBeEnabled());
   });
 
+  it("coalesces fs events that arrive during a re-diff into one follow-up", async () => {
+    openReview.mockResolvedValue(fileSession);
+    let finishFirst: (s: typeof fileSession) => void = () => {};
+    refreshReview
+      .mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve; }))
+      .mockResolvedValue(fileSession);
+    render(<Workspace target={target} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /copy for agents/i })).toBeInTheDocument());
+
+    await act(async () => {
+      fsChanged?.({ payload: { paths: ["src/a.ts"], gitMeta: false } });
+      fsChanged?.({ payload: { paths: ["src/b.ts"], gitMeta: false } });
+      fsChanged?.({ payload: { paths: [], gitMeta: true } });
+    });
+    expect(refreshReview).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      finishFirst(fileSession);
+    });
+    await waitFor(() => expect(refreshReview).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(refreshReview).toHaveBeenCalledTimes(2);
+  });
+
   it("skips the background re-diff when change detection is off", async () => {
     openReview.mockResolvedValue(fileSession);
     setChangeDetection("off");

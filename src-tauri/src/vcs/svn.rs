@@ -8,6 +8,8 @@
 //! Never read `.svn/wc.db` directly — its schema is internal and svn locks
 //! it during operations. All knowledge comes from the CLI, whose `--xml`
 //! output is the stable machine interface.
+pub mod status;
+
 use crate::git::deltaignore::DeltaIgnore;
 use crate::git::diff::{DiffSummary, FileDiff, FileStatus, MAX_CACHED_FILE_BYTES, MAX_CACHED_SNAPSHOT_BYTES};
 use crate::git::model::Target;
@@ -141,6 +143,11 @@ impl SvnRepo {
     }
 
     fn plan_for(&self, path: &str) -> Result<FilePlan, VcsError> {
+        let (_, fresh) = status::targeted(&self.root, [path])?;
+        let targeted = self.plans_from(fresh, &HashMap::new());
+        if let Some(plan) = targeted.into_iter().find(|p| p.rel == path) {
+            return Ok(plan);
+        }
         self.uncommitted_plans()?
             .into_iter()
             .find(|p| p.rel == path)
@@ -157,16 +164,24 @@ impl SvnRepo {
     /// never descends into it, and it's already gone from disk so fs checks
     /// can't tell dir from file. `svn info --depth infinity` still lists the
     /// scheduled-deleted nodes until the delete commits, so dir-ness and the
-    /// member files come from there (paid only when a deletion exists).
+    /// member files come from there (queried only for the deleted paths).
     fn uncommitted_plans(&self) -> Result<Vec<FilePlan>, VcsError> {
-        let xml = run_text(&self.root, &["status", "--xml", "--ignore-externals"])?;
-        let entries = parse_status_xml(&xml);
-        let versioned = if entries.iter().any(|e| e.item == "deleted" || e.item == "missing") {
-            let info_xml = run_text(&self.root, &["info", "--xml", "--depth", "infinity"])?;
-            parse_info(&info_xml).1
-        } else {
+        let entries = status::current_entries(&self.root)?;
+        let removed: Vec<String> = entries
+            .iter()
+            .filter(|e| e.item == "deleted" || e.item == "missing")
+            .map(|e| e.path.clone())
+            .collect();
+        let versioned = if removed.is_empty() {
             HashMap::new()
+        } else {
+            let info_xml = status::run_with_targets(&self.root, &["info", "--xml", "--depth", "infinity"], &removed)?;
+            parse_info(&info_xml).1
         };
+        Ok(self.plans_from(entries, &versioned))
+    }
+
+    fn plans_from(&self, entries: Vec<SvnStatusEntry>, versioned: &HashMap<String, String>) -> Vec<FilePlan> {
         let is_versioned_dir =
             |p: &str| versioned.get(p).map(|k| k == "dir").unwrap_or(false);
 
@@ -191,7 +206,7 @@ impl SvnRepo {
                 "deleted" | "missing" => {
                     if is_versioned_dir(&e.path) {
                         let prefix = format!("{}/", e.path);
-                        for file in versioned_files_under(&versioned, &prefix) {
+                        for file in versioned_files_under(versioned, &prefix) {
                             plans.push(FilePlan { rel: file, status: FileStatus::Deleted, has_base: true });
                         }
                     } else {
@@ -220,7 +235,7 @@ impl SvnRepo {
         }
         plans.sort_by(|a, b| a.rel.cmp(&b.rel));
         plans.dedup_by(|a, b| a.rel == b.rel);
-        Ok(plans)
+        plans
     }
 
     /// Everything one changed file contributes to a snapshot: summary entry
@@ -255,14 +270,7 @@ impl SvnRepo {
             None
         };
         let new_bytes_raw = if over_cap { None } else { std::fs::read(&abs).ok() };
-        // svn:eol-style=native keeps the repository form LF while the working
-        // copy holds platform EOLs — mirror git's autocrlf handling with a
-        // per-file heuristic (BASE pure LF + working CRLF → normalize).
-        let normalize = base_is_lf_working_is_crlf(old_bytes.as_deref(), new_bytes_raw.as_deref());
-        let new_bytes = match new_bytes_raw {
-            Some(b) if normalize => Some(crate::vcs::strip_cr(b)),
-            other => other,
-        };
+        let (old_bytes, new_bytes) = normalize_eol(old_bytes, new_bytes_raw);
 
         let binary = old_bytes.as_deref().map(crate::git::diff::looks_binary).unwrap_or(false)
             || if over_cap {
@@ -471,11 +479,10 @@ fn run_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, VcsError> {
         ));
         missing_svn_error()
     })?;
-    let output = std::process::Command::new(bin)
-        .arg("--non-interactive")
-        .args(args)
-        .current_dir(root)
-        .output();
+    let mut command = std::process::Command::new(bin);
+    command.arg("--non-interactive").args(args).current_dir(root);
+    hide_console_window(&mut command);
+    let output = command.output();
     match output {
         Ok(out) if out.status.success() => {
             log_svn(&format!(
@@ -503,6 +510,16 @@ fn run_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, VcsError> {
     }
 }
 
+#[cfg(windows)]
+fn hide_console_window(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_console_window(_command: &mut std::process::Command) {}
+
 fn run_text(root: &Path, args: &[&str]) -> Result<String, VcsError> {
     let bytes = run_bytes(root, args)?;
     String::from_utf8(bytes)
@@ -514,11 +531,7 @@ fn run_text(root: &Path, args: &[&str]) -> Result<String, VcsError> {
 /// leading-dash filename can't be read as a flag; a path containing `@` gets
 /// a trailing `@` so svn doesn't read it as `path@PEGREV`.
 pub(crate) fn cat_base(root: &Path, rel: &str) -> Result<Vec<u8>, VcsError> {
-    let mut target = root.join(rel).display().to_string();
-    if target.contains('@') {
-        target.push('@');
-    }
-    run_bytes(root, &["cat", "-r", "BASE", "--", &target])
+    status::base_bytes(root, rel)
 }
 
 // --- svn info (cached; invalidates when wc.db moves) ---
@@ -561,6 +574,7 @@ fn url_tail(url: &str) -> String {
 // XML parsing (quick-xml; schemas verified against svn 1.14)
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SvnStatusEntry {
     pub path: String,
     pub item: String,
@@ -580,7 +594,7 @@ pub(crate) fn parse_status_xml(xml: &str) -> Vec<SvnStatusEntry> {
                     "entry" => {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == "path" {
-                                path = Some(attr.value.clone().into_owned());
+                                path = Some(forward_slashes(&attr.value));
                             }
                         }
                     }
@@ -608,6 +622,14 @@ pub(crate) fn parse_status_xml(xml: &str) -> Vec<SvnStatusEntry> {
     out
 }
 
+fn forward_slashes(svn_path: &str) -> String {
+    if cfg!(windows) {
+        svn_path.replace('\\', "/")
+    } else {
+        svn_path.to_string()
+    }
+}
+
 /// The URL of the first `<entry>` — for the WC root run, that's the WC's URL.
 fn parse_info_url(xml: &str) -> Option<SvnInfo> {
     parse_info(xml).0.map(|url| SvnInfo { url })
@@ -632,7 +654,7 @@ fn parse_info(xml: &str) -> (Option<String>, HashMap<String, String>) {
                         let mut kind = String::new();
                         for attr in e.attributes().flatten() {
                             match attr.key.as_ref() {
-                                "path" => path = attr.value.clone().into_owned(),
+                                "path" => path = forward_slashes(&attr.value),
                                 "kind" => kind = attr.value.clone().into_owned(),
                                 _ => {}
                             }
@@ -753,15 +775,25 @@ pub(crate) fn line_stats_of(old: Option<&str>, new: Option<&str>) -> (usize, usi
     }
 }
 
-/// The svn:eol-style normalization trigger: BASE is pure LF, the working copy
-/// carries CRLF. Binary sides (containing NUL) never match.
-pub(crate) fn base_is_lf_working_is_crlf(old: Option<&[u8]>, new: Option<&[u8]>) -> bool {
+/// The svn:eol-style normalization trigger: the working copy carries CRLF and
+/// BASE is either pure LF (the repository form, as `svn cat` prints it on
+/// Unix) or CRLF (`svn cat` translates `native` to CRLF on Windows). Binary
+/// sides (containing NUL) never match.
+pub(crate) fn normalizes_eol(old: Option<&[u8]>, new: Option<&[u8]>) -> bool {
+    let has_crlf = |b: &[u8]| b.windows(2).any(|w| w == b"\r\n");
     match (old, new) {
         (Some(o), Some(n)) if !o.is_empty() && !n.is_empty() => {
-            !o.contains(&0) && !o.contains(&b'\r') && n.windows(2).any(|w| w == b"\r\n")
+            !o.contains(&0) && has_crlf(n) && (!o.contains(&b'\r') || has_crlf(o))
         }
         _ => false,
     }
+}
+
+pub(crate) fn normalize_eol(old: Option<Vec<u8>>, new: Option<Vec<u8>>) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+    if !normalizes_eol(old.as_deref(), new.as_deref()) {
+        return (old, new);
+    }
+    (old.map(crate::vcs::strip_cr), new.map(crate::vcs::strip_cr))
 }
 
 /// Binary sniff of just the first 8000 bytes (git's heuristic window) — used
@@ -855,6 +887,15 @@ mod tests {
         assert_eq!(entries.len(), 8);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_status_and_info_paths_use_forward_slashes() {
+        let status = r#"<status><target path="."><entry path="game\res\a.xml"><wc-status item="modified"></wc-status></entry></target></status>"#;
+        assert_eq!(parse_status_xml(status)[0].path, "game/res/a.xml");
+        let info = r#"<info><entry kind="file" path="game\res\a.xml" revision="1"></entry></info>"#;
+        assert!(parse_info(info).1.contains_key("game/res/a.xml"));
+    }
+
     const INFO_XML: &str = r#"<info>
 <entry kind="dir" path="." revision="0">
 <url>file:///tmp/re%20po/trunk</url>
@@ -901,11 +942,19 @@ mod tests {
     }
 
     #[test]
-    fn crlf_heuristic_requires_pure_lf_base_and_crlf_working() {
-        assert!(base_is_lf_working_is_crlf(Some(b"a\nb\n".as_slice()), Some(b"a\r\nb\r\n".as_slice())));
-        assert!(!base_is_lf_working_is_crlf(Some(b"a\r\n".as_slice()), Some(b"a\r\n".as_slice())));
-        assert!(!base_is_lf_working_is_crlf(Some(b"a\n".as_slice()), Some(b"b\n".as_slice())));
-        assert!(!base_is_lf_working_is_crlf(None, Some(b"a\r\n".as_slice())));
+    fn crlf_heuristic_requires_crlf_working_and_lf_or_crlf_base() {
+        assert!(normalizes_eol(Some(b"a\nb\n".as_slice()), Some(b"a\r\nb\r\n".as_slice())));
+        assert!(normalizes_eol(Some(b"a\r\n".as_slice()), Some(b"a\r\n".as_slice())));
+        assert!(!normalizes_eol(Some(b"a\rb".as_slice()), Some(b"a\r\n".as_slice())));
+        assert!(!normalizes_eol(Some(b"a\n".as_slice()), Some(b"b\n".as_slice())));
+        assert!(!normalizes_eol(None, Some(b"a\r\n".as_slice())));
+    }
+
+    #[test]
+    fn windows_native_eol_base_is_normalized_on_both_sides() {
+        let (old, new) = normalize_eol(Some(b"a\r\nb\r\n".to_vec()), Some(b"a\r\nB\r\n".to_vec()));
+        assert_eq!(old.as_deref(), Some(b"a\nb\n".as_slice()));
+        assert_eq!(new.as_deref(), Some(b"a\nB\n".as_slice()));
     }
 
     #[test]
@@ -972,7 +1021,7 @@ mod tests {
             .output()
             .expect("svnadmin create");
         assert!(out.status.success(), "svnadmin create failed");
-        let repo_url = format!("file://{}", std::fs::canonicalize(&repo).unwrap().display());
+        let repo_url = file_url(&repo);
         let wc = dir.path().join("wc");
         let out = std::process::Command::new("svn")
             .args(["checkout", "-q", &repo_url])
@@ -981,6 +1030,16 @@ mod tests {
             .expect("svn checkout");
         assert!(out.status.success(), "svn checkout: {}", String::from_utf8_lossy(&out.stderr));
         Some((dir, SvnRepo::new(wc)))
+    }
+
+    #[cfg(windows)]
+    fn file_url(path: &Path) -> String {
+        format!("file:///{}", path.display().to_string().replace('\\', "/"))
+    }
+
+    #[cfg(not(windows))]
+    fn file_url(path: &Path) -> String {
+        format!("file://{}", std::fs::canonicalize(path).unwrap().display())
     }
 
     fn write(wc: &Path, rel: &str, content: &[u8]) {
@@ -1150,6 +1209,81 @@ mod tests {
             .expect("unversioned dir contents must be walked");
         assert_eq!(deep.status, FileStatus::Added);
         assert_eq!(full.files["unversioned_dir/nested/deep.txt"].new_content.as_deref(), Some("deep\n"));
+    }
+
+    #[test]
+    fn single_file_fetch_resolves_nested_modified_and_unversioned_files() {
+        let Some((dir, repo)) = scratch_wc() else { return };
+        let wc = dir.path().join("wc");
+        write(&wc, "src/deep/a.txt", b"one\n");
+        svn(&wc, &["add", "-q", "src"]);
+        svn(&wc, &["ci", "-q", "-m", "init"]);
+        write(&wc, "src/deep/a.txt", b"one\ntwo\n");
+        write(&wc, "loose/nested/b.txt", b"loose\n");
+
+        let modified = repo.get_file_diff(&target(&wc), "src/deep/a.txt").unwrap();
+        assert_eq!(modified.old_content.as_deref(), Some("one\n"));
+        assert_eq!(modified.new_content.as_deref(), Some("one\ntwo\n"));
+        let unversioned = repo.get_file_diff(&target(&wc), "loose/nested/b.txt").unwrap();
+        assert_eq!(unversioned.new_content.as_deref(), Some("loose\n"));
+        assert!(repo.get_file_diff(&target(&wc), "src/untouched.txt").is_err());
+    }
+
+    fn changed_paths(repo: &SvnRepo, wc: &Path) -> Vec<(String, FileStatus)> {
+        let full = repo.compute_diff_full(&target(wc)).unwrap();
+        full.summary.files.iter().map(|f| (f.path.clone(), f.status)).collect()
+    }
+
+    #[test]
+    fn watched_changes_refresh_through_targeted_status_until_wc_db_moves() {
+        let Some((dir, repo)) = scratch_wc() else { return };
+        let wc = dir.path().join("wc");
+        write(&wc, "keep.txt", b"committed\n");
+        svn(&wc, &["add", "-q", "keep.txt"]);
+        svn(&wc, &["ci", "-q", "-m", "init"]);
+        status::watch_started(&wc);
+
+        assert!(changed_paths(&repo, &wc).is_empty());
+        assert_eq!(status::full_runs(&wc), 1);
+
+        write(&wc, "keep.txt", b"changed\n");
+        write(&wc, "fresh/nested/new.txt", b"new\n");
+        status::record_changes(&wc, ["keep.txt".to_string(), "fresh/nested/new.txt".to_string()], false);
+        assert_eq!(
+            changed_paths(&repo, &wc),
+            vec![("fresh/nested/new.txt".to_string(), FileStatus::Added), ("keep.txt".to_string(), FileStatus::Modified)],
+        );
+
+        write(&wc, "keep.txt", b"committed\n");
+        std::fs::remove_dir_all(wc.join("fresh")).unwrap();
+        status::record_changes(&wc, ["keep.txt".to_string(), "fresh".to_string()], false);
+        assert!(changed_paths(&repo, &wc).is_empty());
+        assert_eq!(status::full_runs(&wc), 1, "watched edits never re-run the whole-copy status");
+
+        write(&wc, "added.txt", b"a\n");
+        svn(&wc, &["add", "-q", "added.txt"]);
+        assert_eq!(changed_paths(&repo, &wc), vec![("added.txt".to_string(), FileStatus::Added)]);
+        assert_eq!(status::full_runs(&wc), 2, "an svn operation moves wc.db and forces a full status");
+        status::watch_stopped(&wc);
+    }
+
+    #[test]
+    fn slow_copies_open_on_the_last_known_list_and_verify_in_the_background() {
+        let Some((dir, repo)) = scratch_wc() else { return };
+        let wc = dir.path().join("wc");
+        status::seed_slow_baseline(&wc, Vec::new());
+        status::watch_started(&wc);
+        write(&wc, "late.txt", b"late\n");
+
+        assert!(changed_paths(&repo, &wc).is_empty(), "the last known list is served without waiting");
+        let deadline = Instant::now() + std::time::Duration::from_secs(20);
+        while !status::is_verified_and_tracked(&wc) {
+            assert!(Instant::now() < deadline, "background verification never finished");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(changed_paths(&repo, &wc), vec![("late.txt".to_string(), FileStatus::Added)]);
+        assert_eq!(status::full_runs(&wc), 1);
+        status::watch_stopped(&wc);
     }
 
     #[test]

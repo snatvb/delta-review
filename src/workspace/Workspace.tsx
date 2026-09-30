@@ -143,6 +143,8 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // paths and surface a Refresh button. Applying it is always explicit. (#12)
   const pendingRef = useRef<{ session: ReviewSession; paths: string[] | null } | null>(null);
   const [pendingRefresh, setPendingRefresh] = useState(false);
+  const fsRefreshInFlight = useRef(false);
+  const fsQueued = useRef<{ paths: Set<string>; gitMeta: boolean } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   // Tags the newest refresh cycle (force/apply/background re-diff). The spinner
   // now spans the WHOLE pipeline — the re-diff IPC plus the pane's per-file
@@ -297,7 +299,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // displayed diff. If the result differs from what's on screen (structure via
   // the signature, or a changed file we're showing, or a base/HEAD move), stash
   // it and flip on the Refresh button. Genuine no-ops are ignored. (#12)
-  async function onFsChanged(paths: string[], gitMeta: boolean) {
+  async function refreshFromFs(paths: string[], gitMeta: boolean) {
     const cur = reviewRef.current;
     if (!cur || getChangeDetection() === "off") {
       return;
@@ -330,6 +332,23 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       setError(String(e));
     }
     endRefresh(seq);
+  }
+
+  async function onFsChanged(paths: string[], gitMeta: boolean) {
+    const queued = fsQueued.current ?? { paths: new Set<string>(), gitMeta: false };
+    paths.forEach((p) => queued.paths.add(p));
+    queued.gitMeta = queued.gitMeta || gitMeta;
+    fsQueued.current = queued;
+    if (fsRefreshInFlight.current) {
+      return;
+    }
+    fsRefreshInFlight.current = true;
+    while (fsQueued.current) {
+      const next = fsQueued.current;
+      fsQueued.current = null;
+      await refreshFromFs([...next.paths], next.gitMeta);
+    }
+    fsRefreshInFlight.current = false;
   }
 
   // Apply the stashed change: swap in the re-diffed session and reload the

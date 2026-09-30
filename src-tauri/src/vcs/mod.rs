@@ -67,7 +67,7 @@ fn marker_exists(root: &Path, kind: VcsKind) -> bool {
 /// applied later must take effect on the next open, and the walk is only a
 /// handful of stat()s anyway (the same cost class as git's own discover).
 fn detect_markers(start: &Path) -> Option<(VcsKind, PathBuf)> {
-    let mut dir = std::fs::canonicalize(start).ok()?;
+    let mut dir = dunce::canonicalize(start).ok()?;
     loop {
         if dir.join(".git").exists() {
             return Some((VcsKind::Git, dir));
@@ -347,7 +347,7 @@ impl Repo {
     }
 
     /// The shared extraction tail: CRLF decision is backend-specific
-    /// (git: `core.autocrlf`; svn: BASE pure-LF vs working CRLF), the rest —
+    /// (git: `core.autocrlf`; svn: `svn::normalizes_eol`), the rest —
     /// binary flagging, content drop, lossy UTF-8 — is common.
     pub(crate) fn file_diff_from_sides(
         &self,
@@ -355,16 +355,10 @@ impl Repo {
         old_bytes: Option<Vec<u8>>,
         new_bytes_raw: Option<Vec<u8>>,
     ) -> FileDiff {
-        let normalize = match self {
-            Repo::Git(repo) => git::diff::normalizes_crlf(repo),
-            Repo::Svn(_) => svn::base_is_lf_working_is_crlf(
-                old_bytes.as_deref(),
-                new_bytes_raw.as_deref(),
-            ),
-        };
-        let new_bytes = match new_bytes_raw {
-            Some(b) if normalize => Some(strip_cr(b)),
-            other => other,
+        let (old_bytes, new_bytes) = match self {
+            Repo::Git(repo) if git::diff::normalizes_crlf(repo) => (old_bytes, new_bytes_raw.map(strip_cr)),
+            Repo::Git(_) => (old_bytes, new_bytes_raw),
+            Repo::Svn(_) => svn::normalize_eol(old_bytes, new_bytes_raw),
         };
         file_diff_from_bytes(header, old_bytes, new_bytes)
     }
@@ -545,7 +539,7 @@ mod tests {
         touch_svn(dir.path());
         let (kind, root) = detect_markers(dir.path()).unwrap();
         assert_eq!(kind, VcsKind::Git);
-        assert_eq!(root, std::fs::canonicalize(dir.path()).unwrap());
+        assert_eq!(root, dunce::canonicalize(dir.path()).unwrap());
     }
 
     #[test]
@@ -566,7 +560,7 @@ mod tests {
         touch_svn(&inner);
         let (kind, root) = detect_markers(&inner).unwrap();
         assert_eq!(kind, VcsKind::Svn, "the nearest marker must win over the outer .git");
-        assert_eq!(root, std::fs::canonicalize(&inner).unwrap());
+        assert_eq!(root, dunce::canonicalize(&inner).unwrap());
 
         // And a plain subdir of the git repo (no own markers) still resolves
         // to the outer git root.
@@ -574,7 +568,7 @@ mod tests {
         touch(&sub, "mod.rs");
         let (kind, root) = detect_markers(&sub).unwrap();
         assert_eq!(kind, VcsKind::Git);
-        assert_eq!(root, std::fs::canonicalize(outer.path()).unwrap());
+        assert_eq!(root, dunce::canonicalize(outer.path()).unwrap());
     }
 
     #[test]
@@ -585,7 +579,7 @@ mod tests {
         touch(&sub, "a.txt");
         let (kind, root) = detect_markers(&sub).unwrap();
         assert_eq!(kind, VcsKind::Svn);
-        assert_eq!(root, std::fs::canonicalize(dir.path()).unwrap());
+        assert_eq!(root, dunce::canonicalize(dir.path()).unwrap());
     }
 
     #[test]
@@ -599,7 +593,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         touch(dir.path(), ".git/HEAD");
         touch_svn(dir.path());
-        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
 
         // Forcing SVN on a git-svn dir: .svn exists → honored.
         OVERRIDES.write().unwrap().insert(root.clone(), VcsKind::Svn);
@@ -608,7 +602,7 @@ mod tests {
         // Forcing SVN where there is no .svn: ignored, detected kind stands.
         let git_only = tempfile::TempDir::new().unwrap();
         touch(git_only.path(), ".git/HEAD");
-        let git_root = std::fs::canonicalize(git_only.path()).unwrap();
+        let git_root = dunce::canonicalize(git_only.path()).unwrap();
         OVERRIDES.write().unwrap().insert(git_root.clone(), VcsKind::Svn);
         assert_eq!(apply_override(&git_root, VcsKind::Git), VcsKind::Git);
 

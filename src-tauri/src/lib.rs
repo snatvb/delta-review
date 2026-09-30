@@ -144,6 +144,11 @@ pub fn run() {
             // from the UI); the CLI gate only asks "is this a repo at all", so
             // it runs correctly without them — only the app process opens
             // reviews and needs the override table loaded.
+            if let Ok(dir) = app.path().app_data_dir() {
+                crate::vcs::svn::status::set_persist_dir(dir.join("svn-status"));
+            }
+            let handle = app.handle().clone();
+            crate::vcs::svn::status::on_verified_change(move |root| crate::watch::notify_repo_changed(&handle, root));
             if let Ok(reg) = crate::commands::registry_of(app.handle()) {
                 let _ = crate::commands::sync_vcs_overrides(&reg);
             }

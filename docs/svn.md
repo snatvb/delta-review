@@ -75,6 +75,31 @@ data dir (bounded at 2 MB):
 If the "not found" error appears while `svn` works in your terminal, that log
 records the exact `PATH` and locations the app searched.
 
+## Status refresh
+
+A whole-copy `svn status` walks every versioned file and can take seconds on
+a large checkout, so Delta avoids repeating it (`src-tauri/src/vcs/svn/status.rs`):
+
+- **Watched edits are targeted.** While a review window watches the copy,
+  every changed path (and its parent directories, so a new unversioned
+  folder is noticed) is queued; the next refresh runs
+  `svn status --depth empty` on just those paths and merges the answer into
+  the last full result. `svn:ignore` matches come back as ignored and drop
+  out, so build output and logs cost one tiny status call and never offer
+  Refresh.
+- **A full status runs** when `.svn/wc.db` moves (update, commit, revert,
+  add), when the watcher stopped, overflowed or queued more than 2000 paths,
+  or when a targeted call fails.
+- **Slow copies open instantly.** The last full result is saved per copy in
+  `svn-status/` in the app data dir. When that copy's full status took over
+  1.5 s, a review opens on the saved list and verifies it with a full status
+  in the background; a different result offers Refresh like any other
+  change.
+- **BASE reads are cached** until `.svn/wc.db` moves, so a refresh doesn't
+  re-run `svn cat` for every changed file.
+- Deleted-directory expansion queries `svn info --depth infinity` only for
+  the deleted paths, not the whole copy.
+
 ## Known v1 limitations
 
 - **Replaced files review as added.** After `svn rm` + `svn add` of the same

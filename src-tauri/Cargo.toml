@@ -43,6 +43,7 @@ tauri-plugin-aptabase = "1.0.0"
 # Resolves the platform app-data base dir for the one-shot legacy-data
 # migration in `migrate` (runs before the Tauri builder in lib.rs::run()).
 dirs = "6"
+dunce = "1"
 # tauri-plugin-aptabase 1.0.0 starts its flush loop with `tokio::spawn` in its
 # Tauri setup hook, which needs an ambient Tokio runtime that lib.rs::run() enters
 # (release builds only, matching the plugin's own gate).
