@@ -179,7 +179,9 @@ mkdir -p "$staging"
 updater_cfg='{}'
 key_path="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.tauri/delta-review-updater.key}"
 if [ -f "$key_path" ]; then
-  export TAURI_SIGNING_PRIVATE_KEY_PATH="$key_path"
+  # Export the key CONTENT only: the bundler's createUpdaterArtifacts path reads
+  # TAURI_SIGNING_PRIVATE_KEY, and `tauri signer sign` rejects having both the
+  # content and the _PATH variant set at once.
   export TAURI_SIGNING_PRIVATE_KEY="$(cat "$key_path")"
   export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
   updater_cfg='{"bundle":{"createUpdaterArtifacts":true}}'
