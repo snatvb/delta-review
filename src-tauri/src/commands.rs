@@ -40,6 +40,8 @@ pub fn updater_try_acquire(gate: tauri::State<'_, UpdaterGate>) -> bool {
 /// what the frontend cannot see (the debug/release flag and process env); the
 /// user's Settings toggle is a separate, frontend-only check. Debug builds have
 /// no analytics plugin registered, so this is always false there.
+/// SLEEPING TELEMETRY: dormant in this fork — nothing calls this at runtime
+/// while TELEMETRY_DORMANT is set in src/analytics.ts. Kept for revival.
 #[tauri::command]
 pub fn telemetry_allowed() -> bool {
     if cfg!(debug_assertions) {

@@ -42,14 +42,15 @@ pub fn run() {
     #[cfg(not(debug_assertions))]
     migrate::migrate_legacy_data_dir();
 
-    // Single-instance and the non-repo CLI guard now live in the `delta-review` shim
-    // (`cli`/`ipc`): a CLI invocation forwards over the socket or `open -b`s the
-    // bundle, which Launch Services single-instances. The app is only entered via
-    // LS/dock/dev, so the old in-process TTY guard is gone.
+    // Single-instance and the non-repo CLI guard now live in the `dr` shim
+    // (`cli`/`ipc`): a CLI invocation forwards over the socket, cold-launches
+    // via `open -b` (macOS) or a detached self-exec (Linux), which Launch
+    // Services / the socket rendezvous single-instance. The app is only entered
+    // via LS/dock/dev, so the old in-process TTY guard is gone.
 
-    // The Aptabase plugin (release builds only) starts its flush loop with
-    // `tokio::spawn` inside its Tauri setup hook, which requires an ambient Tokio
-    // runtime — Tauri does NOT enter one around plugin setup, so without this the
+    // The Aptabase plugin (release builds only — currently dormant, see the
+    // SLEEPING TELEMETRY note below) starts its flush loop with `tokio::spawn`
+    // inside its Tauri setup hook, which requires an ambient Tokio runtime — Tauri does NOT enter one around plugin setup, so without this the
     // release app panics on launch ("there is no reactor running, must be called
     // from the context of a Tokio 1.x runtime"; tauri#10289). Enter a runtime for
     // the whole app lifetime; `_tokio_guard` (declared last) drops before
@@ -63,12 +64,20 @@ pub fn run() {
     #[cfg_attr(debug_assertions, allow(unused_mut))]
     let mut builder = tauri::Builder::default();
 
-    // Anonymous usage analytics — release builds only, and only when a key was
-    // compiled in (see scripts/build-release-dmg.sh). option_env! bakes the key at
-    // compile time; a debug build strips this block entirely, so `tauri dev`,
-    // `dev:app`, and tests never register the plugin or emit anything.
+    // SLEEPING TELEMETRY (dormant) — this fork disabled upstream's Aptabase
+    // analytics entirely: nothing is collected or sent, and the Settings
+    // toggle is removed. The wiring is kept so it can be revived later against
+    // an endpoint we own. The plugin registers only when the fork-owned
+    // DELTA_REVIEW_TELEMETRY_KEY is baked in at build time (upstream's
+    // APTABASE_KEY env var is no longer read anywhere, so the original
+    // author's key pathway is gone). Even with a key present, the frontend
+    // gate (TELEMETRY_DORMANT in src/analytics.ts) keeps every event off
+    // until it is flipped — see the revival checklist there.
+    // option_env! bakes the key at compile time; a debug build strips this
+    // block entirely, so `tauri dev`, `dev:app`, and tests never register the
+    // plugin or emit anything.
     #[cfg(not(debug_assertions))]
-    if let Some(key) = option_env!("APTABASE_KEY") {
+    if let Some(key) = option_env!("DELTA_REVIEW_TELEMETRY_KEY") {
         builder = builder.plugin(tauri_plugin_aptabase::Builder::new(key).build());
     }
 

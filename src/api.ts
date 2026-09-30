@@ -104,6 +104,7 @@ export const api = {
   acquireUpdaterGate: (): Promise<boolean> => invokeImpl("updater_try_acquire"),
   // True unless telemetry is disabled by build/env (debug build, DO_NOT_TRACK,
   // or DELTA_TELEMETRY=0). The user's Settings toggle is checked separately in
-  // src/analytics.ts. (#analytics)
+  // src/analytics.ts. SLEEPING TELEMETRY: dormant in this fork — unused at
+  // runtime while TELEMETRY_DORMANT is set there; kept for revival. (#analytics)
   telemetryAllowed: (): Promise<boolean> => invokeImpl("telemetry_allowed"),
 };

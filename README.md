@@ -59,27 +59,25 @@ Make this configurable.
 
 ## 🚀 Installation
 
-On macOS (Apple Silicon):
+Grab the latest artifact from the [releases](https://github.com/snatvb/delta-review/releases) page — that's the only channel:
 
-```sh
-brew install --cask darioielardi/tap/delta
-```
-
-Or grab the latest `.dmg` from the [releases](https://github.com/darioielardi/delta/releases) page. macOS, Apple Silicon (arm64) only.
+- **macOS** (Apple Silicon): the `.dmg`. Builds are unsigned — right-click the app and choose *Open* the first time.
+- **Windows** x64: the `-setup.exe` installer or the `.msi`.
+- **Linux** x86_64: the `.deb`, or `chmod +x` the `.AppImage` and run it.
 
 ## 💻 Open from your terminal
 
-Install the `delta` CLI with the one-click **Install CLI** button. Then run it from any repo or worktree —
+Install the `dr` CLI with the one-click **Install CLI** button. Then run it from any repo or worktree —
 ideal for reviewing an agent's work the moment it finishes:
 
 ```bash
-delta                    # review the current repo — all changes
-delta --uncommitted      # only staged + unstaged changes
-delta --last-commit      # just the most recent commit
-delta --branch           # current branch vs. its base
+dr                    # review the current repo — all changes
+dr --uncommitted      # only staged + unstaged changes
+dr --last-commit      # just the most recent commit
+dr --branch           # current branch vs. its base
 ```
 
-A path can follow any of these, e.g. `delta --branch ../other-checkout`.
+A path can follow any of these, e.g. `dr --branch ../other-checkout`.
 
 ## 🛠️ Development
 
@@ -98,20 +96,17 @@ work. (`pnpm tauri dev` works too, but shares the release's identity.)
 Architecture and conventions live in [CLAUDE.md](CLAUDE.md). PRs welcome — keep
 changes scoped and the tests green.
 
-## Privacy
-
-Delta collects **anonymous** usage statistics (which features are used, app
-version, OS) to guide development — via [Aptabase](https://aptabase.com), which
-stores no personal data, cookies, or device identifiers. It **never** sends your
-code, file names, repository names, branch names, or comment text.
-
-Turn it off in **Settings → Usage analytics**, or set `DELTA_TELEMETRY=0` (or the
-standard `DO_NOT_TRACK=1`) in the environment.
-
 ## Built with
 
 [Tauri 2](https://tauri.app) · [React 19](https://react.dev) · [Vite](https://vite.dev) · [Tailwind v4](https://tailwindcss.com) · [@git-diff-view](https://github.com/MrWangJustToDo/git-diff-view)
 
+## Acknowledgements
+
+**delta-review** is a fork of [Delta](https://github.com/darioielardi/delta),
+created by [Dario Ielardi](https://github.com/darioielardi) — the original app,
+its design, and the overwhelming majority of the code are his. Fork maintainer:
+Andrei Avsenin. This fork collects no usage data.
+
 ## License
 
-[MIT](LICENSE) © Dario Ielardi
+[MIT](LICENSE) © 2026 Dario Ielardi & Andrei Avsenin

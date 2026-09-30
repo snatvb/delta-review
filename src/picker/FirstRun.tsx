@@ -38,7 +38,7 @@ export function FirstRun({ onOpenRepo }: { onOpenRepo: () => void }) {
   );
 }
 
-// Explains the payoff of installing the CLI — run `delta` from any worktree/branch
+// Explains the payoff of installing the CLI — run `dr` from any worktree/branch
 // to review an agent's work without coming back here — and carries the install
 // action through its outcomes. Shares state with the header pill via useCliInstall.
 function CliPromo() {
@@ -54,7 +54,7 @@ function CliPromo() {
         <span className="text-[13px] font-medium leading-tight text-foreground">Launch from your terminal</span>
         <span className="text-[12px] leading-snug text-muted-foreground">
           {phase === "installed" ? "Just run" : "Install the CLI, then just run"}{" "}
-          <code className="rounded bg-foreground/[0.06] px-1 py-0.5 font-mono text-[11px] text-foreground/80">delta</code>{" "}
+          <code className="rounded bg-foreground/[0.06] px-1 py-0.5 font-mono text-[11px] text-foreground/80">dr</code>{" "}
           in any worktree or branch to review your agent’s work.
         </span>
       </div>

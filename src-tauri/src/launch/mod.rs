@@ -12,14 +12,16 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 /// moved to another branch since the window opened.
 const REOPEN_EVENT: &str = "review:reopen";
 
-/// CLI shim name. The debug build installs as `delta-review-dev` so it never clobbers
-/// the installed release's `delta-review`; the two coexist on PATH and never hijack
-/// each other. Must differ from `mainBinaryName` in tauri.conf.json — the shim is a
-/// symlink and Linux resolves /proc/self/exe, so equal names break CLI routing there.
+/// CLI shim name — short for delta-review. The debug build installs as `dr-dev`
+/// so it never clobbers the installed release's `dr`; the two coexist on PATH
+/// and never hijack each other. Must differ from `mainBinaryName` in
+/// tauri.conf.json — the shim is a symlink and Linux resolves /proc/self/exe,
+/// so equal names break CLI routing there. (`delta-review`/`delta-review-dev`
+/// are the pre-rename legacy names, cleaned up by `remove_legacy_shims`.)
 #[cfg(debug_assertions)]
-pub const CLI_NAME: &str = "delta-review-dev";
+pub const CLI_NAME: &str = "dr-dev";
 #[cfg(not(debug_assertions))]
-pub const CLI_NAME: &str = "delta-review";
+pub const CLI_NAME: &str = "dr";
 
 /// Window title — suffixed in dev builds so the debug app is visually distinct from
 /// the installed release in the title bar and window switcher.
@@ -371,6 +373,37 @@ fn link_into(dir: &Path, exe: &Path) -> Result<InstallOutcome, String> {
     }
 }
 
+/// Pre-rename shim names. A fresh install removes them when they point at this
+/// exe, so the old long-form command doesn't linger next to `dr` as a second,
+/// surprising entry point.
+const LEGACY_SHIMS: [&str; 2] = ["delta-review", "delta-review-dev"];
+
+/// Best-effort removal of legacy `delta-review` shim symlinks that resolve to
+/// this binary, in the dirs an install (or a manual `ln -s`) would have used.
+/// Only provably-ours links are touched; anything else stays.
+fn remove_legacy_shims(exe: &Path, extra_dir: Option<&Path>) {
+    let Some(real) = std::fs::canonicalize(exe).ok() else { return };
+    let mut dirs = preferred_bin_dirs();
+    if let Some(home) = std::env::var("HOME").ok() {
+        dirs.push(PathBuf::from(home).join(".local/bin"));
+    }
+    if let Some(d) = extra_dir {
+        dirs.push(d.to_path_buf());
+    }
+    for dir in dirs {
+        for legacy in LEGACY_SHIMS {
+            let link = dir.join(legacy);
+            let is_our_symlink = fs::symlink_metadata(&link)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+                && fs::canonicalize(&link).map(|p| p == real).unwrap_or(false);
+            if is_our_symlink {
+                let _ = fs::remove_file(&link);
+            }
+        }
+    }
+}
+
 /// Dirs conventionally on a terminal's PATH that a GUI-launched macOS app's own
 /// PATH usually omits (launchd hands a minimal PATH). Linking here lets `delta`
 /// resolve in already-open and new terminals without touching any shell config.
@@ -388,7 +421,9 @@ pub fn install_cli() -> Result<InstallOutcome, String> {
     let mut candidates = preferred_bin_dirs();
     candidates.extend(path_dirs.iter().cloned());
     if let Some(dir) = choose_install_dir(&candidates, dir_is_writable) {
-        return link_into(&dir, &exe);
+        let out = link_into(&dir, &exe)?;
+        remove_legacy_shims(&exe, Some(&dir));
+        return Ok(out);
     }
 
     // 2) Fall back to ~/.local/bin (create it). If it isn't already on PATH, wire it
@@ -398,6 +433,7 @@ pub fn install_cli() -> Result<InstallOutcome, String> {
         let local_bin = home.join(".local/bin");
         if fs::create_dir_all(&local_bin).is_ok() && dir_is_writable(&local_bin) {
             link_into(&local_bin, &exe)?; // the symlink itself succeeded
+            remove_legacy_shims(&exe, Some(&local_bin));
             let path = local_bin.join(CLI_NAME).display().to_string();
             if path_dirs.iter().any(|d| d == &local_bin) {
                 return Ok(InstallOutcome::Linked { path });

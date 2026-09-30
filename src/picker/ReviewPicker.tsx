@@ -207,7 +207,7 @@ export function ReviewPicker({ current, onOpenReview, onOpenWorktree, onAddRepo,
         ) : rows.length === 0 ? (
           <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
             {noRepos ? (
-              <>No repos yet — add one above, or run <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">delta</code> in a repo.</>
+              <>No repos yet — add one above, or run <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">dr</code> in a repo.</>
             ) : (
               "No matches"
             )}

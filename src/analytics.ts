@@ -2,6 +2,23 @@ import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { api } from "./api";
 
+// ─── SLEEPING TELEMETRY (dormant) ────────────────────────────────────────────
+// This fork disabled upstream's Aptabase analytics: NOTHING is collected or
+// sent, and there is no Settings toggle or other user-facing surface. The whole
+// pipeline (event taxonomy, the gate below, the preference store, the Rust
+// plugin wiring in src-tauri) is intentionally kept in the tree so it can be
+// revived later against an endpoint WE own. Upstream's key pathway is gone for
+// good — the Rust side now only reads the fork-owned
+// DELTA_REVIEW_TELEMETRY_KEY env var at build time (never APTABASE_KEY).
+// To wake it up:
+//   1. flip TELEMETRY_DORMANT to false (below);
+//   2. build a release with DELTA_REVIEW_TELEMETRY_KEY set to an Aptabase app
+//      key you own (self-hosted works too: an "SH"-region key plus the host
+//      option in src-tauri/src/lib.rs);
+//   3. restore the Settings toggle (see git history of SettingsDialog.tsx).
+// Original design: docs/specs/2026-07-03-usage-analytics-design.md. (#analytics)
+export const TELEMETRY_DORMANT = true;
+
 // The fixed event taxonomy. Feature names + bucketed/numeric props only — never
 // content (no repo names, paths, branches, diff or comment text). (#analytics)
 export type EventName =
@@ -31,9 +48,10 @@ function isTauri(): boolean {
 let envAllowed = false;
 let inited = false;
 
-/** Resolve whether build+env permit telemetry. Idempotent; call once at startup. */
+/** Resolve whether build+env permit telemetry. Idempotent; call once at startup.
+ * No-op while telemetry is dormant (no point querying the backend). */
 export async function initAnalytics(): Promise<void> {
-  if (inited || !isTauri()) return;
+  if (TELEMETRY_DORMANT || inited || !isTauri()) return;
   inited = true;
   try {
     envAllowed = await api.telemetryAllowed();
@@ -100,7 +118,9 @@ export function useTelemetryPref(): [TelemetryPref, (p: TelemetryPref) => void] 
 
 // --- The one gate + the fire-and-forget tracker. ---
 export function shouldTrack(): boolean {
-  return isTauri() && envAllowed && pref !== "off";
+  // SLEEPING TELEMETRY: the dormant flag short-circuits everything — the other
+  // conditions (webview, build/env, user pref) are the revival-time checks.
+  return !TELEMETRY_DORMANT && isTauri() && envAllowed && pref !== "off";
 }
 
 export function track(event: EventName, props?: Props): void {

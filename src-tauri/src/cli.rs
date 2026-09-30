@@ -1,5 +1,5 @@
-//! The `delta-review` CLI shim: a no-Tauri client that forwards an open-target request
-//! to the running app (or cold-launches the bundle via Launch Services) and exits.
+//! The `dr` CLI shim: a no-Tauri client that forwards an open-target request
+//! to the running app (or cold-launches it) and exits.
 
 use std::ffi::OsStr;
 use std::io::{IsTerminal, Write};
@@ -11,15 +11,16 @@ use crate::git::model::DiffMode;
 use crate::ipc::{cli_socket_path, CliRequest, IDENTIFIER};
 use crate::launch::{launch_targets_non_repo, parse_launch};
 
-/// Installed shim names. The app's own bundled executable is `DeltaReview`
-/// (after `mainBinaryName`), so a shim invocation always differs from the real name.
-const SHIMS: [&str; 2] = ["delta-review", "delta-review-dev"];
+/// Installed shim names (`dr` since the rename; `dr-dev` for the isolated debug
+/// build). The app's own bundled executable is `DeltaReview` (after
+/// `mainBinaryName`), so a shim invocation always differs from the real name.
+const SHIMS: [&str; 2] = ["dr", "dr-dev"];
 
 const USAGE: &str = "\
-delta-review — review git diffs with structured comments for AI agents
+dr — review git diffs with structured comments for AI agents
 
 USAGE:
-    delta-review [PATH] [MODE]
+    dr [PATH] [MODE]
 
 ARGS:
     PATH    Repository or worktree to open (default: current directory)
@@ -70,7 +71,7 @@ pub fn precheck(args: &[String]) -> PreCheck {
 
 /// Pure dispatch rule: we are the CLI client iff invoked under one of our shim names
 /// AND we are not the app binary itself. "Not the app" holds when either the invoked
-/// name differs from the real binary (shim `delta-review` vs bundle `DeltaReview`),
+/// name differs from the real binary (shim `dr` vs bundle `DeltaReview`),
 /// or we were reached through the shim symlink (`via_symlink`).
 ///
 /// The `via_symlink` backstop is casing-independent: it fires even when the bundle
@@ -110,6 +111,8 @@ pub fn invoked_as_cli() -> bool {
 }
 
 /// Pure: the argv passed to `open` for a cold launch. `open -b <id> --args <repo> [flag]`.
+/// (macOS only — the Linux cold launch re-execs the binary instead.)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn open_args(identifier: &str, repo: &str, mode: Option<DiffMode>) -> Vec<String> {
     let mut v = vec!["-b".into(), identifier.into(), "--args".into(), repo.into()];
     if let Some(m) = mode {
@@ -123,19 +126,19 @@ pub fn cli_main() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     // Resolve help/version/unknown-flag before any repo or socket work, so
-    // `delta-review --help` prints usage instead of silently opening the cwd's review.
+    // `dr --help` prints usage instead of silently opening the cwd's review.
     match precheck(&args) {
         PreCheck::Help => {
             print!("{USAGE}");
             return 0;
         }
         PreCheck::Version => {
-            println!("delta-review {}", env!("DELTA_VERSION"));
+            println!("dr {}", env!("DELTA_VERSION"));
             return 0;
         }
         PreCheck::BadFlag(flag) => {
-            eprintln!("delta-review: unknown option '{flag}'");
-            eprintln!("Try 'delta-review --help' for usage.");
+            eprintln!("dr: unknown option '{flag}'");
+            eprintln!("Try 'dr --help' for usage.");
             return 2;
         }
         PreCheck::Proceed => {}
@@ -146,7 +149,7 @@ pub fn cli_main() -> i32 {
 
     // Reject a non-repo target from a terminal (mirrors the old in-app guard).
     if launch_targets_non_repo(&launch) && std::io::stderr().is_terminal() {
-        eprintln!("delta-review: not a git repository: {}", launch.repo_path.display());
+        eprintln!("dr: not a git repository: {}", launch.repo_path.display());
         return 1;
     }
 
@@ -154,7 +157,7 @@ pub fn cli_main() -> i32 {
     let home = match std::env::var_os("HOME") {
         Some(h) => PathBuf::from(h),
         None => {
-            eprintln!("delta-review: HOME is not set");
+            eprintln!("dr: HOME is not set");
             return 1;
         }
     };
@@ -171,25 +174,70 @@ pub fn cli_main() -> i32 {
                     0
                 }
                 Err(e) => {
-                    eprintln!("delta-review: {e}");
+                    eprintln!("dr: {e}");
                     1
                 }
             }
         }
-        // Not running (or stale socket): cold-launch the bundle via Launch Services.
-        Err(_) => {
-            let argv = open_args(IDENTIFIER, &repo, launch.mode);
-            match Command::new("open").args(&argv).status() {
-                Ok(s) if s.success() => 0,
-                Ok(s) => {
-                    eprintln!("delta-review: could not launch delta-review ({s})");
-                    1
-                }
-                Err(e) => {
-                    eprintln!("delta-review: could not launch delta-review: {e}");
-                    1
-                }
-            }
+        // Not running (or stale socket): cold-launch the app.
+        Err(_) => cold_launch(IDENTIFIER, &repo, launch.mode),
+    }
+}
+
+/// Cold launch — the app isn't running. Hand off and report an exit code; the
+/// CLI process never stays alive as the app. Windows never reaches here (this
+/// module is unix-only).
+///
+/// macOS: `open -b` gives the launch to Launch Services, which single-instances
+/// the bundle and hands the child a proper GUI launch context.
+#[cfg(target_os = "macos")]
+fn cold_launch(identifier: &str, repo: &str, mode: Option<DiffMode>) -> i32 {
+    let argv = open_args(identifier, repo, mode);
+    match Command::new("open").args(&argv).status() {
+        Ok(s) if s.success() => 0,
+        Ok(s) => {
+            eprintln!("dr: could not launch the app ({s})");
+            1
+        }
+        Err(e) => {
+            eprintln!("dr: could not launch the app: {e}");
+            1
+        }
+    }
+}
+
+/// Linux: there is no `open -b` — re-exec the app binary itself, detached (own
+/// process group, null stdio) so it survives the launching terminal closing.
+/// `$APPIMAGE` is preferred over `current_exe()` because /proc/self/exe points
+/// inside the transient AppImage mount, which goes away when this process
+/// exits. Warm/cold is still decided by the socket, so no extra
+/// single-instancing is needed beyond the usual race window.
+#[cfg(not(target_os = "macos"))]
+fn cold_launch(_identifier: &str, repo: &str, mode: Option<DiffMode>) -> i32 {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
+    let exe = std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok());
+    let Some(exe) = exe else {
+        eprintln!("dr: cannot locate the app binary");
+        return 1;
+    };
+    let mut cmd = Command::new(exe);
+    cmd.arg(repo)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0); // detach from the terminal's process group
+    if let Some(m) = mode {
+        cmd.arg(m.flag());
+    }
+    match cmd.spawn() {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("dr: could not launch the app: {e}");
+            1
         }
     }
 }
@@ -201,8 +249,8 @@ mod tests {
     #[test]
     fn cli_mode_when_invoked_through_a_shim() {
         // Distinct names (bundle `DeltaReview` via mainBinaryName) → the name rule alone fires.
-        assert!(is_cli_invocation(Some(OsStr::new("delta-review")), Some(OsStr::new("DeltaReview")), false));
-        assert!(is_cli_invocation(Some(OsStr::new("delta-review-dev")), Some(OsStr::new("DeltaReview")), false));
+        assert!(is_cli_invocation(Some(OsStr::new("dr")), Some(OsStr::new("DeltaReview")), false));
+        assert!(is_cli_invocation(Some(OsStr::new("dr-dev")), Some(OsStr::new("DeltaReview")), false));
     }
 
     #[test]
@@ -211,8 +259,8 @@ mod tests {
         // to a bundle binary *also* basenamed `delta` (Tauri used the Cargo bin name),
         // so the name rule can't tell them apart. The symlink backstop must still route
         // to CLI mode. The old (name-only) rule returned false here — an inline app run.
-        assert!(is_cli_invocation(Some(OsStr::new("delta-review")), Some(OsStr::new("delta-review")), true));
-        assert!(is_cli_invocation(Some(OsStr::new("delta-review-dev")), Some(OsStr::new("delta-review")), true));
+        assert!(is_cli_invocation(Some(OsStr::new("dr")), Some(OsStr::new("dr")), true));
+        assert!(is_cli_invocation(Some(OsStr::new("dr-dev")), Some(OsStr::new("dr")), true));
     }
 
     #[test]
@@ -220,7 +268,7 @@ mod tests {
         // Bundled app launched by LS/dock: argv0 basename == real exe name, not a symlink.
         assert!(!is_cli_invocation(Some(OsStr::new("DeltaReview")), Some(OsStr::new("DeltaReview")), false));
         // Raw cargo binary run directly during dev: same name AND not reached via symlink.
-        assert!(!is_cli_invocation(Some(OsStr::new("delta-review")), Some(OsStr::new("delta-review")), false));
+        assert!(!is_cli_invocation(Some(OsStr::new("dr")), Some(OsStr::new("dr")), false));
     }
 
     #[test]

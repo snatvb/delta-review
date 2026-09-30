@@ -14,7 +14,9 @@ fn main() {
         .unwrap_or_else(|| "0.0.0".to_string());
     println!("cargo:rustc-env=DELTA_VERSION={version}");
     println!("cargo:rerun-if-changed=../package.json");
-    println!("cargo:rerun-if-env-changed=APTABASE_KEY");
+    // SLEEPING TELEMETRY: the fork-owned key var (upstream's APTABASE_KEY is
+    // deliberately no longer read — see src/lib.rs for the dormancy note).
+    println!("cargo:rerun-if-env-changed=DELTA_REVIEW_TELEMETRY_KEY");
 
     tauri_build::build()
 }

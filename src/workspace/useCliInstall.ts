@@ -1,9 +1,9 @@
-// Shared state machine for installing the `delta` CLI, so multiple surfaces (the
+// Shared state machine for installing the `dr` CLI, so multiple surfaces (the
 // review-header pill and the launcher empty-state promo) stay in sync — same
-// status check, same dismiss, same install outcomes — instead of each keeping its
-// own copy. Install is one-shot: the backend symlinks `delta` onto PATH and, when
-// it has to fall back to ~/.local/bin, wires that dir into the user's shell configs
-// so new terminals pick it up with no manual step. (#cli)
+// status check, same dismiss, same install outcomes — instead of each keeping
+// its own copy. Install is one-shot: the backend symlinks `dr` onto PATH and,
+// when it has to fall back to ~/.local/bin, wires that dir into the user's
+// shell configs so new terminals pick it up with no manual step. (#cli)
 import { useEffect, useState } from "react";
 import { track } from "@/analytics";
 import { api } from "../api";

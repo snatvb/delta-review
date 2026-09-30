@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Monitor, Moon, Sun, X } from "lucide-react";
 import { useThemePref, type ThemePref } from "../theme";
-import { useTelemetryPref } from "../analytics";
 import { useEditorPref, EDITORS, type EditorId } from "../editor";
 import { useCodeFont, setCodeFontFamily, setCodeFontSize, installedMonoFonts, SIZE_OPTIONS } from "../codeFont";
 import { usePickerOpenMode, type PickerOpenMode } from "../windowMode";
@@ -40,7 +39,6 @@ const selectClass =
 // it. Escape and click-outside close; the card grabs focus so Escape works.
 export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const [theme, setTheme] = useThemePref();
-  const [telemetry, setTelemetry] = useTelemetryPref();
   const [editor, setEditor] = useEditorPref();
   const [openMode, setOpenMode] = usePickerOpenMode();
   const [windowPerBranch, setWindowPerBranch] = useWindowPerBranch();
@@ -265,22 +263,6 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                 onChange={setUpdateCheck}
                 onTitle="Check for updates on launch"
                 offTitle="Never check for updates"
-              />
-            }
-          />
-
-          <div className="h-px bg-border/50" />
-
-          <Row
-            label="Usage analytics"
-            hint="Anonymous feature usage only."
-            control={
-              <OnOffToggle
-                label="Usage analytics"
-                value={telemetry}
-                onChange={setTelemetry}
-                onTitle="Share anonymous usage stats"
-                offTitle="Disable usage stats"
               />
             }
           />

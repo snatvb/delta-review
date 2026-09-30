@@ -1,8 +1,9 @@
-//! Cross-process IPC between the `delta-review` CLI shim and the running app.
+//! Cross-process IPC between the `dr` CLI shim and the running app.
 //!
 //! The app binds a unix-domain socket; a CLI invocation connects and forwards
 //! one open-target request, then exits. Single-instance and detaching are
-//! handled by macOS Launch Services (`open -b`), not a Tauri plugin.
+//! handled by macOS Launch Services (`open -b`) / the detached self-exec on
+//! Linux, not a Tauri plugin.
 
 use std::path::{Path, PathBuf};
 
@@ -13,17 +14,23 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::git::model::DiffMode;
 
 /// Bundle identifier this binary talks to. The debug build is a separate app so
-/// `delta-review-dev` never forwards into an installed release. Mirrors
-/// `launch::CLI_NAME` and the identifiers in the tauri conf files.
+/// `dr-dev` never forwards into an installed release. Mirrors `launch::CLI_NAME`
+/// and the identifiers in the tauri conf files.
 #[cfg(not(debug_assertions))]
 pub const IDENTIFIER: &str = "com.snatvb.delta-review";
 #[cfg(debug_assertions)]
 pub const IDENTIFIER: &str = "com.snatvb.delta-review.dev";
 
-/// The rendezvous socket: stable, per-user, per-identifier. NOT `$TMPDIR` —
-/// launchd hands the app a different `$TMPDIR` than the shell, so they'd never meet.
+/// The rendezvous socket: stable, per-user, per-identifier, next to the app's
+/// own data dir. NOT `$TMPDIR` on macOS — launchd hands the app a different
+/// `$TMPDIR` than the shell, so they'd never meet. On Linux it mirrors Tauri's
+/// XDG data location (~/.local/share/<identifier>).
 pub fn cli_socket_path(identifier: &str, home: &Path) -> PathBuf {
-    home.join("Library/Application Support").join(identifier).join("cli.sock")
+    #[cfg(target_os = "macos")]
+    let base = home.join("Library/Application Support");
+    #[cfg(not(target_os = "macos"))]
+    let base = home.join(".local/share");
+    base.join(identifier).join("cli.sock")
 }
 
 /// One open-target request forwarded from a CLI invocation. `mode` is `None`
@@ -43,19 +50,25 @@ pub fn start(app: &AppHandle) {
         None => return,
     };
     let sock = cli_socket_path(IDENTIFIER, &home);
+    // Another instance is already serving this socket? We're a redundant second
+    // GUI launch (Linux has no Launch Services to prevent one) — leave its
+    // socket alone instead of stealing it, and stay socket-less ourselves.
+    if std::os::unix::net::UnixStream::connect(&sock).is_ok() {
+        return;
+    }
     if let Some(parent) = sock.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::remove_file(&sock); // clear a stale socket from a prior crash
     // macOS caps sun_path at 104 bytes; bail cleanly rather than panic on bind.
     if sock.as_os_str().len() >= 104 {
-        eprintln!("delta: cli socket path too long; CLI forwarding disabled");
+        eprintln!("dr: cli socket path too long; CLI forwarding disabled");
         return;
     }
     let listener = match std::os::unix::net::UnixListener::bind(&sock) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("delta: bind cli socket: {e}");
+            eprintln!("dr: bind cli socket: {e}");
             return;
         }
     };
@@ -99,12 +112,16 @@ mod tests {
     use std::os::unix::net::{UnixListener, UnixStream};
 
     #[test]
-    fn socket_path_is_under_app_support_for_identifier() {
+    fn socket_path_is_under_app_data_for_identifier() {
         let p = cli_socket_path("com.snatvb.delta-review", Path::new("/Users/me"));
+        #[cfg(target_os = "macos")]
         assert_eq!(
             p,
             PathBuf::from("/Users/me/Library/Application Support/com.snatvb.delta-review/cli.sock")
         );
+        // Mirrors Tauri's XDG data dir on Linux.
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(p, PathBuf::from("/Users/me/.local/share/com.snatvb.delta-review/cli.sock"));
     }
 
     #[test]

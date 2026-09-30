@@ -34,6 +34,11 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 notify = "6"
 ignore = "0.4"
+# SLEEPING TELEMETRY (dormant): analytics are disabled in this fork — the
+# plugin registers only with a fork-owned DELTA_REVIEW_TELEMETRY_KEY baked in
+# at build time, and the frontend gate (TELEMETRY_DORMANT in src/analytics.ts)
+# keeps every event off. Kept in the tree so it can be revived later against
+# an endpoint we own. Same for the tokio runtime below (only the plugin needs it).
 tauri-plugin-aptabase = "1.0.0"
 # Resolves the platform app-data base dir for the one-shot legacy-data
 # migration in `migrate` (runs before the Tauri builder in lib.rs::run()).

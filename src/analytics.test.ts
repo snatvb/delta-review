@@ -1,16 +1,22 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
 import {
+  TELEMETRY_DORMANT,
   getTelemetryPref,
   setTelemetryPref,
   shouldTrack,
+  track,
   __setEnvAllowedForTest,
 } from "./analytics";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 const TAURI = "__TAURI_INTERNALS__";
 
 beforeEach(() => {
   localStorage.clear();
   __setEnvAllowedForTest(false);
+  vi.mocked(invoke).mockClear();
   delete (window as unknown as Record<string, unknown>)[TAURI];
 });
 
@@ -38,11 +44,16 @@ describe("shouldTrack gate", () => {
     expect(shouldTrack()).toBe(false);
   });
 
-  it("is true only when in Tauri, env-allowed, and pref on", () => {
+  // SLEEPING TELEMETRY: the fork ships analytics disabled — the gate stays
+  // closed even when webview, build/env, and the user pref would all allow it.
+  // If this fails, TELEMETRY_DORMANT was flipped — revisit the revival
+  // checklist in src/analytics.ts before updating these expectations.
+  it("stays closed while telemetry is dormant", () => {
+    expect(TELEMETRY_DORMANT).toBe(true);
     (window as unknown as Record<string, unknown>)[TAURI] = {};
     __setEnvAllowedForTest(true);
     setTelemetryPref("on");
-    expect(shouldTrack()).toBe(true);
+    expect(shouldTrack()).toBe(false);
   });
 
   it("is false when the user turned it off", () => {
@@ -57,5 +68,15 @@ describe("shouldTrack gate", () => {
     __setEnvAllowedForTest(false);
     setTelemetryPref("on");
     expect(shouldTrack()).toBe(false);
+  });
+});
+
+describe("track while dormant", () => {
+  it("never invokes the Aptabase plugin IPC", () => {
+    (window as unknown as Record<string, unknown>)[TAURI] = {};
+    __setEnvAllowedForTest(true);
+    setTelemetryPref("on");
+    expect(() => track("app_started")).not.toThrow();
+    expect(invoke).not.toHaveBeenCalled();
   });
 });

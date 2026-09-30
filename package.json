@@ -1,15 +1,15 @@
 {
-  "name": "delta",
+  "name": "delta-review",
   "private": true,
   "version": "0.18.0",
   "description": "Fast, beautiful local-first desktop app for reviewing your agents work and leaving structured comments for them.",
-  "author": "Dario Ielardi",
+  "author": "Andrei Avsenin",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/darioielardi/delta.git"
+    "url": "https://github.com/snatvb/delta-review.git"
   },
-  "homepage": "https://github.com/darioielardi/delta#readme",
+  "homepage": "https://github.com/snatvb/delta-review#readme",
   "type": "module",
   "scripts": {
     "dev": "vite",

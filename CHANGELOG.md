@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+The terminal CLI is now **`dr`** (short for delta-review; `dr-dev` for the debug build). Installing from the app also removes a legacy `delta-review` shim symlink when it points at this app, so the old long-form command doesn't linger. `dr --help` and `--version` print the new name.
+
+**Linux: the CLI now works end-to-end.** A cold start (app not running) used to fail with `could not launch delta-review` because it shelled out to the macOS-only `open -b`; it now re-execs the app binary detached (own process group, null stdio), preferring `$APPIMAGE` so AppImages relaunch correctly. Warm forwarding over the unix socket was already POSIX-fine; the socket now lives at `~/.local/share/<identifier>/cli.sock` (XDG, next to the app's data dir) instead of a `Library/Application Support` path, and a second GUI instance no longer steals the first one's socket. On macOS nothing changes (`open -b` cold start, same socket path).
+
+In-app analytics are now **dormant**: nothing is collected or sent, the Settings toggle is gone, and the README no longer mentions telemetry. The whole pipeline (event taxonomy, gate, Aptabase plugin wiring) is kept in the tree, now keyed to a fork-owned `DELTA_REVIEW_TELEMETRY_KEY` build-time env var — upstream's `APTABASE_KEY` pathway is removed — so it can be revived later against an endpoint we own (checklist in `src/analytics.ts`). Attribution: Andrei Avsenin is credited as fork co-author alongside upstream author Dario Ielardi (LICENSE, README). Installs are now documented as releases-only (no Homebrew tap).
+
 ## 0.18.0 — 2026-09-30
 
 The fork gets its own identity: the app is now **delta-review** (identifier `com.snatvb.delta-review`, binary `DeltaReview`, CLI command `delta-review`). Up to and including 0.17.0 it still carried the upstream name and bundle ID (`Delta` / `com.darioielardi.delta`).
