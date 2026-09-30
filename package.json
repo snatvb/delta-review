@@ -1,7 +1,7 @@
 {
   "name": "delta-review",
   "private": true,
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "Fast, beautiful local-first desktop app for reviewing your agents work and leaving structured comments for them.",
   "author": "Andrei Avsenin",
   "license": "MIT",
