@@ -53,15 +53,27 @@ asks "is this a repository at all", so it behaves correctly without them.
 The `svn` command line client (1.8+) must be installed:
 
 - macOS: `brew install subversion` (Apple removed svn from the CLI tools in 2020)
-- Windows: VisualSVN's client tools or TortoiseSVN's "command line client
-  tools" option
+- Windows: the [VisualSVN command-line client](https://www.visualsvn.com/downloads/)
+  or `choco install sliksvn` (TortoiseSVN's installer has an optional
+  "command line client tools" checkbox too)
 
 Delta does not bundle the CLI in v1. Its location is resolved once per app
-launch: every `PATH` entry, then `/opt/homebrew/bin`, `/usr/local/bin` and
-`/opt/local/bin` (MacPorts) — a GUI-launched app inherits launchd's minimal
-`PATH`, which omits all of them. If the CLI still isn't found, the error
-message includes the `PATH` the app process actually saw, which pinpoints
-unusual install locations immediately.
+launch: every `PATH` entry, then on macOS `/opt/homebrew/bin`,
+`/usr/local/bin`, `/opt/local/bin` (MacPorts) and on Windows the
+VisualSVN / TortoiseSVN / SlikSvn install folders — GUI apps inherit a
+minimal `PATH` that omits all of them. On Windows the binary is looked up as
+`svn.exe` (a bare `svn` wrapper counts anywhere).
+
+### Diagnostics
+
+Every CLI resolution and invocation is logged to `svn-debug.log` in the app
+data dir (bounded at 2 MB):
+
+- Windows: `%APPDATA%\com.snatvb.delta-review\svn-debug.log`
+- macOS: `~/Library/Application Support/com.snatvb.delta-review/svn-debug.log`
+
+If the "not found" error appears while `svn` works in your terminal, that log
+records the exact `PATH` and locations the app searched.
 
 ## Known v1 limitations
 

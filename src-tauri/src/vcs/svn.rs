@@ -350,50 +350,157 @@ struct FileSlot {
 // CLI plumbing
 // ---------------------------------------------------------------------------
 
-const MISSING_SVN_MESSAGE: &str = "SVN working copy detected, but the `svn` command line tools \
-were not found. Install them (macOS: `brew install subversion`; Windows: the VisualSVN or \
-TortoiseSVN command line client tools) and restart the app.";
-
-/// Why the resolution failed, with the evidence — a GUI-launched app sees
-/// launchd's minimal PATH, so the message carries what this process actually
-/// looked at and turns "works in my terminal" reports into one-glance answers.
+/// Why the resolution failed, with the evidence — the message is per-OS (no
+/// macOS advice on Windows), carries the PATH this process actually saw, and
+/// points at the debug log that holds the full search trace.
 fn missing_svn_error() -> VcsError {
-    format!(
-        "{MISSING_SVN_MESSAGE} (this process' PATH: {}; also probed /opt/homebrew/bin, \
-/usr/local/bin and /opt/local/bin)",
-        std::env::var("PATH").unwrap_or_else(|_| "<unset>".into())
-    )
+    let path = std::env::var("PATH").unwrap_or_else(|_| "<unset>".into());
+    let log_hint = debug_log_path()
+        .map(|p| format!(" Full trace: {}", p.display()))
+        .unwrap_or_default();
+    if cfg!(target_os = "windows") {
+        format!(
+            "SVN working copy detected, but svn.exe was not found. Install the VisualSVN \
+command-line client (visualsvn.com/downloads) or run `choco install sliksvn`, then restart \
+the app. Searched PATH ({path}) and the VisualSVN/TortoiseSVN/SlikSvn install folders.{log_hint}"
+        )
+    } else if cfg!(target_os = "macos") {
+        format!(
+            "SVN working copy detected, but the `svn` command line tools were not found. \
+Install them with `brew install subversion` and restart the app. PATH: {path}; also probed \
+/opt/homebrew/bin, /usr/local/bin, /opt/local/bin.{log_hint}"
+        )
+    } else {
+        format!(
+            "SVN working copy detected, but the `svn` command line tools were not found. \
+Install subversion with your package manager and restart the app. PATH: {path}.{log_hint}"
+        )
+    }
 }
 
-/// Locate `svn`: every PATH entry first, then the conventional
-/// package-manager locations — a GUI-launched app inherits launchd's minimal
-/// PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), which omits all of them.
-/// Splits on both `:` and `;` so a Windows PATH parses too.
-fn find_svn(path_var: &str) -> Option<PathBuf> {
-    path_var
-        .split([':', ';'])
-        .filter(|s| !s.is_empty())
-        .chain(["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"])
-        .map(|dir| PathBuf::from(dir).join("svn"))
-        .find(|bin| bin.exists())
+/// `svn.exe` on Windows, bare `svn` elsewhere — a wrapper script named `svn`
+/// counts on any platform.
+fn svn_names() -> &'static [&'static str] {
+    if cfg!(target_os = "windows") {
+        &["svn.exe", "svn"]
+    } else {
+        &["svn"]
+    }
 }
 
-static SVN_BINARY: LazyLock<Option<PathBuf>> =
-    LazyLock::new(|| find_svn(&std::env::var("PATH").unwrap_or_default()));
+/// Locations probed beyond PATH: a GUI-launched app inherits a minimal PATH
+/// that omits every package-manager location, on both platforms.
+fn extra_probe_dirs() -> Vec<PathBuf> {
+    if cfg!(target_os = "windows") {
+        [
+            r"C:\Program Files\VisualSVN\bin",
+            r"C:\Program Files (x86)\VisualSVN\bin",
+            r"C:\Program Files\TortoiseSVN\bin",
+            r"C:\Program Files\SlikSvn\bin",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect()
+    } else {
+        ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"]
+            .iter()
+            .map(PathBuf::from)
+            .collect()
+    }
+}
+
+fn find_svn(dirs: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    dirs.into_iter()
+        .filter(|d| !d.as_os_str().is_empty())
+        .find_map(|d| svn_names().iter().map(|n| d.join(n)).find(|c| c.exists()))
+}
+
+static SVN_BINARY: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
+    let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    let resolved = find_svn(path_dirs.into_iter().chain(extra_probe_dirs()));
+    match &resolved {
+        Some(bin) => log_svn(&format!("svn binary: {}", bin.display())),
+        None => log_svn(&format!(
+            "svn binary NOT FOUND; PATH={:?}; extra probed: {:?}",
+            std::env::var("PATH").unwrap_or_default(),
+            extra_probe_dirs()
+        )),
+    }
+    resolved
+});
+
+// --- diagnostics log ---------------------------------------------------------
+//
+// GUI apps have no console on Windows, so eprintln is lost; every CLI
+// resolution and invocation is appended here instead. Bounded: past 2 MB the
+// file starts over.
+
+/// `<app data dir>/svn-debug.log` — Windows:
+/// `%APPDATA%\com.snatvb.delta-review\svn-debug.log`; macOS:
+/// `~/Library/Application Support/com.snatvb.delta-review/svn-debug.log`.
+pub(crate) fn debug_log_path() -> Option<PathBuf> {
+    let identifier = crate::migrate::conf_identifier()?;
+    dirs::data_dir().map(|base| base.join(identifier).join("svn-debug.log"))
+}
+
+fn log_svn(line: &str) {
+    use std::io::Write;
+    let Some(path) = debug_log_path() else { return };
+    if std::fs::metadata(&path).map(|m| m.len() > 2 * 1024 * 1024).unwrap_or(false) {
+        let _ = std::fs::remove_file(&path);
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let _ = writeln!(file, "[{ts}] {line}");
+    }
+}
 
 fn run_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, VcsError> {
-    let bin = SVN_BINARY.as_deref().ok_or_else(missing_svn_error)?;
+    let started = Instant::now();
+    let cmd = args.first().copied().unwrap_or("");
+    let bin = SVN_BINARY.as_deref().ok_or_else(|| {
+        log_svn(&format!(
+            "blocked: svn not found; PATH={:?}; extra probed: {:?}",
+            std::env::var("PATH").unwrap_or_default(),
+            extra_probe_dirs()
+        ));
+        missing_svn_error()
+    })?;
     let output = std::process::Command::new(bin)
         .arg("--non-interactive")
         .args(args)
         .current_dir(root)
-        .output()
-        .map_err(|e| format!("run svn {}: {e}", args.first().unwrap_or(&"")))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!("svn {}: {stderr}", args.first().unwrap_or(&"")));
+        .output();
+    match output {
+        Ok(out) if out.status.success() => {
+            log_svn(&format!(
+                "ok {cmd} ({:.0}ms, {} bytes out) in {}",
+                started.elapsed().as_secs_f64() * 1e3,
+                out.stdout.len(),
+                root.display()
+            ));
+            Ok(out.stdout)
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            log_svn(&format!(
+                "FAILED {cmd} rc={} ({:.0}ms) in {}: {stderr}",
+                out.status.code().unwrap_or(-1),
+                started.elapsed().as_secs_f64() * 1e3,
+                root.display()
+            ));
+            Err(format!("svn {cmd}: {stderr}"))
+        }
+        Err(e) => {
+            log_svn(&format!("SPAWN FAILED {cmd} with {}: {e}", bin.display()));
+            Err(format!("run svn {cmd}: {e}"))
+        }
     }
-    Ok(output.stdout)
 }
 
 fn run_text(root: &Path, args: &[&str]) -> Result<String, VcsError> {
@@ -814,24 +921,41 @@ mod tests {
     }
 
     #[test]
-    fn missing_cli_message_names_the_fix() {
-        assert!(MISSING_SVN_MESSAGE.contains("svn"));
-        assert!(MISSING_SVN_MESSAGE.contains("brew install subversion"));
+    fn missing_cli_error_is_platform_appropriate() {
+        let msg = missing_svn_error();
+        assert!(msg.contains("svn"), "the message must name what's missing");
+        if cfg!(target_os = "windows") {
+            assert!(msg.contains("svn.exe"), "Windows names svn.exe");
+            assert!(!msg.contains("brew"), "no macOS advice on Windows: {msg}");
+            assert!(msg.contains("choco") || msg.contains("VisualSVN"));
+        } else if cfg!(target_os = "macos") {
+            assert!(msg.contains("brew install subversion"));
+            assert!(!msg.contains("choco"));
+        }
     }
 
     #[test]
-    fn find_svn_scans_path_entries_and_survives_empty_path() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let bin = dir.path().join("svn");
-        std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
-        let path_var = dir.path().display().to_string();
-        assert_eq!(find_svn(&path_var), Some(bin.clone()));
-        // A longer PATH keeps scanning entries in order.
-        assert_eq!(find_svn(&format!("/nonexistent:{path_var}")), Some(bin));
-        // An empty PATH falls through to the package-manager locations; on a
-        // machine without any of them that's a clean None (the error then
-        // carries the PATH for diagnosis).
-        let _ = find_svn("");
+    fn find_svn_scans_dirs_in_order_for_the_platform_binary_name() {
+        let empty = tempfile::TempDir::new().unwrap();
+        let hit = tempfile::TempDir::new().unwrap();
+        std::fs::write(hit.path().join(svn_names()[0]), b"").unwrap();
+        let expect = hit.path().join(svn_names()[0]);
+        assert_eq!(find_svn(vec![empty.path().to_path_buf(), hit.path().to_path_buf()]), Some(expect));
+        // A completely empty candidate list resolves to nothing.
+        assert_eq!(find_svn(Vec::<PathBuf>::new()), None);
+        // The extra probe dirs are just dirs — the same scan applies to them.
+        let _ = find_svn(extra_probe_dirs());
+    }
+
+    #[test]
+    fn debug_log_lands_in_the_app_data_dir() {
+        let path = debug_log_path().expect("identifier and data dir are resolvable");
+        assert!(path.ends_with("svn-debug.log"), "got {}", path.display());
+        assert!(
+            path.to_string_lossy().contains("com.snatvb.delta-review"),
+            "next to registry.json in the app data dir: {}",
+            path.display()
+        );
     }
 
     // --- integration: a real throwaway repository (skipped when svn absent) ---
