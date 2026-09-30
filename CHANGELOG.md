@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Comments: copy a single comment for an agent — location (`path:line-range`), anchored snippet, and body, no headers — from the inline thread and the comments panel.
+
 ## 0.17.0 — 2026-09-30
 
 First release from the [snatvb/delta-review](https://github.com/snatvb/delta-review) fork. Packages are built locally, without CI: an **unsigned** macOS DMG (Apple silicon), **Windows x64** NSIS and MSI installers, and **Linux x86_64** `.deb` / `.AppImage` packages. The in-app updater now tracks this fork's releases.

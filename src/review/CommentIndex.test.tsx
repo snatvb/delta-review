@@ -92,6 +92,19 @@ describe("CommentIndex", () => {
     expect(onToggleResolved).toHaveBeenCalledWith("d");
   });
 
+  it("copies one comment for an agent without needing any action handlers, and without jumping", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const onJump = vi.fn();
+    // No onEdit/onDelete/onToggleResolved: the copy button must still render.
+    render(<CommentIndex open onOpenChange={() => {}} comments={comments} onJump={onJump} />);
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Copy for agent"));
+    });
+    expect(writeText).toHaveBeenCalledWith("src/a.ts:22 (⚠ stale)\n```ts\nx\n```\nline note");
+    expect(onJump).not.toHaveBeenCalled();
+  });
+
   describe("delete all", () => {
     it("needs a second tap on the soft-red confirm to fire", () => {
       const onDeleteAll = vi.fn();

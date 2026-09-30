@@ -8,6 +8,7 @@ export type EventName =
   | "app_started"
   | "review_opened"
   | "copy_for_agents"
+  | "copy_comment_for_agents"
   | "comment_added"
   | "comment_resolved"
   | "diff_layout_changed"

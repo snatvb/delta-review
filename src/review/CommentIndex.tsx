@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { Check, MessageSquareDashed, Pencil, RotateCcw, Trash2, X } from "lucide-react";
+import { Check, Copy, MessageSquareDashed, Pencil, RotateCcw, Trash2, X } from "lucide-react";
 import { useResizableWidth, usePaneResize, PaneResizer, COMMENTS_PANE } from "../lib/resizablePane";
 import { CommentEditor } from "./CommentEditor";
+import { useCopyCommentForAgent } from "./commentForAgent";
 import type { Comment } from "../types";
 
 // Split so the dir can truncate while the filename (last segment) + line range
@@ -77,6 +78,8 @@ export function CommentIndex({
   // pending a delete confirmation (drives the single ConfirmDialog).
   const [editingId, setEditingId] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  // Per-comment "copy for agent" clipboard + ✓ flash.
+  const { copiedId, copy } = useCopyCommentForAgent();
 
   // "Delete all" uses an inline two-tap confirm — the button morphs into a soft-red
   // Confirm and the second click fires. No modal to dismiss; the confirm also
@@ -190,7 +193,6 @@ export function CommentIndex({
           // the jump (editor via its wrapper, actions via stopPropagation).
           const editing = editingId === c.id;
           const { dir, name, suffix } = locationParts(c);
-          const actionable = Boolean(onToggleResolved || (onEdit && !c.stale) || onDelete);
           return (
           <div
             key={c.id}
@@ -244,8 +246,9 @@ export function CommentIndex({
             )}
             {/* Hover action cluster, top-right over the header line (the solid card
                 backdrop keeps it legible over the location text it covers). Hidden
-                while editing — the editor owns the card. */}
-            {actionable && !editing && (
+                while editing — the editor owns the card. Copy needs no callbacks,
+                so the cluster always has at least one action. */}
+            {!editing && (
               <div
                 className="absolute right-1.5 top-1.5 z-10 flex items-center gap-0.5 rounded-md border border-border/70 bg-card p-0.5 opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
                 onClick={(e) => e.stopPropagation()}
@@ -265,6 +268,9 @@ export function CommentIndex({
                     <Pencil className="size-3.5" />
                   </Button>
                 )}
+                <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Copy for agent" title="Copy for agent" onClick={() => copy(c)}>
+                  {copiedId === c.id ? <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="size-3.5" />}
+                </Button>
                 {onDelete && (
                   <Button variant="ghost" size="icon-xs" className={DEL_BTN} aria-label="Delete" title="Delete" onClick={() => setConfirmId(c.id)}>
                     <Trash2 className="size-3.5" />

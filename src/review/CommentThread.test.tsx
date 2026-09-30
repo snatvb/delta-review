@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { render, screen, fireEvent, within, act } from "@testing-library/react";
 import { CommentThread } from "./CommentThread";
 import type { Comment } from "../types";
 
@@ -69,5 +69,20 @@ describe("CommentThread", () => {
     expect(screen.getByRole("button", { name: /^reopen$/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^resolve$/i })).not.toBeInTheDocument();
     expect(screen.getByText("note body")).toBeInTheDocument();
+  });
+
+  it("copies one comment — location, snippet, body — for an agent", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const anchored: Comment[] = [{
+      id: "c1", scope: "range",
+      anchor: { file: "src/a.ts", side: "new", startLine: 12, endLine: 18, snippet: "const a = 1;\nconst b = 2;" },
+      body: "hoist these", stale: false, resolved: false, createdAt: "t", updatedAt: "t",
+    }];
+    render(<CommentThread comments={anchored} onEdit={() => {}} onDelete={() => {}} onToggleResolved={() => {}} />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /copy for agent/i }));
+    });
+    expect(writeText).toHaveBeenCalledWith("src/a.ts:12-18\n```ts\nconst a = 1;\nconst b = 2;\n```\nhoist these");
   });
 });

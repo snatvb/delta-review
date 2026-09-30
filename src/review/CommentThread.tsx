@@ -1,10 +1,11 @@
 import { useState } from "react";
 import Markdown from "react-markdown";
 import { markdownComponents } from "@/lib/markdownLink";
-import { Check, Pencil, Trash2, RotateCcw, TriangleAlert } from "lucide-react";
+import { Check, Copy, Pencil, Trash2, RotateCcw, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { CommentEditor } from "./CommentEditor";
+import { useCopyCommentForAgent } from "./commentForAgent";
 import type { Comment } from "../types";
 
 function relTime(iso: string): string {
@@ -49,6 +50,8 @@ export function CommentThread({
   const [editing, setEditing] = useState<{ id: string; wasBlank: boolean } | null>(null);
   // The comment pending a delete confirmation (drives the single ConfirmDialog).
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  // Per-comment "copy for agent" clipboard + ✓ flash.
+  const { copiedId, copy } = useCopyCommentForAgent();
   const open = (c: Comment) => setEditing({ id: c.id, wasBlank: c.body.trim() === "" });
   const close = () => setEditing(null);
 
@@ -123,6 +126,9 @@ export function CommentThread({
                       </Button>
                       <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Edit" title="Edit" onClick={() => open(c)}>
                         <Pencil className="size-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Copy for agent" title="Copy for agent" onClick={() => copy(c)}>
+                        {copiedId === c.id ? <Check className="size-4 text-emerald-600 dark:text-emerald-400" /> : <Copy className="size-4" />}
                       </Button>
                       <Button variant="ghost" size="icon-xs" className={DEL_BTN} aria-label="Delete" title="Delete" onClick={() => setConfirmId(c.id)}>
                         <Trash2 className="size-4" />
