@@ -72,7 +72,7 @@ describe("useBinaryFile", () => {
     expect(getBinaryFileDiff).toHaveBeenCalledTimes(1);
   });
 
-  it("drops and refetches when the diff store invalidates the path", async () => {
+  it("drops and refetches on invalidation but keeps the rev when sizes are unchanged", async () => {
     const store = makeStore();
     const { result } = renderHook(() => useBinaryFile(target, store, "logo.png", true));
     await waitFor(() => expect(result.current).toMatchObject(bd));
@@ -81,6 +81,19 @@ describe("useBinaryFile", () => {
     act(() => store.invalidate(["logo.png"]));
     expect(result.current).toBeUndefined(); // dropped with the text diff
     await waitFor(() => expect(getBinaryFileDiff).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(result.current?.rev).toBeGreaterThan(firstRev)); // new rev busts the cached image URL
+    await waitFor(() => expect(result.current?.rev).toBe(firstRev)); // same URL → webview keeps the cached image
+  });
+
+  it("bumps the rev when sizes change, busting the cached image URL", async () => {
+    const store = makeStore();
+    const { result } = renderHook(() => useBinaryFile(target, store, "logo.png", true));
+    await waitFor(() => expect(result.current).toMatchObject(bd));
+    const firstRev = result.current!.rev;
+
+    getBinaryFileDiff.mockResolvedValue({ oldSize: 1, newSize: 3 });
+    act(() => store.invalidate(["logo.png"]));
+    await waitFor(() => expect(getBinaryFileDiff).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current?.rev).toBeGreaterThan(firstRev));
+    await waitFor(() => expect(result.current).toMatchObject({ oldSize: 1, newSize: 3 }));
   });
 });

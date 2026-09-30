@@ -52,7 +52,8 @@ export const api = {
   getBinaryFileDiff: (target: Target, path: string): Promise<BinaryFileDiff> =>
     invokeImpl("get_binary_file_diff", { target, path }),
   // Image bytes load straight into <img> over the `delta-blob` URI scheme; `rev`
-  // changes on every sizes refetch so a refreshed file never hits a cached image.
+  // changes only when the file's sizes change, so an unchanged image keeps its
+  // URL and stays in the webview cache across refresh cycles.
   binaryBlobUrl: (target: Target, path: string, side: BlobSide, mime: string, rev: number): string =>
     blobUrlImpl(target, path, side, mime, rev),
   listCommits: (target: Target, skip: number, limit: number): Promise<CommitPage> =>

@@ -12,9 +12,17 @@ import type { FileDiffStore } from "./useFileDiffCache";
 // invalidation that drops the text-diff store (Refresh / fs-change auto-refresh):
 // the hook subscribes to the store's per-path notifications, deletes its entry,
 // and wakes its own subscribers so the load effect refetches.
+//
+// `rev` changes only when the file's sizes actually change: the sizes read is
+// live (worktree metadata / immutable blob), so same sizes ⇒ same bytes, and a
+// refresh cycle must not re-fetch + re-decode an image that didn't change — the
+// webview keeps serving it from its immutable cache under the same URL.
 export type BinaryCard = BinaryFileDiff & { rev: number };
 
 const cache = new Map<string, BinaryCard>();
+// Last-seen sizes per card. Survives the cache drops above so the refetch can
+// tell "nothing changed" from "changed" — only the latter may bump `rev`.
+const lastSizes = new Map<string, { oldSize: number | null; newSize: number | null; rev: number }>();
 let revSeq = Date.now();
 const inflight = new Set<string>();
 const listeners = new Map<string, Set<() => void>>();
@@ -30,7 +38,11 @@ function load(target: Target, path: string, key: string) {
   api
     .getBinaryFileDiff(target, path)
     .then((bd) => {
-      cache.set(key, { ...bd, rev: ++revSeq });
+      const prev = lastSizes.get(key);
+      const rev =
+        prev && prev.oldSize === bd.oldSize && prev.newSize === bd.newSize ? prev.rev : ++revSeq;
+      lastSizes.set(key, { oldSize: bd.oldSize, newSize: bd.newSize, rev });
+      cache.set(key, { ...bd, rev });
       notify(key);
     })
     .catch((e) => console.error("binary file diff:", e))
@@ -40,6 +52,7 @@ function load(target: Target, path: string, key: string) {
 /** Test hook: drop every cached entry (and wake subscribers). */
 export function resetBinaryFileCache(): void {
   cache.clear();
+  lastSizes.clear();
   inflight.clear();
   listeners.forEach((set) => set.forEach((cb) => cb()));
 }

@@ -19,7 +19,7 @@
 //! actually looking at". The viewed-baseline stamp reads it
 //! (`served_file`), so a "viewed" toggle in that window baselines the displayed
 //! content rather than absorbing the unseen edit waiting on disk.
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use git2::Repository;
 
@@ -37,7 +37,7 @@ const MAX_SNAPSHOTS: usize = 4;
 /// (repo_path, mode, base, commit); resolved OIDs are deliberately NOT part of the
 /// key (see the module doc — freshness comes from `invalidate`, so the hit path
 /// avoids resolving them).
-#[derive(PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Hash, Clone)]
 struct SnapshotKey {
     repo_path: String,
     mode: DiffMode,
@@ -67,13 +67,30 @@ struct Inner {
     /// The last snapshot served per key — never dropped by `invalidate`. This is
     /// the "what the user is looking at" record; see the module doc.
     served: Vec<Arc<Snapshot>>,
+    /// Keys with a whole-repo build in flight (see `snapshot`): dedups concurrent
+    /// first-fetches onto one build and parks later arrivals on the condvar
+    /// instead of the mutex.
+    building: std::collections::HashSet<SnapshotKey>,
+    /// Bumped by every `invalidate`. A snapshot built across an invalidate is
+    /// handed to its caller but NOT cached hot, preserving invalidate's "the
+    /// next fetch rebuilds against current disk" contract for the in-flight
+    /// window.
+    epoch: u64,
+}
+
+#[derive(Default)]
+struct State {
+    inner: Mutex<Inner>,
+    /// Signalled when an in-flight build settles (success or failure) so waiters
+    /// re-check the hot map.
+    built: Condvar,
 }
 
 /// Bounded LRU of recent diff snapshots. Cloning the handle is cheap (shared `Arc`)
 /// so a command can move one into `spawn_blocking` and the fs watcher can hold its
 /// own; the snapshots themselves are `Arc`-shared so reads clone content off-lock.
 #[derive(Default, Clone)]
-pub struct DiffCache(Arc<Mutex<Inner>>);
+pub struct DiffCache(Arc<State>);
 
 /// Replace (or append) the served copy for a key, bounded like the hot LRU.
 fn upsert_served(served: &mut Vec<Arc<Snapshot>>, snap: &Arc<Snapshot>) {
@@ -100,53 +117,76 @@ impl DiffCache {
     /// Lock the cache, recovering from a poisoned mutex instead of panicking — a
     /// panic under the guard must not brick diff fetching for the rest of the session.
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        self.0.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The snapshot for `target`, built on a miss. Shared by `summary` and `file`.
-    /// The whole-repo build runs under the lock so concurrent first-fetches of the
-    /// same target dedup onto one diff (rather than each running their own); the
-    /// returned `Arc` then lets callers clone content out *after* the lock is dropped.
+    /// Concurrent first-fetches of the same target join ONE build: the first
+    /// caller marks the key in-flight and runs `compute_diff_full` with the lock
+    /// RELEASED — a build takes seconds on large repos, and holding the cache
+    /// lock through it used to serialize every other image/text/summary request
+    /// behind it (the blob convoy) — then installs the result and wakes the
+    /// joiners on the condvar. An `invalidate` that fires mid-build bumps
+    /// `epoch`, so the finished snapshot is served to its caller but not cached
+    /// hot: the next fetch rebuilds, exactly as `invalidate` promises.
     fn snapshot(&self, target: &Target) -> Result<Arc<Snapshot>, GitError> {
         let key = key_of(target);
         let t0 = std::time::Instant::now();
         let mut cache = self.lock();
         let lock_wait = t0.elapsed();
-        if let Some(pos) = cache.hot.iter().position(|s| s.key == key) {
-            let hit = cache.hot.remove(pos);
-            cache.hot.push(hit.clone()); // most-recently-used at the back
-            upsert_served(&mut cache.served, &hit);
-            if crate::perf::enabled() && lock_wait.as_millis() > 0 {
-                eprintln!(
-                    "[perf] snapshot hit  {}/{:?} lock_wait={:.1}ms",
-                    target.repo_path.rsplit('/').next().unwrap_or(&target.repo_path),
-                    target.mode,
-                    lock_wait.as_secs_f64() * 1e3,
-                );
+        loop {
+            if let Some(pos) = cache.hot.iter().position(|s| s.key == key) {
+                let hit = cache.hot.remove(pos);
+                cache.hot.push(hit.clone()); // most-recently-used at the back
+                upsert_served(&mut cache.served, &hit);
+                if crate::perf::enabled() && t0.elapsed().as_millis() > 0 {
+                    eprintln!(
+                        "[perf] snapshot hit  {}/{:?} waited={:.1}ms",
+                        target.repo_path.rsplit('/').next().unwrap_or(&target.repo_path),
+                        target.mode,
+                        t0.elapsed().as_secs_f64() * 1e3,
+                    );
+                }
+                return Ok(hit);
             }
-            return Ok(hit);
+            if !cache.building.contains(&key) {
+                cache.building.insert(key.clone());
+                break;
+            }
+            // Another thread is building this target: sleep until it settles —
+            // the lock stays free for everyone else the whole time.
+            cache = self.0.built.wait(cache).unwrap_or_else(|e| e.into_inner());
         }
-        // The build itself runs under the lock by design (see the doc above); the
-        // perf stamp splits lock_wait from build so a convoy shows up as N hits
-        // with lock_wait ~= the one miss's build time.
+        let epoch = cache.epoch;
+        drop(cache); // build with the lock released
+
         let build = std::time::Instant::now();
         let diff = compute_diff_full(target);
+        let build_ms = build.elapsed().as_secs_f64() * 1e3;
+        let mut cache = self.lock();
+        cache.building.remove(&key);
+        self.0.built.notify_all();
+        let diff = diff?; // wake waiters first — they must not sleep through the failure
+        let snap = Arc::new(Snapshot { key: key.clone(), diff });
+        let stale = cache.epoch != epoch; // an invalidate landed mid-build
+        if !stale {
+            cache.hot.push(snap.clone());
+            if cache.hot.len() > MAX_SNAPSHOTS {
+                cache.hot.remove(0); // evict least-recently-used (front)
+            }
+        }
+        upsert_served(&mut cache.served, &snap);
         if crate::perf::enabled() {
-            let n = diff.as_ref().map_or(0, |d| d.summary.files.len());
+            let n = snap.diff.summary.files.len();
             eprintln!(
-                "[perf] snapshot MISS {}/{:?} files={n} lock_wait={:.1}ms build={:.1}ms",
+                "[perf] snapshot MISS {}/{:?} files={n} lock_wait={:.1}ms build={:.1}ms{}",
                 target.repo_path.rsplit('/').next().unwrap_or(&target.repo_path),
                 target.mode,
                 lock_wait.as_secs_f64() * 1e3,
-                build.elapsed().as_secs_f64() * 1e3,
+                build_ms,
+                if stale { " (not cached: invalidated mid-build)" } else { "" },
             );
         }
-        let snap = Arc::new(Snapshot { key, diff: diff? });
-        cache.hot.push(snap.clone());
-        if cache.hot.len() > MAX_SNAPSHOTS {
-            cache.hot.remove(0); // evict least-recently-used (front)
-        }
-        upsert_served(&mut cache.served, &snap);
         Ok(snap)
     }
 
@@ -169,20 +209,32 @@ impl DiffCache {
         }
     }
 
-    /// Run `f` on `path`'s byte sources from the snapshot, so a binary card's reads
-    /// need no whole-repo diff of their own — per-card diffs exhausted memory on huge
-    /// repos when a screenful of images loaded at once.
+    /// Run `f` on `path`'s byte sources from the last snapshot SERVED for
+    /// `target` — never triggering (or queueing behind) a whole-repo rebuild.
+    /// These are the binary card's size reads and the `delta-blob` image
+    /// requests; they used to go through `snapshot()`, so after every watcher
+    /// invalidate the first image on screen paid the full rebuild. A served
+    /// snapshot is always safe to read bytes from: the old side is a git blob
+    /// resolved by immutable OID, and the new side is read live from the
+    /// worktree at call time — so sizes and pixels track disk regardless of
+    /// snapshot age, and the UI is rendering this same snapshot anyway (#12).
+    /// Cold start (nothing served yet) or a path absent from the served
+    /// snapshot (added file awaiting refresh) falls back to a one-off
+    /// resolution.
     pub fn with_sources<T>(
         &self,
         target: &Target,
         path: &str,
         f: impl FnOnce(&Repository, &FileSources) -> T,
     ) -> Result<T, GitError> {
-        let snap = self.snapshot(target)?;
-        match snap.diff.sources.get(path) {
-            Some(sources) => Ok(f(&open_repo(&target.repo_path)?, sources)),
-            None => with_fresh_sources(target, path, f),
+        let key = key_of(target);
+        let served = self.lock().served.iter().rev().find(|s| s.key == key).cloned();
+        if let Some(snap) = served {
+            if let Some(sources) = snap.diff.sources.get(path) {
+                return Ok(f(&open_repo(&target.repo_path)?, sources));
+            }
         }
+        with_fresh_sources(target, path, f)
     }
 
     /// One file's diff from the last snapshot *served* for `target` — the version
@@ -208,6 +260,7 @@ impl DiffCache {
     pub fn invalidate(&self, worktree: &str) {
         let t = std::time::Instant::now();
         let mut inner = self.lock();
+        inner.epoch += 1; // disqualify any snapshot still being built
         let dropped = inner.hot.len();
         inner.hot.retain(|s| !same_worktree(&s.key.repo_path, worktree));
         if crate::perf::enabled() {
@@ -345,6 +398,94 @@ mod tests {
         assert_eq!(sizes(&cache), Some(6));
     }
 
+    /// The blob path after the convoy fix: once a snapshot has been SERVED
+    /// (summary/file fetch — what opening a review does), size reads answer from
+    /// it without rebuilding, even across invalidates, and the worktree side
+    /// still tracks live bytes.
+    #[test]
+    fn blob_reads_survive_invalidate_via_the_served_snapshot() {
+        let (dir, _repo) = repo_with_commit();
+        std::fs::write(dir.path().join("logo.png"), [0x89u8, b'P', 0x00, 0x01]).unwrap();
+        let repo_path = dir.path().to_str().unwrap().to_string();
+        let t = target(&repo_path, DiffMode::Uncommitted);
+        let cache = DiffCache::default();
+
+        cache.summary(&t).unwrap(); // the review opens — snapshot becomes served
+        let sizes = |cache: &DiffCache| cache.with_sources(&t, "logo.png", binary_sizes).unwrap().new_size;
+        assert_eq!(sizes(&cache), Some(4));
+
+        // The agent edits; the watcher invalidates. No rebuild may be triggered
+        // by the size read itself, and the new side must reflect the edit.
+        std::fs::write(dir.path().join("logo.png"), [0x89u8, b'P', 0x00, 0x01, 0x02, 0x03]).unwrap();
+        cache.invalidate(&repo_path);
+        assert_eq!(sizes(&cache), Some(6));
+    }
+
+    /// The condvar protocol: many first-fetches of the same fresh target all
+    /// resolve correctly (one joins the in-flight build, others wait on it) and
+    /// a fetch of a DIFFERENT target is not blocked behind the build.
+    #[test]
+    fn concurrent_first_fetches_join_one_build_and_do_not_deadlock() {
+        let (dir, _repo) = repo_with_commit();
+        write(dir.path(), "file.txt", "line1\nAAA\nline2\n");
+        let repo_path = dir.path().to_str().unwrap().to_string();
+        let t = target(&repo_path, DiffMode::Uncommitted);
+        let cache = DiffCache::default();
+
+        std::thread::scope(|sc| {
+            for _ in 0..8 {
+                let (c, tt) = (&cache, &t);
+                sc.spawn(move || {
+                    let fd = c.file(tt, "file.txt").unwrap();
+                    assert_eq!(fd.new_content.as_deref(), Some("line1\nAAA\nline2\n"));
+                });
+            }
+            // While those race for the same target, an unrelated target's fetch
+            // (own build) must complete too — neither waits on the other's lock.
+            let (dir_b, _b) = repo_with_commit();
+            write(dir_b.path(), "other.txt", "B\n");
+            let tb = target(dir_b.path().to_str().unwrap(), DiffMode::Uncommitted);
+            let fd = cache.file(&tb, "other.txt").unwrap();
+            assert_eq!(fd.new_content.as_deref(), Some("B\n"));
+        });
+    }
+
+    /// A snapshot built across an invalidate is served to its caller but not
+    /// cached hot — the NEXT fetch must rebuild and see current disk.
+    #[test]
+    fn snapshot_built_across_an_invalidate_is_not_cached_hot() {
+        let (dir, _repo) = repo_with_commit();
+        write(dir.path(), "file.txt", "line1\nAAA\nline2\n");
+        let repo_path = dir.path().to_str().unwrap().to_string();
+        let t = target(&repo_path, DiffMode::Uncommitted);
+        let cache = DiffCache::default();
+
+        // Start a build, then invalidate while it runs. Deterministic without
+        // timing hooks: run the invalidate from another thread mid-build on a
+        // repo big enough that the build spans the write+invalidate.
+        for i in 0..60 {
+            write(dir.path(), &format!("pad/pad-{i:03}.txt"), &format!("pad {i}\n"));
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|sc| {
+            let (c, tt) = (&cache, &t);
+            sc.spawn(move || {
+                tx.send(()).unwrap();
+                let fd = c.file(tt, "file.txt").unwrap();
+                // May legitimately see AAA (build started before the edit).
+                assert!(fd.new_content.as_deref().is_some());
+            });
+            rx.recv().unwrap();
+            write(dir.path(), "file.txt", "line1\nBBB\nline2\n");
+            cache.invalidate(&repo_path);
+        });
+
+        // The in-flight build's snapshot was disqualified from hot, so this
+        // fetch rebuilds and must see BBB — not the stale AAA.
+        let fd = cache.file(&t, "file.txt").unwrap();
+        assert_eq!(fd.new_content.as_deref(), Some("line1\nBBB\nline2\n"));
+    }
+
     #[test]
     fn invalidate_only_drops_the_matching_worktree() {
         let (dir_a, _a) = repo_with_commit();
@@ -360,14 +501,16 @@ mod tests {
         assert_eq!(cache.file(&t, "file.txt").unwrap().new_content.as_deref(), Some("A1\n"), "unrelated invalidate must not evict");
     }
 
-    /// Perf probe for the slow-image-previews investigation. Not part of the
-    /// normal suite (ignored): builds a "busy agent" repo — hundreds of modified
-    /// text files plus a screenful of modified images — then contrasts concurrent
-    /// blob reads on a hot cache against the same reads re-run after every
-    /// watcher `invalidate`. After an invalidate the first request rebuilds the
-    /// whole-repo snapshot *while holding the global cache lock*, so the rest of
-    /// the screen's image reads serialize behind it: per-round wall time ~= one
-    /// full snapshot rebuild. Run it in release:
+    /// Perf probe for the slow-image-previews investigation — now the
+    /// regression canary for the fixes. Not part of the normal suite (ignored):
+    /// builds a "busy agent" repo — hundreds of modified text files plus a
+    /// screenful of modified images — then contrasts concurrent blob reads on a
+    /// hot cache against the same reads re-run after every watcher `invalidate`.
+    /// Blob reads are served from the last served snapshot (never rebuilding)
+    /// and the whole-repo build runs outside the cache lock, so storm rounds
+    /// must stay in the same order as hot ones; storm ≈ one rebuild per round
+    /// (~1450× on a 2540-file repo at the time of the fix) means the convoy is
+    /// back. Run it in release:
     ///   cargo test --release blob_convoy -- --ignored --nocapture
     #[test]
     #[ignore = "perf probe — slow by design; run explicitly in release with --nocapture"]
@@ -431,13 +574,17 @@ mod tests {
                 .len()
         }
 
-        // Phase 1 — cold: the first blob request pays the whole-repo snapshot build.
+        // Phase 1 — open, like the app: the summary fetch builds + serves the
+        // snapshot once; the first blob read after it must be a served map read.
+        println!("repo shape: {n_text} modified text files + {n_img} images of {}KB each", img_bytes / 1024);
+        let open = std::time::Instant::now();
+        let files = cache.summary(&t).unwrap().files.len();
+        let open_ms = open.elapsed().as_secs_f64() * 1e3;
+        println!("open (summary build):  {open_ms:8.1}ms  ({files} changed files)");
         let cold = std::time::Instant::now();
         let n = read_img(&cache, &t, &img_path(0));
         let cold_ms = cold.elapsed().as_secs_f64() * 1e3;
-        let files = cache.summary(&t).unwrap().files.len();
-        println!("repo shape: {n_text} modified text files + {n_img} images of {}KB each", img_bytes / 1024);
-        println!("cold first blob read:  {cold_ms:8.1}ms  ({files} changed files, image {n} bytes)");
+        println!("cold first blob read:  {cold_ms:8.1}ms  (image {n} bytes)");
 
         let run_round = |tag: &str| -> f64 {
             let (c, tt) = (&cache, &t);
@@ -457,8 +604,9 @@ mod tests {
         let hot: f64 = (0..rounds).map(|_| run_round("hot    ")).sum();
 
         // Phase 3 — watcher storm: like an agent writing while the user scrolls.
-        // Each invalidate drops the snapshot, so every round's first request
-        // rebuilds it under the lock while the other reads queue behind.
+        // Blob reads answer from the served snapshot with live worktree bytes,
+        // so the invalidates between rounds must not cost the image path
+        // anything.
         let mut storm = 0.0;
         for r in 0..rounds {
             write(dir.path(), &text_path(r), &format!("// module {r} EDITED AGAIN\n"));
@@ -469,9 +617,8 @@ mod tests {
         println!();
         println!("summary: {rounds} rounds × {READERS} reads — hot total {hot:.0}ms vs storm total {storm:.0}ms");
         println!(
-            "convoy factor: storm/hot = {:.0}× (per-round storm {:.0}ms ≈ one snapshot rebuild of {cold_ms:.0}ms)",
+            "regression check: storm/hot = {:.1}× (was ~1450× when blob reads triggered whole-repo rebuilds; one rebuild = {open_ms:.0}ms)",
             storm / hot.max(1e-9),
-            storm / rounds as f64,
         );
     }
 
