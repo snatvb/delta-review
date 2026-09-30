@@ -237,7 +237,8 @@ if [ "$build_windows" -eq 1 ]; then
   # fork updater key was available at build time.
   for f in src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/*.nsis.zip \
            src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/*.sig; do
-    [ -f "$f" ] && cp "$f" "$staging/" || true
+    [ -f "$f" ] || continue
+    case "$f" in *"${new_version}"*) cp "$f" "$staging/" ;; esac
   done
 
   # MSI: tauri-bundler only produces MSIs on Windows hosts, so compile a
