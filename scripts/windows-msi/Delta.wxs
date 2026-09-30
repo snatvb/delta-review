@@ -52,10 +52,15 @@
                    Win64="yes">
           <Shortcut Id="DeltaShortcut"
                     Name="delta-review"
-                    Target="[INSTALLDIR]Delta.exe"
+                    Target="[INSTALLDIR]DeltaReview.exe"
                     WorkingDirectory="INSTALLDIR"
                     Icon="Delta.ico"/>
-          <RegistryValue Root="HKMU"
+          <!-- KeyPath for the shortcut component. Root MUST be HKLM, not WiX's
+               HKMU: wixl passes HKMU through as Registry-table root 4, which is
+               not a valid hive and makes Windows Installer fail with
+               "Could not open key: UNKNOWN\Software\delta-review". The install
+               is per-machine, so HKLM is the correct home anyway. -->
+          <RegistryValue Root="HKLM"
                          Key="Software\delta-review"
                          Name="startMenuShortcut"
                          Type="integer"
