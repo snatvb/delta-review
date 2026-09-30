@@ -1,8 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.19.0 — 2026-09-30
+
+**SVN repositories are here (v1: uncommitted reviews).** A VCS abstraction layer now answers "which VCS is this directory" in one place, probing `.git` before `.svn` on the ancestor walk — git-svn working copies (both markers) open as git, the nearest marker wins, and an SVN checkout inside a git monorepo stays SVN; a hidden per-repo override covers rare misdetections. SVN support in this first version is the Uncommitted view only, fully offline: change lists via `svn status --xml` (`svn:ignore` honored for free), old sides via `svn cat -r BASE`, deleted directories expanded through `svn info`, replaced files reviewed as added (no pristine until commit), and binary BASE sides pinned into served snapshots — SVN's BASE moves on commit/update, unlike git blobs. Requires the `svn` CLI; when a GUI-launched app can't find it, the error now lists every PATH entry scanned plus the Homebrew/MacPorts defaults, so "works in my terminal" reports are one-glance answers. Detection rules and v1 limits: [docs/svn.md](docs/svn.md).
 
 **Folder-level "viewed" checkboxes in the file tree.** Every folder row now carries the standard tri-state checkbox: filled check when all files beneath it (nested folders included) are viewed, a dash when only some are, empty when none are. Clicking an empty checkbox marks every file in the subtree viewed in one update; clicking a check or dash clears them all. Folders with nothing to mark (the Ignored group) show no checkbox, and the list view is unaffected.
+
+**Settings grows into a wide sidebar dialog.** The 512px modal is now near-full-width (min(90vw, 1280px) × 85vh) with a platform-settings-style section sidebar: General (windows/editor/detection/updates), Appearance (theme, code fonts), Delta Ignore (roomy rule editors that load on tab open, not dialog open), and a new About page (version, repo links, credits). The chosen section persists across opens, and the app version is injected at build time from package.json — no more manual propagation.
+
+**Image previews no longer queue behind the diff cache lock.** Every image request funneled through one global mutex, and the first request after a watcher invalidate rebuilt the whole-repo snapshot while holding that lock — on a 2540-file repo with 40 1MB images, ~2s per round against 1.2ms hot (~1450×). Snapshots now build off-lock (concurrent first-fetches join one build), byte sources are read from the last served snapshot (old side by immutable blob OID, new side live from the worktree), and an unchanged image keeps its URL across refresh cycles so it stays in the webview cache instead of re-fetching and re-decoding.
+
+**Windows MSI repaired.** The 0.18.0 MSI aborted the install with `Could not open key: UNKNOWN\Software\delta-review` — wixl passes WiX's HKMU through as an invalid registry hive, and HKLM is the correct root for a per-machine install. Its shortcut also still pointed at the pre-rename `Delta.exe`.
 
 The terminal CLI is now **`dr`** (short for delta-review; `dr-dev` for the debug build). Installing from the app also removes a legacy `delta-review` shim symlink when it points at this app, so the old long-form command doesn't linger. `dr --help` and `--version` print the new name.
 
