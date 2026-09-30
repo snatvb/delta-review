@@ -174,3 +174,87 @@ describe("VirtualDiffPane comment affordances", () => {
     expect(onAddComment).toHaveBeenCalledWith({ file: "a.ts", side: "new", startLine: 2, endLine: 4, snippet: "b\nc\nd" }, "");
   });
 });
+
+// Selection-occurrence highlighting (#occ): picking text inside one row
+// highlights the string's other occurrences across the same file's shown lines;
+// collapsing the selection clears them. Same fake-viewport harness as above.
+describe("VirtualDiffPane selection occurrences", () => {
+  const oneFile: FileEntry[] = [{ path: "a.ts", status: "modified", additions: 3, deletions: 0, binary: false }];
+  const content = { status: "modified", binary: false, oldContent: "", newContent: "foo bar\nfoo\nbaz\n" };
+  let clientHeightDesc: PropertyDescriptor | undefined;
+
+  beforeAll(() => {
+    clientHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 900 });
+  });
+  afterAll(() => {
+    if (clientHeightDesc) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDesc);
+  });
+  beforeEach(() => {
+    getFileDiff.mockReset();
+    getFileDiff.mockResolvedValue(content);
+  });
+
+  function pane() {
+    return (
+      <VirtualDiffPane
+        target={target}
+        files={oneFile}
+        theme="light"
+        layout="unified"
+        viewedFiles={new Set()}
+        comments={[]}
+        jump={null}
+        prefetch={null}
+        onToggleViewed={noop}
+        onAddComment={noop}
+        onAddFileComment={noop}
+        onEditComment={noop}
+        onDeleteComment={noop}
+        onToggleResolvedComment={noop}
+      />
+    );
+  }
+
+  // Occurrence mark spans (#occ) are absolutely-positioned children of a row's
+  // code cell, tinted with the primary token (find's amber marks would need ⌘F).
+  const occMarks = (c: ReturnType<typeof render>, row: number) =>
+    c.container.querySelectorAll(`[data-row-index="${row}"] .diff-line-syntax-raw > span[class*="bg-primary"]`);
+
+  // Make a real in-row selection: a Range over chars [start, end) of the row's
+  // first text node (the syntax template may wrap the text in token spans).
+  function selectInRow(c: ReturnType<typeof render>, row: number, start: number, end: number) {
+    const code = c.container.querySelector(`[data-row-index="${row}"] .diff-line-syntax-raw`);
+    const walker = document.createTreeWalker(code!, NodeFilter.SHOW_TEXT);
+    const text = walker.nextNode();
+    const sel = document.getSelection();
+    expect(text).toBeTruthy();
+    expect(sel).toBeTruthy();
+    const r = document.createRange();
+    r.setStart(text!, start);
+    r.setEnd(text!, end);
+    sel!.removeAllRanges();
+    sel!.addRange(r);
+    act(() => { document.dispatchEvent(new Event("selectionchange")); });
+  }
+
+  it("selecting part of a word highlights its occurrences across the file", async () => {
+    const c = render(pane());
+    await waitFor(() => expect(c.container.querySelector('[data-row-index="0"]')).toBeTruthy());
+    selectInRow(c, 0, 0, 3); // "foo" of "foo bar"
+    await waitFor(() => expect(occMarks(c, 1)).toHaveLength(1));
+    expect(occMarks(c, 1)[0].getAttribute("style")).toContain("width: 3ch");
+    expect(occMarks(c, 0)).toHaveLength(1); // the picked occurrence is marked too
+    expect(occMarks(c, 2)).toHaveLength(0); // "baz" — no match
+  });
+
+  it("collapsing the selection clears the marks", async () => {
+    const c = render(pane());
+    await waitFor(() => expect(c.container.querySelector('[data-row-index="0"]')).toBeTruthy());
+    selectInRow(c, 0, 0, 3);
+    await waitFor(() => expect(occMarks(c, 1)).toHaveLength(1));
+    document.getSelection()!.removeAllRanges();
+    act(() => { document.dispatchEvent(new Event("selectionchange")); });
+    await waitFor(() => expect(occMarks(c, 1)).toHaveLength(0));
+  });
+});

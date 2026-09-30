@@ -34,6 +34,7 @@ import { markdownComponents } from "@/lib/markdownLink";
 import { isMarkdownPath } from "./isMarkdownPath";
 import { DiffFind } from "./DiffFind";
 import { findPrefillFromSelection } from "./findSelection";
+import { occurrenceQueryFromSelection } from "./occurrenceSelection";
 import { isWorkingTreeTarget, unifiedRowEdit, splitRowEdit } from "./lineEdit";
 import { FileEditorOverlay } from "./FileEditorOverlay";
 import { BinaryImageDiff } from "./BinaryImageDiff";
@@ -142,9 +143,11 @@ function syntaxHtml(model: Model, side: Side, lineNumber: number, raw?: string):
 const changeRangeOf = (diff: { changes?: unknown } | undefined): ChangeRange =>
   (diff?.changes as { range?: ChangeRange } | undefined)?.range;
 
-// In-code find (#find). A highlight mark over matched characters; RowMark adds
-// the split side so a row's two cells can each render only their own matches.
-type Mark = { col: number; len: number; active: boolean };
+// In-code find (#find) + selection-occurrence marks (#occ). A highlight mark
+// over matched characters; RowMark adds the split side so a row's two cells can
+// each render only their own matches. `tone: "occ"` renders the primary-tinted
+// selection-occurrence fill instead of find's amber.
+type Mark = { col: number; len: number; active: boolean; tone?: "occ" };
 type RowMark = Mark & { side: Side };
 // A match reported up to the pane: model row + side + char offset, plus the
 // body-relative y of its row (rough scroll target before exact centering).
@@ -175,6 +178,48 @@ function occurrencesOf(re: RegExp, text: string): { col: number; len: number }[]
   return out;
 }
 
+// Scan a file's SHOWN lines for matches of a compiled regex (#find/#occ).
+// Matches map to model rows (folded/hidden lines are skipped). Each hit becomes
+// a row mark; for find it also becomes a FindMatch reported up for stepping,
+// with the row's body-relative y as a rough scroll target before exact
+// centering is done via the DOM.
+function scanMarks(
+  model: Model, layout: DiffLayout, rowCount: number,
+  modelToVisual: Map<number, number>, rowTop: (v: number) => number,
+  path: string, re: RegExp, tone?: "occ",
+): { fileMatches: FindMatch[]; marksByRow: Map<number, RowMark[]> } {
+  const fm: FindMatch[] = [];
+  const mbr = new Map<number, RowMark[]>();
+  const add = (i: number, side: Side, text: string) => {
+    const occ = occurrencesOf(re, text);
+    if (!occ.length) return;
+    const vr = modelToVisual.get(i);
+    if (vr == null) return; // line folded away — not visible, skip
+    const y = rowTop(vr);
+    let arr = mbr.get(i);
+    if (!arr) mbr.set(i, (arr = []));
+    for (const o of occ) {
+      fm.push({ file: path, modelIndex: i, side, col: o.col, len: o.len, y });
+      arr.push({ side, col: o.col, len: o.len, active: false, tone });
+    }
+  };
+  if (layout === "split") {
+    for (let i = 0; i < rowCount; i++) {
+      const l = model.getSplitLeftLine(i), r = model.getSplitRightLine(i);
+      if (l.lineNumber != null && l.value) add(i, "old", l.value);
+      if (r.lineNumber != null && r.value) add(i, "new", r.value);
+    }
+  } else {
+    for (let i = 0; i < rowCount; i++) {
+      const l = model.getUnifiedLine(i);
+      if (l.value == null) continue;
+      const hasNew = l.newLineNumber != null, hasOld = l.oldLineNumber != null;
+      if (hasNew || hasOld) add(i, hasNew ? "new" : "old", l.value);
+    }
+  }
+  return { fileMatches: fm, marksByRow: mbr };
+}
+
 // The code area: highlighted line + a brighter tint over exactly the changed
 // characters (word-level diff). Monospace ⇒ char N is at N`ch`, so the overlay
 // lines up without splitting tokens.
@@ -192,9 +237,11 @@ function Code({ html, range, changeBg, marks, wrap, onDoubleClick }: { html: str
         <span aria-hidden className={`pointer-events-none absolute inset-y-[2.5px] rounded ${changeBg}`} style={{ left: `${range.location}ch`, width: `${range.length}ch` }} />
       )}
       {/* Find highlights sit behind the text (which is `relative` below). The
-          active match gets a stronger fill + ring. (#find) */}
+          active match gets a stronger fill + ring. (#find) Selection-occurrence
+          marks share the lane with a primary-tinted fill; find renders above
+          them (rowMarks orders occ first). (#occ) */}
       {marks?.map((m, k) => (
-        <span key={k} aria-hidden className={`pointer-events-none absolute inset-y-px rounded-[2px] ${m.active ? "bg-amber-400/80 ring-1 ring-amber-500" : "bg-amber-400/30"}`} style={{ left: `${m.col}ch`, width: `${m.len}ch` }} />
+        <span key={k} aria-hidden className={`pointer-events-none absolute inset-y-px rounded-[2px] ${m.tone === "occ" ? "bg-primary/20 ring-1 ring-primary/35" : m.active ? "bg-amber-400/80 ring-1 ring-amber-500" : "bg-amber-400/30"}`} style={{ left: `${m.col}ch`, width: `${m.len}ch` }} />
       ))}
       <span className="relative whitespace-pre" dangerouslySetInnerHTML={{ __html: html }} />
     </code>
@@ -445,7 +492,7 @@ function PreviewBody({ content, onHeight }: { content: string; onHeight: (h: num
 interface Block { id: string; index: number; comments: Comment[] }
 
 const VFileSection = memo(function VFileSection({
-  entry, theme, layout, cache, collapsed, viewed, previewing, onSetPreview, headerSolo, target, repoPath, mode, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onOpenFileEditor, onToggleCollapse, onToggleViewed, wrap, onToggleWrap, view, imageNear, paneW, rowH, chPx, query, caseSensitive, wholeWord, activeMatch, onMatches, forceModel, comments, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, reportBodyHeight,
+  entry, theme, layout, cache, collapsed, viewed, previewing, onSetPreview, headerSolo, target, repoPath, mode, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onOpenFileEditor, onToggleCollapse, onToggleViewed, wrap, onToggleWrap, view, imageNear, paneW, rowH, chPx, query, caseSensitive, wholeWord, activeMatch, onMatches, forceModel, occ, comments, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, reportBodyHeight,
 }: {
   entry: FileEntry; theme: "light" | "dark"; layout: DiffLayout;
   cache: ReturnType<typeof useFileDiffCache>;
@@ -477,6 +524,7 @@ const VFileSection = memo(function VFileSection({
   activeMatch: { modelIndex: number; side: Side; col: number } | null; // the active match, if it lives in THIS file
   onMatches: (path: string, matches: FindMatch[]) => void; // report this file's matches up for the global list
   forceModel: boolean; // find active → build the model even off-screen/collapsed so this file is searchable (#find)
+  occ: string | null; // trimmed selection made inside one row of THIS file → highlight its occurrences (#occ)
   comments: Comment[];
   onAddComment: (a: Anchor, body: string) => void;
   onAddFileComment: (file: string, body: string) => void;
@@ -705,45 +753,34 @@ const VFileSection = memo(function VFileSection({
   // (rows × ROW_H — a rough scroll target; exact centering is done via the DOM).
   const q = query.trim();
   const { fileMatches, marksByRow } = useMemo(() => {
-    const fm: FindMatch[] = [];
-    const mbr = new Map<number, RowMark[]>();
     const re = buildFindRegex(q, { caseSensitive, wholeWord });
-    if (!model || !re) return { fileMatches: fm, marksByRow: mbr };
-    const add = (i: number, side: Side, text: string) => {
-      const occ = occurrencesOf(re, text);
-      if (!occ.length) return;
-      const vr = modelToVisual.get(i);
-      if (vr == null) return; // line folded away — not visible, skip
-      const y = rowTops[vr];
-      let arr = mbr.get(i);
-      if (!arr) mbr.set(i, (arr = []));
-      for (const o of occ) {
-        fm.push({ file: entry.path, modelIndex: i, side, col: o.col, len: o.len, y });
-        arr.push({ side, col: o.col, len: o.len, active: false });
-      }
-    };
-    if (layout === "split") {
-      for (let i = 0; i < rowCount; i++) {
-        const l = model.getSplitLeftLine(i), r = model.getSplitRightLine(i);
-        if (l.lineNumber != null && l.value) add(i, "old", l.value);
-        if (r.lineNumber != null && r.value) add(i, "new", r.value);
-      }
-    } else {
-      for (let i = 0; i < rowCount; i++) {
-        const l = model.getUnifiedLine(i);
-        if (l.value == null) continue;
-        const hasNew = l.newLineNumber != null, hasOld = l.oldLineNumber != null;
-        if (hasNew || hasOld) add(i, hasNew ? "new" : "old", l.value);
-      }
-    }
-    return { fileMatches: fm, marksByRow: mbr };
+    if (!model || !re) return { fileMatches: [], marksByRow: new Map<number, RowMark[]>() };
+    return scanMarks(model, layout, rowCount, modelToVisual, (v) => rowTops[v], entry.path, re);
   }, [model, q, caseSensitive, wholeWord, layout, rowCount, modelToVisual, entry.path, rowTops]);
   useEffect(() => { onMatches(entry.path, fileMatches); }, [entry.path, fileMatches, onMatches]);
+
+  // Selection-occurrence marks (#occ): the pane hands us the trimmed text of a
+  // selection made inside ONE row of THIS file (null otherwise). Case-insensitive
+  // substring matches over the same shown-row scan as find; nothing is reported
+  // up — there's nothing to step through. Like find, no marks render while a
+  // file is line-wrapped (Code's wrap branch has no per-char lane).
+  const occMarksByRow = useMemo(() => {
+    if (!model || !occ) return new Map<number, RowMark[]>();
+    const re = buildFindRegex(occ, { caseSensitive: false, wholeWord: false });
+    if (!re) return new Map<number, RowMark[]>();
+    return scanMarks(model, layout, rowCount, modelToVisual, (v) => rowTops[v], entry.path, re, "occ").marksByRow;
+  }, [model, occ, layout, rowCount, modelToVisual, rowTops, entry.path]);
+
   // The active match's row gets its matching mark flagged active (cheap, at render).
   const rowMarks = (mi: number): RowMark[] | undefined => {
+    const occ = occMarksByRow.get(mi);
     const arr = marksByRow.get(mi);
-    if (!arr || !activeMatch || activeMatch.modelIndex !== mi) return arr;
-    return arr.map((m) => ({ ...m, active: m.side === activeMatch.side && m.col === activeMatch.col }));
+    if (!occ && !arr) return undefined;
+    const find = arr && activeMatch && activeMatch.modelIndex === mi
+      ? arr.map((m) => ({ ...m, active: m.side === activeMatch.side && m.col === activeMatch.col }))
+      : (arr ?? []);
+    // Occurrence marks render before find's, so find's amber wins shared pixels.
+    return occ ? [...occ, ...find] : find;
   };
 
   const [blockH, setBlockH] = useState<Record<string, number>>({});
@@ -1366,6 +1403,47 @@ export function VirtualDiffPane({
     return () => window.removeEventListener("keydown", onKey);
   }, [findOpen]);
   const closeFind = useCallback(() => { setFindOpen(false); setQuery(""); }, []);
+
+  // Selection-occurrence highlighting (#occ): selecting text inside ONE row of a
+  // file card highlights that string's other occurrences across the same file's
+  // shown lines (see VFileSection). Both selection endpoints must sit in the same
+  // row element — that guarantees a single line and, in split view, one side —
+  // inside the pane, so a pick in the tree, a comment textarea, the full-file
+  // editor, or across rows clears instead. selectionchange fires continuously
+  // while dragging, so coalesce the burst into one deferred evaluation per
+  // settle (setTimeout, not rAF — rAF is frozen in the headless preview and in
+  // hidden windows); setState bails out when the (file, text) pair didn't
+  // change, keeping mid-drag re-renders rare.
+  const [occ, setOcc] = useState<{ file: string; text: string } | null>(null);
+  const occTimer = useRef(0);
+  useEffect(() => {
+    const evaluate = () => {
+      const pane = paneRef.current;
+      const sel = window.getSelection();
+      let next: { file: string; text: string } | null = null;
+      if (pane && sel && !sel.isCollapsed && sel.rangeCount === 1) {
+        const a = sel.anchorNode, f = sel.focusNode;
+        const rowA = a?.parentElement?.closest("[data-row-index]") ?? null;
+        const rowF = f?.parentElement?.closest("[data-row-index]") ?? null;
+        if (a && f && pane.contains(a) && rowA && rowA === rowF) {
+          const file = rowA.closest("[data-file]")?.getAttribute("data-file");
+          const text = occurrenceQueryFromSelection(sel.toString());
+          if (file && text) next = { file, text };
+        }
+      }
+      setOcc((prev) => (prev?.file === next?.file && prev?.text === next?.text ? prev : next));
+    };
+    const onSelectionChange = () => {
+      window.clearTimeout(occTimer.current);
+      occTimer.current = window.setTimeout(evaluate, 0);
+    };
+    document.addEventListener("selectionchange", onSelectionChange);
+    evaluate(); // adopt a selection that already exists when (re)mounting
+    return () => {
+      document.removeEventListener("selectionchange", onSelectionChange);
+      window.clearTimeout(occTimer.current);
+    };
+  }, []);
   // Reset to the first match whenever the query changes — adjusted during render
   // via a prev-value guard rather than an effect (no cascading commit).
   const [prevFindQuery, setPrevFindQuery] = useState(query);
@@ -1795,6 +1873,7 @@ export function VirtualDiffPane({
                 activeMatch={activeMatch && activeMatch.file === entry.path ? { modelIndex: activeMatch.modelIndex, side: activeMatch.side, col: activeMatch.col } : null}
                 onMatches={onMatches}
                 forceModel={findActive}
+                occ={occ && occ.file === entry.path ? occ.text : null}
                 comments={view || findActive ? (commentsByFile.get(entry.path) ?? noComments) : noComments}
                 onAddComment={onAddComment} onAddFileComment={onAddFileComment} onEditComment={onEditComment} onDeleteComment={onDeleteComment} onToggleResolvedComment={onToggleResolvedComment}
                 reportBodyHeight={reportBodyHeight}
