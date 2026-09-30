@@ -858,7 +858,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       <div className="relative flex min-h-0 flex-1">
         {busy && viewSummary && (
           <div aria-hidden className="absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden">
-            <div className="absolute inset-y-0 left-0 w-1/3 bg-primary/70 [animation:delta-indeterminate_1.1s_ease-in-out_infinite]" />
+            <div className="absolute inset-y-0 left-0 w-1/3 bg-primary/70 delta-indeterminate" />
           </div>
         )}
         {viewSummary && review ? (
@@ -940,7 +940,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                 <div className="flex flex-col items-center gap-2.5">
                   <span className="text-[13px]">Computing delta…</span>
                   <div className="relative h-1 w-32 overflow-hidden rounded-full bg-muted">
-                    <div className="absolute inset-y-0 left-0 w-1/3 rounded-full bg-primary/70 [animation:delta-indeterminate_1.1s_ease-in-out_infinite]" />
+                    <div className="absolute inset-y-0 left-0 w-1/3 rounded-full bg-primary/70 delta-indeterminate" />
                   </div>
                 </div>
               </div>

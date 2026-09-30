@@ -58,7 +58,7 @@ export function UpdateBanner({ status, version, progress, onDownload, onRestart,
               style={{ width: `${pct}%` }}
             />
           ) : (
-            <div className="absolute inset-y-0 left-0 w-1/3 rounded-full bg-primary/70 [animation:delta-indeterminate_1.1s_ease-in-out_infinite]" />
+            <div className="absolute inset-y-0 left-0 w-1/3 rounded-full bg-primary/70 delta-indeterminate" />
           )}
         </div>
       </output>
