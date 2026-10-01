@@ -9,7 +9,7 @@ set -euo pipefail
 version="$1"
 # `app` is productName (drives the MSI file name); `binary` is mainBinaryName
 # (the cross-compiled exe). They intentionally differ from the CLI shim name.
-app="delta-review"
+app="$2"
 binary="DeltaReview"
 staging="release/${version}"
 

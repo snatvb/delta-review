@@ -254,7 +254,7 @@ if [ "$build_windows" -eq 1 ]; then
   docker run --rm --platform linux/amd64 \
     -v "$ROOT_DIR":/work -w /work \
     -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
-    "$msi_image" bash scripts/container-windows-msi.sh "$new_version"
+    "$msi_image" bash scripts/container-windows-msi.sh "$new_version" "$product"
   [ -f "$staging/${product}_${new_version}_x64.msi" ] || die "Windows MSI was not produced"
 fi
 
@@ -267,7 +267,7 @@ if [ "$build_linux" -eq 1 ]; then
     -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
     -e TAURI_SIGNING_PRIVATE_KEY="${TAURI_SIGNING_PRIVATE_KEY:-}" \
     -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
-    "$(bake_builder_image)" bash scripts/container-linux-build.sh "$new_version"
+    "$(bake_builder_image)" bash scripts/container-linux-build.sh "$new_version" "$product"
   [ -f "$staging/${product}_${new_version}_amd64.AppImage" ] || die "Linux AppImage was not produced"
   [ -f "$staging/${product}_${new_version}_amd64.deb" ] || die "Linux deb was not produced"
 fi

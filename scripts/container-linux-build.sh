@@ -7,6 +7,7 @@ set -euo pipefail
 # named volumes for node_modules and the tauri target dir.
 
 version="$1"
+product="$2" # productName from tauri.conf.json — the bundle artifacts carry it
 staging="release/${version}"
 
 export RUSTUP_HOME=/usr/local/rustup
@@ -45,10 +46,10 @@ mkdir -p "$staging"
 bundle_dir="src-tauri/target/release/bundle"
 # Exact names: the volume-cached bundle dirs may still hold older-version
 # artifacts, and a glob would drag them into the release staging.
-for f in "$bundle_dir/deb/delta-review_${version}_amd64.deb" \
-         "$bundle_dir/appimage/delta-review_${version}_amd64.AppImage" \
-         "$bundle_dir/appimage/delta-review_${version}_amd64.AppImage.tar.gz" \
-         "$bundle_dir/appimage/delta-review_${version}_amd64.AppImage.sig"; do
+for f in "$bundle_dir/deb/${product}_${version}_amd64.deb" \
+         "$bundle_dir/appimage/${product}_${version}_amd64.AppImage" \
+         "$bundle_dir/appimage/${product}_${version}_amd64.AppImage.tar.gz" \
+         "$bundle_dir/appimage/${product}_${version}_amd64.AppImage.sig"; do
   if [ -f "$f" ]; then
     cp -v "$f" "$staging/"
   fi
