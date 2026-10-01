@@ -154,7 +154,9 @@ for sig in "$staging"/*.sig; do
      && [ -f "$staging/${asset}.nsis.zip.sig" ]; then
     continue
   fi
-  latest_args+=(--sig "${key}=${sig}" --url "${key}=${base_url}/${asset}")
+  # Product names may contain spaces ("Delta Review"); release-asset URLs must
+  # percent-encode them or the updater's fetch fails on the raw space.
+  latest_args+=(--sig "${key}=${sig}" --url "${key}=${base_url}/${asset// /%20}")
 done
 
 notes_file="$(mktemp)"
@@ -189,7 +191,7 @@ fi
 
 gh release create "$tag" "${assets[@]}" \
   --repo "$REPO_SLUG" \
-  --title "delta-review ${tag}" \
+  --title "Delta Review ${tag}" \
   --notes-file "$notes_file"
 
 printf '\nPublished %s on %s with %s assets.\n' "$tag" "$REPO_SLUG" "$((${#assets[@]}))"

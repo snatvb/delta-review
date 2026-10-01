@@ -15,10 +15,10 @@ Usage:
                            [--only mac|windows|linux] [--skip-checks]
 
 Builds fork release artifacts into release/<version>/:
-  mac      delta-review_<v>_aarch64.dmg (+ delta-review.app.tar.gz + .sig)
-  windows  delta-review_<v>_x64-setup.exe (+ .sig) — cross-compiled via mingw-w64
-           delta-review_<v>_x64.msi — WiX definition compiled with wixl in Docker
-  linux    delta-review_<v>_amd64.deb + delta-review_<v>_amd64.AppImage (+ .sig)
+  mac      "Delta Review_<v>_aarch64.dmg" (+ "Delta Review.app.tar.gz" + .sig)
+  windows  "Delta Review_<v>_x64-setup.exe" (+ .sig) — cross-compiled via mingw-w64
+           "Delta Review_<v>_x64.msi" — WiX definition compiled with wixl in Docker
+  linux    "Delta Review_<v>_amd64.deb" + "Delta Review_<v>_amd64.AppImage" (+ .sig)
 
 Signing is best-effort:
   - macOS codesigning/notarization is skipped (pass APPLE_SIGNING_IDENTITY to sign)
@@ -192,13 +192,14 @@ fi
 collect() { # collect <bundle-subdir> <glob...>
   local dir="src-tauri/target/$1"
   shift
-  local found=0
+  local found=0 f pattern
   for pattern in "$@"; do
-    for f in "$dir"/$pattern; do
-      [ -f "$f" ] || continue
+    # find -print0, not a shell glob: the product name contains spaces, which
+    # word-split an unquoted glob pattern into broken fragments.
+    while IFS= read -r -d '' f; do
       cp "$f" "$staging/"
       found=1
-    done
+    done < <(find "$dir" -maxdepth 1 -type f -name "$pattern" -print0)
   done
   [ "$found" -eq 1 ] || die "no artifacts matched in $dir (patterns: $*)"
 }

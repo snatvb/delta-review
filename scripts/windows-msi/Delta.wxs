@@ -13,7 +13,7 @@
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*"
-           Name="delta-review"
+           Name="Delta Review"
            Language="1033"
            Codepage="1252"
            Version="$(var.Version)"
@@ -22,14 +22,14 @@
     <Package InstallerVersion="200"
              Compressed="yes"
              InstallScope="perMachine"
-             Description="delta-review — review your agents work and leave structured comments"/>
+             Description="Delta Review — review your agents work and leave structured comments"/>
     <MajorUpgrade DowngradeErrorMessage="A newer version of Delta is already installed."/>
     <Icon Id="Delta.ico" SourceFile="$(var.IconPath)"/>
     <Property Id="ARPPRODUCTICON" Value="Delta.ico"/>
     <Property Id="ARPHELPLINK" Value="https://github.com/snatvb/delta-review"/>
     <Media Id="1" Cabinet="Delta.cab" EmbedCab="yes"/>
 
-    <Feature Id="Main" Title="delta-review" Level="1">
+    <Feature Id="Main" Title="Delta Review" Level="1">
       <ComponentRef Id="MainExe"/>
       <ComponentRef Id="StartMenuShortcut"/>
     </Feature>
@@ -51,7 +51,7 @@
                    Guid="60F98C1D-C70D-42F5-95B9-1E092D08C044"
                    Win64="yes">
           <Shortcut Id="DeltaShortcut"
-                    Name="delta-review"
+                    Name="Delta Review"
                     Target="[INSTALLDIR]DeltaReview.exe"
                     WorkingDirectory="INSTALLDIR"
                     Icon="Delta.ico"/>

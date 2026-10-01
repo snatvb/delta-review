@@ -43,7 +43,7 @@ export function AboutSection() {
       />
 
       <div className="mt-6 rounded-lg border border-border/60 bg-muted/30 px-4 py-3 text-[12px] leading-relaxed text-muted-foreground">
-        delta-review is a fork of{" "}
+        Delta Review is a fork of{" "}
         <a
           href="https://github.com/darioielardi/delta"
           className="text-foreground underline decoration-border underline-offset-2 hover:decoration-foreground"

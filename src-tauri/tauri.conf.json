@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "delta-review",
+  "productName": "Delta Review",
   "mainBinaryName": "DeltaReview",
   "version": "../package.json",
   "identifier": "com.snatvb.delta-review",
