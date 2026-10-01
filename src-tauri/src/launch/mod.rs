@@ -27,9 +27,84 @@ pub const CLI_NAME: &str = "dr";
 /// Window title — suffixed in dev builds so the debug app is visually distinct from
 /// the installed release in the title bar and window switcher.
 #[cfg(debug_assertions)]
-const WINDOW_TITLE: &str = "delta-review (dev)";
+const WINDOW_TITLE: &str = "Delta Review (dev)";
 #[cfg(not(debug_assertions))]
-const WINDOW_TITLE: &str = "delta-review";
+const WINDOW_TITLE: &str = "Delta Review";
+
+/// Traffic-light placement, shared by every window's overlay titlebar (macOS).
+/// x lands the close button's left edge flush with the sidebar content inset
+/// (FilesPanel's pl-1.5 + px-2 = 14px, where the search box and the viewed
+/// counter sit). wry derives the titlebar height as `button_height + y` and the
+/// buttons ride near its bottom, so the visual top is roughly `y - button_h/2`:
+/// with macOS 26's 14pt buttons, y=26 puts the top at 17, dead-center in the
+/// 48px toolbar. Verify against devbridge's /lights; recalibrate when a macOS
+/// update changes the system button metrics.
+#[cfg(target_os = "macos")]
+pub(crate) const TRAFFIC_LIGHT_X: f64 = 14.0;
+#[cfg(target_os = "macos")]
+pub(crate) const TRAFFIC_LIGHT_Y: f64 = 26.0;
+
+/// wry's traffic-light inset, applied verbatim: stretch the titlebar container
+/// to `button_height + y` (top-anchored) and move the buttons to x. The
+/// builder-time application is undone by the first AppKit titlebar relayout,
+/// and wry only re-applies on webview redraws — which a fully-covered view
+/// never gets — so windows must re-run this themselves (see keep_traffic_lights).
+/// Must run on the main thread; AppKit mutations off-thread throw.
+#[cfg(target_os = "macos")]
+fn apply_traffic_lights(w: &tauri::WebviewWindow) {
+    use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
+    let Ok(ptr) = w.ns_window() else { return };
+    let win: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+    let Some(close) = win.standardWindowButton(NSWindowButton::CloseButton) else { return };
+    let Some(miniaturize) = win.standardWindowButton(NSWindowButton::MiniaturizeButton) else { return };
+    let zoom = win.standardWindowButton(NSWindowButton::ZoomButton);
+    let close_v = unsafe { objc2::rc::Retained::cast_unchecked::<NSView>(close) };
+    let min_v = unsafe { objc2::rc::Retained::cast_unchecked::<NSView>(miniaturize) };
+    let Some(container) = unsafe { close_v.superview() }.and_then(|v| unsafe { v.superview() }) else { return };
+    let container_v = unsafe { objc2::rc::Retained::cast_unchecked::<NSView>(container) };
+
+    let close_rect = close_v.frame();
+    let bar_h = close_rect.size.height + TRAFFIC_LIGHT_Y;
+    let win_h = win.frame().size.height;
+    let mut crect = container_v.frame();
+    crect.size.height = bar_h;
+    crect.origin.y = win_h - bar_h;
+    container_v.setFrame(crect);
+
+    let space = min_v.frame().origin.x - close_rect.origin.x;
+    let mut views = vec![close_v, min_v];
+    if let Some(z) = zoom {
+        views.push(unsafe { objc2::rc::Retained::cast_unchecked::<NSView>(z) });
+    }
+    for (i, v) in views.iter().enumerate() {
+        let mut r = v.frame();
+        r.origin.x = TRAFFIC_LIGHT_X + i as f64 * space;
+        v.setFrameOrigin(r.origin);
+    }
+}
+
+/// Keep the traffic lights where TRAFFIC_LIGHT_* puts them. AppKit discards the
+/// inset on every titlebar relayout (creation, window-state restore, show,
+/// resizes, fullscreen), so: apply now plus a hidden size wiggle that forces
+/// the creation-time relayout (and its correction) before first paint, and
+/// re-apply on every later Resized/Moved/Focused. Idempotent and cheap.
+#[cfg(target_os = "macos")]
+fn keep_traffic_lights(w: &tauri::WebviewWindow) {
+    let w_apply = w.clone();
+    let _ = w.run_on_main_thread(move || {
+        apply_traffic_lights(&w_apply);
+        if let Ok(size) = w_apply.outer_size() {
+            let _ = w_apply.set_size(tauri::PhysicalSize::new(size.width + 1, size.height));
+            let _ = w_apply.set_size(size);
+        }
+    });
+    let w_events = w.clone();
+    w.on_window_event(move |e| {
+        if matches!(e, tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Focused(_)) {
+            apply_traffic_lights(&w_events);
+        }
+    });
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
@@ -225,11 +300,11 @@ pub fn open_target_window(app: &AppHandle, repo_path: &str, mode: DiffMode, base
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
             .hidden_title(true)
-            // y is offset by ~10px from the window top in practice, so 26 lands the
-            // 16px controls' top at ~16 → vertically centered in the 48px titlebar.
-            .traffic_light_position(tauri::LogicalPosition::new(16.0, 26.0));
+            .traffic_light_position(tauri::LogicalPosition::new(TRAFFIC_LIGHT_X, TRAFFIC_LIGHT_Y));
     }
-    builder.build().map_err(|e| format!("create window: {e}"))?;
+    let window = builder.build().map_err(|e| format!("create window: {e}"))?;
+    #[cfg(target_os = "macos")]
+    keep_traffic_lights(&window);
     // Auto-refresh: watch this worktree and notify the window on change. (#9)
     crate::watch::start(app, &label, Path::new(&canonical));
     Ok(Opened::Created(label))
@@ -266,11 +341,11 @@ pub fn open_home_window(app: &AppHandle) -> Result<(), String> {
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
             .hidden_title(true)
-            // y is offset by ~10px from the window top in practice, so 26 lands the
-            // 16px controls' top at ~16 → vertically centered in the 48px titlebar.
-            .traffic_light_position(tauri::LogicalPosition::new(16.0, 26.0));
+            .traffic_light_position(tauri::LogicalPosition::new(TRAFFIC_LIGHT_X, TRAFFIC_LIGHT_Y));
     }
-    builder.build().map_err(|e| format!("create home window: {e}"))?;
+    let window = builder.build().map_err(|e| format!("create home window: {e}"))?;
+    #[cfg(target_os = "macos")]
+    keep_traffic_lights(&window);
     Ok(())
 }
 

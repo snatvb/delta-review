@@ -55,6 +55,12 @@ quick-xml = "0.42.0"
 # macOS-only: on Windows libgit2 uses WinHTTP/SChannel and building OpenSSL needs Perl + NASM.
 [target.'cfg(target_os = "macos")'.dependencies]
 git2 = { version = "0.19", features = ["vendored-openssl"] }
+# Traffic-light placement on overlay-titlebar windows (launch) + devbridge's
+# /lights calibration endpoint. Same versions wry already pins in the lockfile —
+# no extra build cost.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", features = ["NSWindow", "NSView", "NSButton", "NSControl", "NSResponder"] }
+objc2-foundation = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
