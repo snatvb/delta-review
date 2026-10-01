@@ -154,9 +154,10 @@ for sig in "$staging"/*.sig; do
      && [ -f "$staging/${asset}.nsis.zip.sig" ]; then
     continue
   fi
-  # Product names may contain spaces ("Delta Review"); release-asset URLs must
-  # percent-encode them or the updater's fetch fails on the raw space.
-  latest_args+=(--sig "${key}=${sig}" --url "${key}=${base_url}/${asset// /%20}")
+  # GitHub renames uploaded assets by replacing spaces with dots ("Delta
+  # Review.app.tar.gz" is served as "Delta.Review.app.tar.gz"), so latest.json
+  # must point at the canonical dotted name — raw spaces or %20 forms 404.
+  latest_args+=(--sig "${key}=${sig}" --url "${key}=${base_url}/${asset// /.}")
 done
 
 notes_file="$(mktemp)"
