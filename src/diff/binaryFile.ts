@@ -2,6 +2,7 @@
 //
 // Binary-file card helpers (#binary): which binary extensions render as images,
 // the MIME each maps to, and human-readable byte sizes for the placeholder.
+import type { BlobSide, FileStatus } from "../types";
 
 // Extensions the webview's <img> can decode on both mac (WKWebView) and Windows
 // (WebView2). TIFF is Safari-only, HEIC uncompressible-by-default — both excluded.
@@ -25,6 +26,17 @@ export function imageMimeFor(path: string): string | null {
 }
 
 export const isImagePath = (path: string): boolean => imageMimeFor(path) != null;
+
+/** The sides a binary compare shows per status — both for modified/renamed, one for added/deleted. */
+export function binarySidesFor(status: FileStatus): BlobSide[] {
+  if (status === "added") return ["new"];
+  if (status === "deleted") return ["old"];
+  return ["old", "new"];
+}
+
+/** A side may render pixels only with a known size under the preview cap and an image MIME. */
+export const previewableImageSide = (size: number | null, mime: string | null): boolean =>
+  size != null && size <= MAX_IMAGE_PREVIEW_BYTES && mime != null;
 
 // Mirrors the cap in src-tauri/src/blob_scheme.rs.
 export const MAX_IMAGE_PREVIEW_BYTES = 16 * 1024 * 1024;

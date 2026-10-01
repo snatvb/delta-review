@@ -38,7 +38,8 @@ import { occurrenceQueryFromSelection } from "./occurrenceSelection";
 import { isWorkingTreeTarget, unifiedRowEdit, splitRowEdit } from "./lineEdit";
 import { FileEditorOverlay } from "./FileEditorOverlay";
 import { BinaryImageDiff } from "./BinaryImageDiff";
-import { formatBytes, imageMimeFor, isImagePath } from "./binaryFile";
+import { ImageLightbox, type ImageLightboxSide } from "./ImageLightbox";
+import { binarySidesFor, formatBytes, imageMimeFor, isImagePath, previewableImageSide } from "./binaryFile";
 import { useBinaryFile } from "./useBinaryFile";
 import type { Anchor, BinaryFileDiff, Comment, DiffMode, FileDiff, FileEntry, FileStatus, Side, Target } from "../types";
 import type { DiffLayout } from "./useDiffLayout";
@@ -493,7 +494,7 @@ function PreviewBody({ content, onHeight }: { content: string; onHeight: (h: num
 interface Block { id: string; index: number; comments: Comment[] }
 
 const VFileSection = memo(function VFileSection({
-  entry, theme, layout, cache, collapsed, viewed, previewing, onSetPreview, headerSolo, target, repoPath, mode, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onOpenFileEditor, onToggleCollapse, onToggleViewed, wrap, onToggleWrap, view, imageNear, paneW, rowH, chPx, query, caseSensitive, wholeWord, activeMatch, onMatches, forceModel, occ, comments, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, reportBodyHeight,
+  entry, theme, layout, cache, collapsed, viewed, previewing, onSetPreview, headerSolo, target, repoPath, mode, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onOpenFileEditor, onOpenImage, onToggleCollapse, onToggleViewed, wrap, onToggleWrap, view, imageNear, paneW, rowH, chPx, query, caseSensitive, wholeWord, activeMatch, onMatches, forceModel, occ, comments, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, reportBodyHeight,
 }: {
   entry: FileEntry; theme: "light" | "dark"; layout: DiffLayout;
   cache: ReturnType<typeof useFileDiffCache>;
@@ -509,6 +510,9 @@ const VFileSection = memo(function VFileSection({
   // Opens the full-file editor overlay (Phase 2); `line` is null from the header
   // button, or the row's line number when escalating from an inline edit.
   onOpenFileEditor: (file: string, line: number | null) => void;
+  // Opens the full-window image viewer (#lightbox) with the card's sides —
+  // srcs are blob URLs built here so the viewer reuses the card's cached bytes.
+  onOpenImage: (req: { path: string; sides: ImageLightboxSide[] }) => void;
   previewing: boolean; // rendered markdown preview instead of the diff (state lifted to the pane so it survives scroll-unmount) (#preview)
   onSetPreview: (path: string, on: boolean) => void;
   onToggleCollapse: (path: string) => void;
@@ -565,6 +569,30 @@ const VFileSection = memo(function VFileSection({
   const [revealed, setRevealed] = useState(false);
   const ignoredHidden = isIgnored && !revealed;
   const binary = useBinaryFile(target, cache, entry.path, !collapsed && !previewing && !ignoredHidden && isBinary && (isImageCard ? imageNear : view != null));
+  // Full-window viewer (#lightbox): the sides are resolved HERE, at open time,
+  // so the viewer gets the exact blob URLs the card already rendered — the
+  // webview serves them from cache, no second fetch over IPC.
+  const openImageLightbox = useCallback(() => {
+    if (!binary || !isImageCard) return;
+    const mime = imageMimeFor(entry.path);
+    const oldMime = entry.oldPath ? imageMimeFor(entry.oldPath) : null;
+    onOpenImage({
+      path: entry.path,
+      sides: binarySidesFor(entry.status).map((side) => {
+        const sideMime = side === "old" ? oldMime ?? mime : mime;
+        const size = side === "old" ? binary.oldSize : binary.newSize;
+        return {
+          side,
+          label: side === "old" ? "Old" : "New",
+          mime: sideMime,
+          size,
+          src: previewableImageSide(size, sideMime)
+            ? api.binaryBlobUrl(target, entry.path, side, sideMime!, binary.rev)
+            : null,
+        };
+      }),
+    });
+  }, [binary, entry.path, entry.oldPath, entry.status, isImageCard, target, onOpenImage]);
   // Rendered markdown preview: added/modified markdown files only (deleted has no
   // new content; binary has none). `previewing` is held by the pane (survives the
   // card unmounting when scrolled off-screen); only the measured height is local. (#preview)
@@ -1152,6 +1180,7 @@ const VFileSection = memo(function VFileSection({
                 oldMime={entry.oldPath ? imageMimeFor(entry.oldPath) : null}
                 load={imageNear}
                 srcOf={(side, mime) => api.binaryBlobUrl(target, entry.path, side, mime, binary?.rev ?? 0)}
+                onExpand={openImageLightbox}
               />
             ) : (
               // Terminal placeholder (no reveal action like deleted/giant): centered,
@@ -1543,6 +1572,13 @@ export function VirtualDiffPane({
   const closeFileEditor = useCallback(() => setFileEditor(null), []);
   const onFileEditorSaved = useCallback((file: string) => onFileEdited?.(file), [onFileEdited]);
 
+  // Full-window image viewer (#lightbox). Like the file editor, the request is
+  // held by the pane (not the card) so the viewer survives its card unmounting
+  // on scroll while it's open.
+  const [imageViewer, setImageViewer] = useState<{ path: string; sides: ImageLightboxSide[] } | null>(null);
+  const openImageViewer = useCallback((req: { path: string; sides: ImageLightboxSide[] }) => setImageViewer(req), []);
+  const closeImageViewer = useCallback(() => setImageViewer(null), []);
+
   const { offsets, total } = useMemo(() => {
     const offs: number[] = [];
     let top = PAD; // top padding above the first card
@@ -1867,6 +1903,7 @@ export function VirtualDiffPane({
                 rowEdit={editing && editing.file === entry.path ? editing : null}
                 onStartEdit={startEdit} onSaveEdit={saveEdit} onCancelEdit={cancelEdit}
                 onOpenFileEditor={openFileEditor}
+                onOpenImage={openImageViewer}
                 onToggleCollapse={toggleCollapse} onToggleViewed={onToggleViewed}
                 wrap={wrapFor(entry)} onToggleWrap={toggleWrap}
                 view={view} imageNear={imageNear} paneW={viewportW} rowH={rowH} chPx={chPx}
@@ -1893,6 +1930,14 @@ export function VirtualDiffPane({
           initialLine={fileEditor.line}
           onClose={closeFileEditor}
           onSaved={onFileEditorSaved}
+        />
+      )}
+      {imageViewer && (
+        <ImageLightbox
+          key={imageViewer.path}
+          path={imageViewer.path}
+          sides={imageViewer.sides}
+          onClose={closeImageViewer}
         />
       )}
     </div>

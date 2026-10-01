@@ -5,6 +5,7 @@ import type { EditorView as EditorViewType } from "@codemirror/view";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { SaveDiscardDialog } from "@/components/ui/save-discard-dialog";
+import { isMac } from "../lib/platform";
 import { api } from "../api";
 import type { Target } from "../types";
 import { useCodeFont, rowHeightFor } from "../codeFont";
@@ -175,7 +176,9 @@ export function FileEditorOverlay({
         aria-label={`Edit ${path}`}
         className="fixed inset-0 z-50 flex flex-col bg-background"
       >
-        <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-card px-4">
+        {/* macOS traffic lights float over the top-left — pad past them (pl-24)
+            like the workspace toolbar, so Back stays clickable. */}
+        <header className={`flex h-12 shrink-0 items-center gap-3 border-b border-border bg-card pr-4 ${isMac ? "pl-24" : "pl-4"}`}>
           <button
             type="button"
             onClick={requestClose}
