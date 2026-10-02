@@ -2,6 +2,7 @@ import { useEditorPref, EDITORS, type EditorId } from "../editor";
 import { usePickerOpenMode, type PickerOpenMode } from "../windowMode";
 import { useWindowPerBranch } from "../windowPerBranch";
 import { useChangeDetection } from "../changeDetection";
+import { useViewedStatsExclude } from "../viewedStatsPref";
 import { useUpdateCheck } from "../updater/updateCheckPref";
 import { Chevron, Divider, OnOffToggle, Row, selectClass } from "./controls";
 
@@ -13,6 +14,7 @@ export function GeneralSection() {
   const [openMode, setOpenMode] = usePickerOpenMode();
   const [windowPerBranch, setWindowPerBranch] = useWindowPerBranch();
   const [changeDetection, setChangeDetection] = useChangeDetection();
+  const [excludeViewed, setExcludeViewed] = useViewedStatsExclude();
   const [updateCheck, setUpdateCheck] = useUpdateCheck();
 
   return (
@@ -86,6 +88,22 @@ export function GeneralSection() {
             onChange={setChangeDetection}
             onTitle="Offer Refresh when files change"
             offTitle="Refresh manually only"
+          />
+        }
+      />
+
+      <Divider />
+
+      <Row
+        label="Unviewed-only totals"
+        hint="The file panel's +/− counter skips files you marked viewed."
+        control={
+          <OnOffToggle
+            label="Unviewed-only totals"
+            value={excludeViewed}
+            onChange={setExcludeViewed}
+            onTitle="Count only files not yet viewed"
+            offTitle="Count every file"
           />
         }
       />

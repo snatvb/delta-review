@@ -5,6 +5,8 @@ import { Kbd } from "@/components/ui/kbd";
 import { ChevronRight, ChevronsDownUp, ChevronsUpDown, EyeOff, Folder, FolderOpen, Check, List, ListTree, MessageSquare, Minus, Search, X } from "lucide-react";
 import type { FileEntry, FileStatus } from "../types";
 import { buildTree, type TreeNode } from "./buildTree";
+import { sumChangeStats } from "./changeStats";
+import { useViewedStatsExclude } from "../viewedStatsPref";
 import { FileTypeIcon } from "./fileTypeIcons";
 
 const STATUS_COLOR: Record<FileStatus, string> = {
@@ -364,9 +366,11 @@ export function FilesPanel({
   const anyDirOpen = treeDirPaths.some((p) => !collapsed.has(p));
 
   // Cheap sums — React Compiler memoizes the render; no manual useMemo needed.
+  // With the "unviewed-only totals" pref on, viewed files drop out of the top
+  // +/− counter (per-file row numbers always stay).
   const reviewable = files.filter((f) => !f.ignored);
-  const totalAdds = reviewable.reduce((n, f) => n + f.additions, 0);
-  const totalDels = reviewable.reduce((n, f) => n + f.deletions, 0);
+  const [excludeViewed] = useViewedStatsExclude();
+  const { additions: totalAdds, deletions: totalDels } = sumChangeStats(files, viewedFiles, excludeViewed === "on");
   const viewedCount = reviewable.filter((f) => viewedFiles.has(f.path)).length;
   const allViewed = reviewable.length > 0 && viewedCount >= reviewable.length;
 
@@ -471,7 +475,10 @@ export function FilesPanel({
           <span className={`font-medium ${allViewed ? "" : "text-foreground"}`}>{viewedCount}</span>
           <span className="opacity-80">{" / "}{reviewable.length} viewed</span>
         </span>
-        <span className="ml-auto shrink-0 whitespace-nowrap tabular-nums">
+        <span
+          className="ml-auto shrink-0 whitespace-nowrap tabular-nums"
+          title={excludeViewed && viewedCount > 0 ? `+${fmtCount(totalAdds)} / −${fmtCount(totalDels)} left to review — ${viewedCount} viewed ${viewedCount === 1 ? "file" : "files"} excluded` : undefined}
+        >
           {totalAdds > 0 && <span className="text-emerald-500">+{fmtCount(totalAdds)}</span>}{" "}
           {totalDels > 0 && <span className="text-rose-500">−{fmtCount(totalDels)}</span>}
         </span>

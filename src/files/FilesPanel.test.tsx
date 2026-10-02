@@ -1,7 +1,8 @@
 // src/files/FilesPanel.test.tsx
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { FilesPanel } from "./FilesPanel";
+import { setViewedStatsExclude } from "../viewedStatsPref";
 import type { FileEntry } from "../types";
 
 const files: FileEntry[] = [
@@ -36,6 +37,53 @@ describe("FilesPanel", () => {
     // Totals: +5 / −5 — values no individual row shows, so they're unique to the header.
     expect(screen.getByText("+5")).toBeInTheDocument();
     expect(screen.getByText("−5")).toBeInTheDocument();
+  });
+
+  describe("unviewed-only totals pref", () => {
+    // The pref module caches its value at first read, so tests must flip it via
+    // the setter (not raw localStorage) and always restore it.
+    afterEach(() => setViewedStatsExclude("off"));
+
+    it("counts viewed files in the totals by default (pref off)", () => {
+      const multi: FileEntry[] = [
+        { path: "src/a.ts", status: "modified", additions: 3, deletions: 1, binary: false },
+        { path: "src/b.ts", status: "modified", additions: 2, deletions: 4, binary: false },
+      ];
+      render(<FilesPanel files={multi} selected={null} onSelect={() => {}} viewedFiles={new Set(["src/a.ts"])} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
+      expect(screen.getByText("+5")).toBeInTheDocument();
+      expect(screen.getByText("−5")).toBeInTheDocument();
+    });
+
+    it("excludes viewed files from the totals when the pref is on", () => {
+      setViewedStatsExclude("on");
+      // Counts chosen so every header value differs from every row value.
+      const multi: FileEntry[] = [
+        { path: "src/a.ts", status: "modified", additions: 3, deletions: 1, binary: false },
+        { path: "src/b.ts", status: "modified", additions: 2, deletions: 5, binary: false },
+        { path: "src/c.ts", status: "modified", additions: 4, deletions: 9, binary: false },
+      ];
+      render(<FilesPanel files={multi} selected={null} onSelect={() => {}} viewedFiles={new Set(["src/a.ts"])} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
+      // Header = b + c only: +6 / −14 (rows are 2/5 and 4/9).
+      expect(screen.getByText("+6")).toBeInTheDocument();
+      expect(screen.getByText("−14")).toBeInTheDocument();
+      expect(screen.queryByText("+9")).not.toBeInTheDocument(); // the all-files total never shows
+      // The tooltip names what was excluded, so the shrunken number reads deliberate.
+      expect(screen.getByTitle(/\+6 \/ −14 left to review — 1 viewed file excluded/)).toBeInTheDocument();
+      // The progress chip still counts every file.
+      expect(screen.getByTitle("Files viewed")).toHaveTextContent("1 / 3 viewed");
+      // Per-file row numbers stay untouched — including the viewed file's.
+      expect(screen.getByText("+3")).toBeInTheDocument();
+    });
+
+    it("shows no +/− totals when every file is viewed and the pref is on", () => {
+      setViewedStatsExclude("on");
+      render(<FilesPanel files={files} selected={null} onSelect={() => {}} viewedFiles={new Set(["src/a.ts"])} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
+      // The header collapses to +0/−0 (hidden spans), while the file row keeps
+      // its own numbers — so assert on the header tooltip, not on "+3", which
+      // the row legitimately still renders.
+      expect(screen.getByTitle(/\+0 \/ −0 left to review — 1 viewed file excluded/)).toBeInTheDocument();
+      expect(screen.getByText("+3")).toBeInTheDocument(); // the row's number survives
+    });
   });
 
   it("groups ignored files in a collapsed section and leaves them out of the counts", () => {
