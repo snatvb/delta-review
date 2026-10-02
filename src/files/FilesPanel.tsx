@@ -369,8 +369,9 @@ export function FilesPanel({
   // With the "unviewed-only totals" pref on, viewed files drop out of the top
   // +/− counter (per-file row numbers always stay).
   const reviewable = files.filter((f) => !f.ignored);
-  const [excludeViewed] = useViewedStatsExclude();
-  const { additions: totalAdds, deletions: totalDels } = sumChangeStats(files, viewedFiles, excludeViewed === "on");
+  const [excludeViewed, setExcludeViewed] = useViewedStatsExclude();
+  const excluding = excludeViewed === "on";
+  const { additions: totalAdds, deletions: totalDels } = sumChangeStats(files, viewedFiles, excluding);
   const viewedCount = reviewable.filter((f) => viewedFiles.has(f.path)).length;
   const allViewed = reviewable.length > 0 && viewedCount >= reviewable.length;
 
@@ -475,13 +476,29 @@ export function FilesPanel({
           <span className={`font-medium ${allViewed ? "" : "text-foreground"}`}>{viewedCount}</span>
           <span className="opacity-80">{" / "}{reviewable.length} viewed</span>
         </span>
-        <span
-          className="ml-auto shrink-0 whitespace-nowrap tabular-nums"
-          title={excludeViewed && viewedCount > 0 ? `+${fmtCount(totalAdds)} / −${fmtCount(totalDels)} left to review — ${viewedCount} viewed ${viewedCount === 1 ? "file" : "files"} excluded` : undefined}
+        {/* The +/− counter doubles as the "unviewed-only totals" toggle (same
+            pref as Settings → General): click to switch between counting every
+            file and counting only what's left to review. */}
+        <button
+          type="button"
+          aria-label="Toggle unviewed-only totals"
+          aria-pressed={excluding}
+          onClick={() => setExcludeViewed(excluding ? "off" : "on")}
+          title={
+            excluding
+              ? viewedCount > 0
+                ? `+${fmtCount(totalAdds)} / −${fmtCount(totalDels)} left to review — ${viewedCount} viewed ${viewedCount === 1 ? "file" : "files"} excluded. Click to count all files.`
+                : "Counting only unviewed files. Click to count all files."
+              : "Counting all files. Click to exclude viewed files."
+          }
+          className="ml-auto shrink-0 whitespace-nowrap rounded px-1 tabular-nums transition-colors hover:bg-foreground/[0.06]"
         >
+          {excluding && (totalAdds > 0 || totalDels > 0) && (
+            <span className="mr-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80">left</span>
+          )}
           {totalAdds > 0 && <span className="text-emerald-500">+{fmtCount(totalAdds)}</span>}{" "}
           {totalDels > 0 && <span className="text-rose-500">−{fmtCount(totalDels)}</span>}
-        </span>
+        </button>
         <div className="flex shrink-0 items-center gap-1">
           {mode === "tree" && !searching && (
             <button

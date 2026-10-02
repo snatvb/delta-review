@@ -84,6 +84,26 @@ describe("FilesPanel", () => {
       expect(screen.getByTitle(/\+0 \/ −0 left to review — 1 viewed file excluded/)).toBeInTheDocument();
       expect(screen.getByText("+3")).toBeInTheDocument(); // the row's number survives
     });
+
+    it("toggles the mode by clicking the header counter (no trip to Settings)", () => {
+      // Counts chosen so every header value differs from every row value in
+      // both modes (header: +10/−15 off, +7/−14 on; rows: 3/1, 2/5, 5/9).
+      const multi: FileEntry[] = [
+        { path: "src/a.ts", status: "modified", additions: 3, deletions: 1, binary: false },
+        { path: "src/b.ts", status: "modified", additions: 2, deletions: 5, binary: false },
+        { path: "src/c.ts", status: "modified", additions: 5, deletions: 9, binary: false },
+      ];
+      render(<FilesPanel files={multi} selected={null} onSelect={() => {}} viewedFiles={new Set(["src/a.ts"])} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
+      const counter = screen.getByRole("button", { name: "Toggle unviewed-only totals" });
+      expect(counter).toHaveAttribute("aria-pressed", "false");
+      expect(screen.getByText("+10")).toBeInTheDocument(); // counts everything
+      fireEvent.click(counter);
+      expect(counter).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByText("+7")).toBeInTheDocument(); // only b+c are left
+      expect(screen.getByText("−14")).toBeInTheDocument();
+      fireEvent.click(counter);
+      expect(screen.getByText("+10")).toBeInTheDocument(); // and back
+    });
   });
 
   it("groups ignored files in a collapsed section and leaves them out of the counts", () => {
