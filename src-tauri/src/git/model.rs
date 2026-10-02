@@ -83,7 +83,12 @@ mod model_tests {
 
     #[test]
     fn diffmode_from_flag_round_trips_and_rejects_unknown() {
-        for m in [DiffMode::AllChanges, DiffMode::Uncommitted, DiffMode::LastCommit, DiffMode::BranchVsBase] {
+        for m in [
+            DiffMode::AllChanges,
+            DiffMode::Uncommitted,
+            DiffMode::LastCommit,
+            DiffMode::BranchVsBase,
+        ] {
             assert_eq!(DiffMode::from_flag(m.flag()), Some(m));
         }
         assert_eq!(DiffMode::from_flag("--help"), None);

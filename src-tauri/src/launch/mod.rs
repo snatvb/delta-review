@@ -55,12 +55,19 @@ fn apply_traffic_lights(w: &tauri::WebviewWindow) {
     use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
     let Ok(ptr) = w.ns_window() else { return };
     let win: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
-    let Some(close) = win.standardWindowButton(NSWindowButton::CloseButton) else { return };
-    let Some(miniaturize) = win.standardWindowButton(NSWindowButton::MiniaturizeButton) else { return };
+    let Some(close) = win.standardWindowButton(NSWindowButton::CloseButton) else {
+        return;
+    };
+    let Some(miniaturize) = win.standardWindowButton(NSWindowButton::MiniaturizeButton) else {
+        return;
+    };
     let zoom = win.standardWindowButton(NSWindowButton::ZoomButton);
     let close_v = unsafe { objc2::rc::Retained::cast_unchecked::<NSView>(close) };
     let min_v = unsafe { objc2::rc::Retained::cast_unchecked::<NSView>(miniaturize) };
-    let Some(container) = unsafe { close_v.superview() }.and_then(|v| unsafe { v.superview() }) else { return };
+    let Some(container) = unsafe { close_v.superview() }.and_then(|v| unsafe { v.superview() })
+    else {
+        return;
+    };
     let container_v = unsafe { objc2::rc::Retained::cast_unchecked::<NSView>(container) };
 
     let close_rect = close_v.frame();
@@ -100,7 +107,12 @@ fn keep_traffic_lights(w: &tauri::WebviewWindow) {
     });
     let w_events = w.clone();
     w.on_window_event(move |e| {
-        if matches!(e, tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Focused(_)) {
+        if matches!(
+            e,
+            tauri::WindowEvent::Resized(_)
+                | tauri::WindowEvent::Moved(_)
+                | tauri::WindowEvent::Focused(_)
+        ) {
             apply_traffic_lights(&w_events);
         }
     });
@@ -488,7 +500,7 @@ fn remove_legacy_shims(exe: &Path, extra_dir: Option<&Path>) {
         return;
     };
     let mut dirs = preferred_bin_dirs();
-    if let Some(home) = std::env::var("HOME").ok() {
+    if let Ok(home) = std::env::var("HOME") {
         dirs.push(PathBuf::from(home).join(".local/bin"));
     }
     if let Some(d) = extra_dir {
@@ -642,24 +654,26 @@ fn ensure_dir_on_path(home: &Path, dir: &Path) -> Vec<String> {
     if append_block_if_missing(&home.join(".zshrc"), &posix_path_block(dir), true) {
         updated.push("zsh".to_string());
     }
-    let bash_updated = [".bashrc", ".bash_profile", ".profile"]
-        .iter()
-        .map(|f| home.join(f))
-        .filter(|p| p.exists())
-        .fold(false, |acc, p| {
-            append_block_if_missing(&p, &posix_path_block(dir), false) || acc
-        });
+    // A plain loop with |=, not .any(): every matching rc file must get the
+    // block, and .any() would short-circuit past the rest after the first hit.
+    let mut bash_updated = false;
+    for f in [".bashrc", ".bash_profile", ".profile"] {
+        let p = home.join(f);
+        if p.exists() {
+            bash_updated |= append_block_if_missing(&p, &posix_path_block(dir), false);
+        }
+    }
     if bash_updated {
         updated.push("bash".to_string());
     }
-    if home.join(".config/fish").is_dir() {
-        if append_block_if_missing(
+    if home.join(".config/fish").is_dir()
+        && append_block_if_missing(
             &home.join(".config/fish/config.fish"),
             &fish_path_block(dir),
             true,
-        ) {
-            updated.push("fish".to_string());
-        }
+        )
+    {
+        updated.push("fish".to_string());
     }
     updated
 }
@@ -741,7 +755,7 @@ mod tests {
 
     #[test]
     fn repo_entry_has_name_default_branch_and_worktrees() {
-        let (dir, repo) = repo_with_commit();
+        let (_dir, repo) = repo_with_commit();
         let entry = git_repo_entry(&repo).unwrap();
         assert_eq!(entry.default_branch.as_deref(), Some("main"));
         assert!(!entry.id.is_empty());

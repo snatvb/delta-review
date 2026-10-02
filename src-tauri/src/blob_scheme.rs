@@ -20,7 +20,11 @@ struct BlobQuery {
     mime: String,
 }
 
-pub fn handle<R: Runtime>(ctx: UriSchemeContext<'_, R>, request: Request<Vec<u8>>, responder: UriSchemeResponder) {
+pub fn handle<R: Runtime>(
+    ctx: UriSchemeContext<'_, R>,
+    request: Request<Vec<u8>>,
+    responder: UriSchemeResponder,
+) {
     let cache = ctx.app_handle().state::<DiffCache>().inner().clone();
     tauri::async_runtime::spawn_blocking(move || responder.respond(respond(&cache, &request)));
 }
@@ -32,13 +36,22 @@ fn parse(request: &Request<Vec<u8>>) -> Option<BlobQuery> {
         match key.as_ref() {
             "target" => target = serde_json::from_str(&value).ok(),
             "path" => path = Some(value.into_owned()),
-            "side" => side = serde_json::from_value(serde_json::Value::String(value.into_owned())).ok(),
+            "side" => {
+                side = serde_json::from_value(serde_json::Value::String(value.into_owned())).ok()
+            }
             "mime" => mime = Some(value.into_owned()),
             _ => {}
         }
     }
-    let mime = mime.filter(|m| m.starts_with("image/")).unwrap_or_else(|| "application/octet-stream".into());
-    Some(BlobQuery { target: target?, path: path?, side: side?, mime })
+    let mime = mime
+        .filter(|m| m.starts_with("image/"))
+        .unwrap_or_else(|| "application/octet-stream".into());
+    Some(BlobQuery {
+        target: target?,
+        path: path?,
+        side: side?,
+        mime,
+    })
 }
 
 fn status(code: StatusCode) -> Response<Vec<u8>> {
@@ -54,13 +67,14 @@ fn respond(cache: &DiffCache, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     };
     // Read failures are real failures (svn CLI missing, pristine unreadable)
     // and must surface as 5xx — a 404 would claim the side doesn't exist.
-    let read = |repo: &crate::vcs::Repo, sources: &FileSources| {
-        match repo.source_size(sources, q.side) {
+    let read =
+        |repo: &crate::vcs::Repo, sources: &FileSources| match repo.source_size(sources, q.side) {
             Ok(Some(size)) if size > MAX_IMAGE_PREVIEW_BYTES => Err(StatusCode::PAYLOAD_TOO_LARGE),
-            Ok(_) => repo.read_source(sources, q.side).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR),
+            Ok(_) => repo
+                .read_source(sources, q.side)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR),
             Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-        }
-    };
+        };
     let response = match cache.with_sources(&q.target, &q.path, read) {
         Ok(Err(code)) => status(code),
         Ok(Ok(Some(bytes))) => Response::builder()

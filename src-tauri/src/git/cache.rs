@@ -140,7 +140,11 @@ impl DiffCache {
                 if crate::perf::enabled() && t0.elapsed().as_millis() > 0 {
                     eprintln!(
                         "[perf] snapshot hit  {}/{:?} waited={:.1}ms",
-                        target.repo_path.rsplit('/').next().unwrap_or(&target.repo_path),
+                        target
+                            .repo_path
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&target.repo_path),
                         target.mode,
                         t0.elapsed().as_secs_f64() * 1e3,
                     );
@@ -165,7 +169,10 @@ impl DiffCache {
         cache.building.remove(&key);
         self.0.built.notify_all();
         let diff = diff?; // wake waiters first — they must not sleep through the failure
-        let snap = Arc::new(Snapshot { key: key.clone(), diff });
+        let snap = Arc::new(Snapshot {
+            key: key.clone(),
+            diff,
+        });
         let stale = cache.epoch != epoch; // an invalidate landed mid-build
         if !stale {
             cache.hot.push(snap.clone());
@@ -178,11 +185,19 @@ impl DiffCache {
             let n = snap.diff.summary.files.len();
             eprintln!(
                 "[perf] snapshot MISS {}/{:?} files={n} lock_wait={:.1}ms build={:.1}ms{}",
-                target.repo_path.rsplit('/').next().unwrap_or(&target.repo_path),
+                target
+                    .repo_path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&target.repo_path),
                 target.mode,
                 lock_wait.as_secs_f64() * 1e3,
                 build_ms,
-                if stale { " (not cached: invalidated mid-build)" } else { "" },
+                if stale {
+                    " (not cached: invalidated mid-build)"
+                } else {
+                    ""
+                },
             );
         }
         Ok(snap)
@@ -227,7 +242,13 @@ impl DiffCache {
         f: impl FnOnce(&Repo, &FileSources) -> T,
     ) -> Result<T, GitError> {
         let key = key_of(target);
-        let served = self.lock().served.iter().rev().find(|s| s.key == key).cloned();
+        let served = self
+            .lock()
+            .served
+            .iter()
+            .rev()
+            .find(|s| s.key == key)
+            .cloned();
         if let Some(snap) = served {
             if let Some(sources) = snap.diff.sources.get(path) {
                 return Ok(f(&Repo::open(&target.repo_path)?, sources));
@@ -245,10 +266,18 @@ impl DiffCache {
     /// a fresh one-off read.
     pub fn served_file(&self, target: &Target, path: &str) -> Option<Result<FileDiff, GitError>> {
         let key = key_of(target);
-        let snap = self.lock().served.iter().rev().find(|s| s.key == key)?.clone();
+        let snap = self
+            .lock()
+            .served
+            .iter()
+            .rev()
+            .find(|s| s.key == key)?
+            .clone();
         match snap.diff.files.get(path) {
             Some(fd) => Some(Ok(fd.clone())),
-            None => Some(Repo::open(&target.repo_path).and_then(|repo| repo.get_file_diff(target, path))),
+            None => Some(
+                Repo::open(&target.repo_path).and_then(|repo| repo.get_file_diff(target, path)),
+            ),
         }
     }
 
@@ -261,7 +290,9 @@ impl DiffCache {
         let mut inner = self.lock();
         inner.epoch += 1; // disqualify any snapshot still being built
         let dropped = inner.hot.len();
-        inner.hot.retain(|s| !same_worktree(&s.key.repo_path, worktree));
+        inner
+            .hot
+            .retain(|s| !same_worktree(&s.key.repo_path, worktree));
         if crate::perf::enabled() {
             eprintln!(
                 "[perf] invalidate {worktree} dropped={} held={:.1}ms",
@@ -289,26 +320,56 @@ mod tests {
     use crate::git::test_support::*;
 
     fn target(repo_path: &str, mode: DiffMode) -> Target {
-        Target { repo_path: repo_path.into(), worktree: None, mode, base: None, commit: None }
+        Target {
+            repo_path: repo_path.into(),
+            worktree: None,
+            mode,
+            base: None,
+            commit: None,
+        }
     }
 
     #[test]
     fn deltaignored_file_is_extracted_on_demand_from_the_snapshot() {
         let (dir, _repo) = repo_with_commit();
-        write(dir.path(), ".deltaignore", "gen/
-");
-        write(dir.path(), "gen/api.ts", "export const generated = 1;
-");
+        write(
+            dir.path(),
+            ".deltaignore",
+            "gen/
+",
+        );
+        write(
+            dir.path(),
+            "gen/api.ts",
+            "export const generated = 1;
+",
+        );
         let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
         let cache = DiffCache::default();
 
-        let entry = cache.summary(&t).unwrap().files.into_iter().find(|f| f.path == "gen/api.ts").unwrap();
+        let entry = cache
+            .summary(&t)
+            .unwrap()
+            .files
+            .into_iter()
+            .find(|f| f.path == "gen/api.ts")
+            .unwrap();
         assert!(entry.ignored);
-        assert!(cache.snapshot(&t).unwrap().diff.files.get("gen/api.ts").is_none());
+        assert!(!cache
+            .snapshot(&t)
+            .unwrap()
+            .diff
+            .files
+            .contains_key("gen/api.ts"));
 
         let fd = cache.file(&t, "gen/api.ts").unwrap();
-        assert_eq!(fd.new_content.as_deref(), Some("export const generated = 1;
-"));
+        assert_eq!(
+            fd.new_content.as_deref(),
+            Some(
+                "export const generated = 1;
+"
+            )
+        );
     }
 
     /// Local `.git/info/deltaignore` rules flow through the same path, and
@@ -317,22 +378,40 @@ mod tests {
     #[test]
     fn local_deltaignore_takes_effect_after_invalidate() {
         let (dir, _repo) = repo_with_commit();
-        write(dir.path(), "gen/api.ts", "export const generated = 1;
-");
-        write(dir.path(), ".git/info/deltaignore", "gen/
-");
+        write(
+            dir.path(),
+            "gen/api.ts",
+            "export const generated = 1;
+",
+        );
+        write(
+            dir.path(),
+            ".git/info/deltaignore",
+            "gen/
+",
+        );
         let repo_path = dir.path().to_str().unwrap().to_string();
         let t = target(&repo_path, DiffMode::Uncommitted);
         let cache = DiffCache::default();
 
         let entry = |cache: &DiffCache| {
-            cache.summary(&t).unwrap().files.into_iter().find(|f| f.path == "gen/api.ts").unwrap()
+            cache
+                .summary(&t)
+                .unwrap()
+                .files
+                .into_iter()
+                .find(|f| f.path == "gen/api.ts")
+                .unwrap()
         };
         assert!(entry(&cache).ignored);
 
         // The Settings editor rewrites the local rules; the save invalidates.
-        write(dir.path(), ".git/info/deltaignore", "nothing-here/
-");
+        write(
+            dir.path(),
+            ".git/info/deltaignore",
+            "nothing-here/
+",
+        );
         cache.invalidate(&repo_path);
         assert!(!entry(&cache).ignored);
     }
@@ -362,17 +441,26 @@ mod tests {
         let cache = DiffCache::default();
 
         // First read builds the snapshot and returns AAA.
-        assert_eq!(cache.file(&t, "file.txt").unwrap().new_content.as_deref(), Some("line1\nAAA\nline2\n"));
+        assert_eq!(
+            cache.file(&t, "file.txt").unwrap().new_content.as_deref(),
+            Some("line1\nAAA\nline2\n")
+        );
 
         // The working tree changes, but with no invalidation the cache keeps serving
         // the memoized snapshot — this is the whole point: per-file fetches are map
         // reads, not a fresh whole-repo diff each time.
         write(dir.path(), "file.txt", "line1\nBBB\nline2\n");
-        assert_eq!(cache.file(&t, "file.txt").unwrap().new_content.as_deref(), Some("line1\nAAA\nline2\n"));
+        assert_eq!(
+            cache.file(&t, "file.txt").unwrap().new_content.as_deref(),
+            Some("line1\nAAA\nline2\n")
+        );
 
         // The fs watcher fires → invalidate → the next read rebuilds and sees BBB.
         cache.invalidate(&repo_path);
-        assert_eq!(cache.file(&t, "file.txt").unwrap().new_content.as_deref(), Some("line1\nBBB\nline2\n"));
+        assert_eq!(
+            cache.file(&t, "file.txt").unwrap().new_content.as_deref(),
+            Some("line1\nBBB\nline2\n")
+        );
     }
 
     #[test]
@@ -388,21 +476,45 @@ mod tests {
 
         // The diff pane fetches the file — the served copy becomes AAA (what's on screen).
         cache.file(&t, "file.txt").unwrap();
-        assert_eq!(cache.served_file(&t, "file.txt").unwrap().unwrap().new_content.as_deref(), Some("line1\nAAA\nline2\n"));
+        assert_eq!(
+            cache
+                .served_file(&t, "file.txt")
+                .unwrap()
+                .unwrap()
+                .new_content
+                .as_deref(),
+            Some("line1\nAAA\nline2\n")
+        );
 
         // The watcher invalidates on the disk edit; the served copy must keep AAA —
         // the window is still rendering it until Refresh is applied.
         write(dir.path(), "file.txt", "line1\nBBB\nline2\n");
         cache.invalidate(&repo_path);
         assert_eq!(
-            cache.served_file(&t, "file.txt").unwrap().unwrap().new_content.as_deref(),
+            cache
+                .served_file(&t, "file.txt")
+                .unwrap()
+                .unwrap()
+                .new_content
+                .as_deref(),
             Some("line1\nAAA\nline2\n"),
             "invalidate must not drop the served (still displayed) snapshot",
         );
 
         // Only once a fetch actually rebuilds does the served copy advance to BBB.
-        assert_eq!(cache.file(&t, "file.txt").unwrap().new_content.as_deref(), Some("line1\nBBB\nline2\n"));
-        assert_eq!(cache.served_file(&t, "file.txt").unwrap().unwrap().new_content.as_deref(), Some("line1\nBBB\nline2\n"));
+        assert_eq!(
+            cache.file(&t, "file.txt").unwrap().new_content.as_deref(),
+            Some("line1\nBBB\nline2\n")
+        );
+        assert_eq!(
+            cache
+                .served_file(&t, "file.txt")
+                .unwrap()
+                .unwrap()
+                .new_content
+                .as_deref(),
+            Some("line1\nBBB\nline2\n")
+        );
     }
 
     #[test]
@@ -426,16 +538,19 @@ mod tests {
         let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
         let cache = DiffCache::default();
 
-        let sizes =
-            |cache: &DiffCache| {
-                cache
-                    .with_sources(&t, "logo.png", |r, s| r.binary_sizes(s))
-                    .and_then(|sizes| sizes)
-                    .unwrap()
-                    .new_size
-            };
+        let sizes = |cache: &DiffCache| {
+            cache
+                .with_sources(&t, "logo.png", |r, s| r.binary_sizes(s))
+                .and_then(|sizes| sizes)
+                .unwrap()
+                .new_size
+        };
         assert_eq!(sizes(&cache), Some(4));
-        std::fs::write(dir.path().join("logo.png"), [0x89u8, b'P', 0x00, 0x01, 0x02, 0x03]).unwrap();
+        std::fs::write(
+            dir.path().join("logo.png"),
+            [0x89u8, b'P', 0x00, 0x01, 0x02, 0x03],
+        )
+        .unwrap();
         assert_eq!(sizes(&cache), Some(6));
     }
 
@@ -452,19 +567,22 @@ mod tests {
         let cache = DiffCache::default();
 
         cache.summary(&t).unwrap(); // the review opens — snapshot becomes served
-        let sizes =
-            |cache: &DiffCache| {
-                cache
-                    .with_sources(&t, "logo.png", |r, s| r.binary_sizes(s))
-                    .and_then(|sizes| sizes)
-                    .unwrap()
-                    .new_size
-            };
+        let sizes = |cache: &DiffCache| {
+            cache
+                .with_sources(&t, "logo.png", |r, s| r.binary_sizes(s))
+                .and_then(|sizes| sizes)
+                .unwrap()
+                .new_size
+        };
         assert_eq!(sizes(&cache), Some(4));
 
         // The agent edits; the watcher invalidates. No rebuild may be triggered
         // by the size read itself, and the new side must reflect the edit.
-        std::fs::write(dir.path().join("logo.png"), [0x89u8, b'P', 0x00, 0x01, 0x02, 0x03]).unwrap();
+        std::fs::write(
+            dir.path().join("logo.png"),
+            [0x89u8, b'P', 0x00, 0x01, 0x02, 0x03],
+        )
+        .unwrap();
         cache.invalidate(&repo_path);
         assert_eq!(sizes(&cache), Some(6));
     }
@@ -512,7 +630,11 @@ mod tests {
         // timing hooks: run the invalidate from another thread mid-build on a
         // repo big enough that the build spans the write+invalidate.
         for i in 0..60 {
-            write(dir.path(), &format!("pad/pad-{i:03}.txt"), &format!("pad {i}\n"));
+            write(
+                dir.path(),
+                &format!("pad/pad-{i:03}.txt"),
+                &format!("pad {i}\n"),
+            );
         }
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::scope(|sc| {
@@ -542,11 +664,18 @@ mod tests {
         let t = target(&path_a, DiffMode::Uncommitted);
         let cache = DiffCache::default();
 
-        assert_eq!(cache.file(&t, "file.txt").unwrap().new_content.as_deref(), Some("A1\n"));
+        assert_eq!(
+            cache.file(&t, "file.txt").unwrap().new_content.as_deref(),
+            Some("A1\n")
+        );
         // Invalidating an unrelated worktree must NOT drop this snapshot.
         cache.invalidate("/some/other/worktree");
         write(dir_a.path(), "file.txt", "A2\n");
-        assert_eq!(cache.file(&t, "file.txt").unwrap().new_content.as_deref(), Some("A1\n"), "unrelated invalidate must not evict");
+        assert_eq!(
+            cache.file(&t, "file.txt").unwrap().new_content.as_deref(),
+            Some("A1\n"),
+            "unrelated invalidate must not evict"
+        );
     }
 
     /// Perf probe for the slow-image-previews investigation — now the
@@ -565,9 +694,17 @@ mod tests {
     fn blob_convoy_under_invalidation() {
         // Shape is tunable via env so the probe can be sized like a real repo:
         //   CONVOY_TEXT=2000 CONVOY_IMG=40 CONVOY_IMG_BYTES=1048576 cargo test …
-        let envn = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+        let envn = |k: &str, d: usize| {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d)
+        };
         let (n_text, n_img) = (envn("CONVOY_TEXT", 400), envn("CONVOY_IMG", 20));
-        let (img_bytes, rounds) = (envn("CONVOY_IMG_BYTES", 256 * 1024), envn("CONVOY_ROUNDS", 8));
+        let (img_bytes, rounds) = (
+            envn("CONVOY_IMG_BYTES", 256 * 1024),
+            envn("CONVOY_ROUNDS", 8),
+        );
         const READERS: usize = 16;
 
         // Deterministic pseudo-random bytes (no rand dep): NUL-rich so both git's
@@ -575,7 +712,9 @@ mod tests {
         fn noise(seed: u64, len: usize) -> Vec<u8> {
             let (mut s, mut buf) = (seed, Vec::with_capacity(len));
             for _ in 0..len {
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 buf.push((s >> 56) as u8);
             }
             buf
@@ -592,20 +731,39 @@ mod tests {
 
         // Base commit: every file clean and committed…
         for i in 0..n_text {
-            write(dir.path(), &text_path(i), &format!("// module {i}\nexport const v{i} = {i};\n"));
+            write(
+                dir.path(),
+                &text_path(i),
+                &format!("// module {i}\nexport const v{i} = {i};\n"),
+            );
         }
         std::fs::create_dir_all(dir.path().join("shots")).unwrap();
         for i in 0..n_img {
-            std::fs::write(dir.path().join(img_path(i)), png_like(i as u64 + 1, img_bytes)).unwrap();
+            std::fs::write(
+                dir.path().join(img_path(i)),
+                png_like(i as u64 + 1, img_bytes),
+            )
+            .unwrap();
         }
         commit_all(&repo, "base");
 
         // …then the whole tree modified at once — the review-a-busy-agent shape.
         for i in 0..n_text {
-            write(dir.path(), &text_path(i), &format!("// module {i} CHANGED\nexport const v{i} = {};\n", i * 7 + 1));
+            write(
+                dir.path(),
+                &text_path(i),
+                &format!(
+                    "// module {i} CHANGED\nexport const v{i} = {};\n",
+                    i * 7 + 1
+                ),
+            );
         }
         for i in 0..n_img {
-            std::fs::write(dir.path().join(img_path(i)), png_like(i as u64 + 1_000_000, img_bytes)).unwrap();
+            std::fs::write(
+                dir.path().join(img_path(i)),
+                png_like(i as u64 + 1_000_000, img_bytes),
+            )
+            .unwrap();
         }
 
         let repo_path = dir.path().to_str().unwrap().to_string();
@@ -625,7 +783,10 @@ mod tests {
 
         // Phase 1 — open, like the app: the summary fetch builds + serves the
         // snapshot once; the first blob read after it must be a served map read.
-        println!("repo shape: {n_text} modified text files + {n_img} images of {}KB each", img_bytes / 1024);
+        println!(
+            "repo shape: {n_text} modified text files + {n_img} images of {}KB each",
+            img_bytes / 1024
+        );
         let open = std::time::Instant::now();
         let files = cache.summary(&t).unwrap().files.len();
         let open_ms = open.elapsed().as_secs_f64() * 1e3;
@@ -658,7 +819,11 @@ mod tests {
         // anything.
         let mut storm = 0.0;
         for r in 0..rounds {
-            write(dir.path(), &text_path(r), &format!("// module {r} EDITED AGAIN\n"));
+            write(
+                dir.path(),
+                &text_path(r),
+                &format!("// module {r} EDITED AGAIN\n"),
+            );
             cache.invalidate(&repo_path);
             storm += run_round("storm  ");
         }
@@ -681,12 +846,22 @@ mod tests {
         let tb = target(dir_b.path().to_str().unwrap(), DiffMode::Uncommitted);
         let cache = DiffCache::default();
 
-        assert_eq!(cache.file(&ta, "file.txt").unwrap().new_content.as_deref(), Some("A\n"));
+        assert_eq!(
+            cache.file(&ta, "file.txt").unwrap().new_content.as_deref(),
+            Some("A\n")
+        );
         // A second target must not evict the first (no single-slot thrash).
-        assert_eq!(cache.file(&tb, "file.txt").unwrap().new_content.as_deref(), Some("B\n"));
+        assert_eq!(
+            cache.file(&tb, "file.txt").unwrap().new_content.as_deref(),
+            Some("B\n")
+        );
         // Change A without invalidating; A's snapshot must survive building B — with a
         // single slot it would have been evicted and this would rebuild to "A2".
         write(dir_a.path(), "file.txt", "A2\n");
-        assert_eq!(cache.file(&ta, "file.txt").unwrap().new_content.as_deref(), Some("A\n"), "target A must survive building target B");
+        assert_eq!(
+            cache.file(&ta, "file.txt").unwrap().new_content.as_deref(),
+            Some("A\n"),
+            "target A must survive building target B"
+        );
     }
 }

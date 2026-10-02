@@ -44,6 +44,7 @@ pub struct UpdaterSnapshot {
     pub last_checked_at: Option<i64>,
 }
 
+#[derive(Default)]
 struct UpdaterInner {
     snapshot: UpdaterSnapshot,
     /// The found update awaiting `updater_download`; taken by the download task.
@@ -51,16 +52,6 @@ struct UpdaterInner {
     /// Whether any check already ran this process. The mount-time auto check
     /// (manual=false) runs at most once; manual checks always re-run.
     checked_this_process: bool,
-}
-
-impl Default for UpdaterInner {
-    fn default() -> Self {
-        Self {
-            snapshot: UpdaterSnapshot::default(),
-            update: None,
-            checked_this_process: false,
-        }
-    }
 }
 
 /// Managed state. Cloned into the download task so the download outlives any
@@ -222,7 +213,7 @@ async fn run_download(app: &AppHandle, shared: &UpdaterShared, update: Update) {
                     downloaded += chunk_len as u64;
                     // The first chunk announces the transfer (and its size);
                     // after that, at most one broadcast per PROGRESS_EVERY.
-                    let due = emitted_at.map_or(true, |t| t.elapsed() >= PROGRESS_EVERY);
+                    let due = emitted_at.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY);
                     if !due {
                         return;
                     }

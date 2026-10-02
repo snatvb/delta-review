@@ -214,12 +214,20 @@ impl Repo {
         }
     }
 
-    pub fn list_commits(&self, target: &Target, skip: usize, limit: usize) -> Result<CommitPage, VcsError> {
+    pub fn list_commits(
+        &self,
+        target: &Target,
+        skip: usize,
+        limit: usize,
+    ) -> Result<CommitPage, VcsError> {
         match self {
             Repo::Git(_) => crate::git::log::list_commits(target, skip, limit),
             // No history features in the SVN v1: the frontend hides the
             // commit stepper by capability, so an empty page is all it needs.
-            Repo::Svn(_) => Ok(CommitPage { commits: Vec::new(), has_more: false }),
+            Repo::Svn(_) => Ok(CommitPage {
+                commits: Vec::new(),
+                has_more: false,
+            }),
         }
     }
 
@@ -278,7 +286,11 @@ impl Repo {
     // missing, pristine unreadable) that callers must surface, `Ok(None)` is
     // "this side genuinely has no bytes" (an added file's old side).
 
-    pub fn read_source(&self, sources: &FileSources, side: BlobSide) -> Result<Option<Vec<u8>>, VcsError> {
+    pub fn read_source(
+        &self,
+        sources: &FileSources,
+        side: BlobSide,
+    ) -> Result<Option<Vec<u8>>, VcsError> {
         let git_blob = |oid: git2::Oid| -> Option<Vec<u8>> {
             match self {
                 Repo::Git(repo) => repo.find_blob(oid).ok().map(|b| b.content().to_vec()),
@@ -303,12 +315,19 @@ impl Repo {
         }
     }
 
-    pub fn source_size(&self, sources: &FileSources, side: BlobSide) -> Result<Option<u64>, VcsError> {
+    pub fn source_size(
+        &self,
+        sources: &FileSources,
+        side: BlobSide,
+    ) -> Result<Option<u64>, VcsError> {
         let git_blob_size = |oid: git2::Oid| -> Option<u64> {
             match self {
-                Repo::Git(repo) => {
-                    repo.odb().ok()?.read_header(oid).ok().map(|(size, _)| size as u64)
-                }
+                Repo::Git(repo) => repo
+                    .odb()
+                    .ok()?
+                    .read_header(oid)
+                    .ok()
+                    .map(|(size, _)| size as u64),
                 Repo::Svn(_) => None,
             }
         };
@@ -340,7 +359,11 @@ impl Repo {
     /// Extract a `FileDiff` from a header + sources: reads both sides,
     /// applies CRLF normalization, flags binary, drops binary content.
     /// Shared shape for both backends — only the CRLF decision differs.
-    pub fn extract_file_diff(&self, header: &FileHeader, sources: &FileSources) -> Result<FileDiff, VcsError> {
+    pub fn extract_file_diff(
+        &self,
+        header: &FileHeader,
+        sources: &FileSources,
+    ) -> Result<FileDiff, VcsError> {
         let old_bytes = self.read_source(sources, BlobSide::Old)?;
         let new_raw = self.read_source(sources, BlobSide::New)?;
         Ok(self.file_diff_from_sides(header, old_bytes, new_raw))
@@ -356,7 +379,9 @@ impl Repo {
         new_bytes_raw: Option<Vec<u8>>,
     ) -> FileDiff {
         let (old_bytes, new_bytes) = match self {
-            Repo::Git(repo) if git::diff::normalizes_crlf(repo) => (old_bytes, new_bytes_raw.map(strip_cr)),
+            Repo::Git(repo) if git::diff::normalizes_crlf(repo) => {
+                (old_bytes, new_bytes_raw.map(strip_cr))
+            }
             Repo::Git(_) => (old_bytes, new_bytes_raw),
             Repo::Svn(_) => svn::normalize_eol(old_bytes, new_bytes_raw),
         };
@@ -417,7 +442,11 @@ pub enum PinnedBase {
 #[derive(Debug, Clone)]
 pub enum OldSide {
     GitBlob(git2::Oid),
-    SvnBase { root: PathBuf, rel: String, pinned: Option<PinnedBase> },
+    SvnBase {
+        root: PathBuf,
+        rel: String,
+        pinned: Option<PinnedBase>,
+    },
     Absent,
 }
 
@@ -453,8 +482,18 @@ pub struct FileHeader {
 }
 
 impl FileHeader {
-    pub(crate) fn new(status: FileStatus, old_path: Option<String>, new_path: Option<String>, binary: bool) -> Self {
-        FileHeader { status, old_path, new_path, binary }
+    pub(crate) fn new(
+        status: FileStatus,
+        old_path: Option<String>,
+        new_path: Option<String>,
+        binary: bool,
+    ) -> Self {
+        FileHeader {
+            status,
+            old_path,
+            new_path,
+            binary,
+        }
     }
 }
 
@@ -499,12 +538,24 @@ pub(crate) fn file_diff_from_bytes(
     new_bytes: Option<Vec<u8>>,
 ) -> FileDiff {
     let binary = header.binary
-        || old_bytes.as_deref().map(git::diff::looks_binary).unwrap_or(false)
-        || new_bytes.as_deref().map(git::diff::looks_binary).unwrap_or(false);
-    let old_content =
-        if binary { None } else { old_bytes.map(|b| String::from_utf8_lossy(&b).into_owned()) };
-    let new_content =
-        if binary { None } else { new_bytes.map(|b| String::from_utf8_lossy(&b).into_owned()) };
+        || old_bytes
+            .as_deref()
+            .map(git::diff::looks_binary)
+            .unwrap_or(false)
+        || new_bytes
+            .as_deref()
+            .map(git::diff::looks_binary)
+            .unwrap_or(false);
+    let old_content = if binary {
+        None
+    } else {
+        old_bytes.map(|b| String::from_utf8_lossy(&b).into_owned())
+    };
+    let new_content = if binary {
+        None
+    } else {
+        new_bytes.map(|b| String::from_utf8_lossy(&b).into_owned())
+    };
     FileDiff {
         old_file_name: header.old_path.clone(),
         new_file_name: header.new_path.clone(),
@@ -559,7 +610,11 @@ mod tests {
         let inner = outer.path().join("vendor-svn");
         touch_svn(&inner);
         let (kind, root) = detect_markers(&inner).unwrap();
-        assert_eq!(kind, VcsKind::Svn, "the nearest marker must win over the outer .git");
+        assert_eq!(
+            kind,
+            VcsKind::Svn,
+            "the nearest marker must win over the outer .git"
+        );
         assert_eq!(root, dunce::canonicalize(&inner).unwrap());
 
         // And a plain subdir of the git repo (no own markers) still resolves
@@ -596,14 +651,20 @@ mod tests {
         let root = dunce::canonicalize(dir.path()).unwrap();
 
         // Forcing SVN on a git-svn dir: .svn exists → honored.
-        OVERRIDES.write().unwrap().insert(root.clone(), VcsKind::Svn);
+        OVERRIDES
+            .write()
+            .unwrap()
+            .insert(root.clone(), VcsKind::Svn);
         assert_eq!(apply_override(&root, VcsKind::Git), VcsKind::Svn);
 
         // Forcing SVN where there is no .svn: ignored, detected kind stands.
         let git_only = tempfile::TempDir::new().unwrap();
         touch(git_only.path(), ".git/HEAD");
         let git_root = dunce::canonicalize(git_only.path()).unwrap();
-        OVERRIDES.write().unwrap().insert(git_root.clone(), VcsKind::Svn);
+        OVERRIDES
+            .write()
+            .unwrap()
+            .insert(git_root.clone(), VcsKind::Svn);
         assert_eq!(apply_override(&git_root, VcsKind::Git), VcsKind::Git);
 
         OVERRIDES.write().unwrap().clear();

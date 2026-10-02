@@ -60,7 +60,9 @@ fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<usize> {
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let name = entry.file_name();
-        if name.to_string_lossy().ends_with(".sock") || name.to_string_lossy().ends_with(".sock.lock") {
+        if name.to_string_lossy().ends_with(".sock")
+            || name.to_string_lossy().ends_with(".sock.lock")
+        {
             continue;
         }
         let target = dst.join(&name);
@@ -99,13 +101,19 @@ mod tests {
 
         assert_eq!(copied, 2);
         assert_eq!(fs::read_to_string(dst.join("registry.json")).unwrap(), "{}");
-        assert_eq!(fs::read_to_string(dst.join("reviews/abc/comments.json")).unwrap(), "[]");
+        assert_eq!(
+            fs::read_to_string(dst.join("reviews/abc/comments.json")).unwrap(),
+            "[]"
+        );
         assert!(!dst.join("cli.sock").exists());
         assert!(!dst.join("cli.sock.lock").exists());
     }
 
     #[test]
     fn conf_identifier_reads_the_bundle_conf() {
-        assert_eq!(conf_identifier().as_deref(), Some("com.snatvb.delta-review"));
+        assert_eq!(
+            conf_identifier().as_deref(),
+            Some("com.snatvb.delta-review")
+        );
     }
 }

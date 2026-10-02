@@ -60,7 +60,7 @@ pub fn start(app: &AppHandle) {
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::remove_file(&sock); // clear a stale socket from a prior crash
-    // macOS caps sun_path at 104 bytes; bail cleanly rather than panic on bind.
+                                         // macOS caps sun_path at 104 bytes; bail cleanly rather than panic on bind.
     if sock.as_os_str().len() >= 104 {
         eprintln!("dr: cli socket path too long; CLI forwarding disabled");
         return;
@@ -80,7 +80,9 @@ pub fn start(app: &AppHandle) {
             if std::io::Read::read_to_string(&mut stream, &mut buf).is_err() {
                 continue;
             }
-            let Ok(req) = serde_json::from_str::<CliRequest>(buf.trim()) else { continue };
+            let Ok(req) = serde_json::from_str::<CliRequest>(buf.trim()) else {
+                continue;
+            };
             let h = handle.clone();
             // Window create/focus must happen on the main thread.
             let _ = handle.run_on_main_thread(move || handle_request(&h, req));
@@ -121,12 +123,18 @@ mod tests {
         );
         // Mirrors Tauri's XDG data dir on Linux.
         #[cfg(not(target_os = "macos"))]
-        assert_eq!(p, PathBuf::from("/Users/me/.local/share/com.snatvb.delta-review/cli.sock"));
+        assert_eq!(
+            p,
+            PathBuf::from("/Users/me/.local/share/com.snatvb.delta-review/cli.sock")
+        );
     }
 
     #[test]
     fn request_round_trips_with_kebab_mode() {
-        let r = CliRequest { repo: "/r".into(), mode: Some(DiffMode::Uncommitted) };
+        let r = CliRequest {
+            repo: "/r".into(),
+            mode: Some(DiffMode::Uncommitted),
+        };
         let s = serde_json::to_string(&r).unwrap();
         assert!(s.contains(r#""mode":"uncommitted""#), "got {s}");
         assert_eq!(serde_json::from_str::<CliRequest>(&s).unwrap(), r);
@@ -134,7 +142,10 @@ mod tests {
 
     #[test]
     fn request_round_trips_with_no_mode() {
-        let r = CliRequest { repo: "/r".into(), mode: None };
+        let r = CliRequest {
+            repo: "/r".into(),
+            mode: None,
+        };
         let s = serde_json::to_string(&r).unwrap();
         assert_eq!(serde_json::from_str::<CliRequest>(&s).unwrap().mode, None);
     }
@@ -151,12 +162,21 @@ mod tests {
             serde_json::from_str::<CliRequest>(buf.trim()).unwrap()
         });
         let mut c = UnixStream::connect(&sock).unwrap();
-        let payload =
-            serde_json::to_string(&CliRequest { repo: "/r".into(), mode: Some(DiffMode::BranchVsBase) }).unwrap();
+        let payload = serde_json::to_string(&CliRequest {
+            repo: "/r".into(),
+            mode: Some(DiffMode::BranchVsBase),
+        })
+        .unwrap();
         c.write_all(payload.as_bytes()).unwrap();
         c.flush().unwrap();
         drop(c); // EOF so the server's read_to_string returns
         let got = server.join().unwrap();
-        assert_eq!(got, CliRequest { repo: "/r".into(), mode: Some(DiffMode::BranchVsBase) });
+        assert_eq!(
+            got,
+            CliRequest {
+                repo: "/r".into(),
+                mode: Some(DiffMode::BranchVsBase)
+            }
+        );
     }
 }

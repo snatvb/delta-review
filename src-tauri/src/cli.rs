@@ -81,7 +81,9 @@ pub fn precheck(args: &[String]) -> PreCheck {
 /// binary directly (same name, and *not* reached via a symlink) stays in app mode.
 pub fn is_cli_invocation(invoked: Option<&OsStr>, real: Option<&OsStr>, via_symlink: bool) -> bool {
     match invoked {
-        Some(name) if SHIMS.iter().any(|s| name == OsStr::new(s)) => Some(name) != real || via_symlink,
+        Some(name) if SHIMS.iter().any(|s| name == OsStr::new(s)) => {
+            Some(name) != real || via_symlink
+        }
         _ => false,
     }
 }
@@ -92,7 +94,10 @@ pub fn invoked_as_cli() -> bool {
     // so canonicalize it — otherwise both basenames are the shim name and the name
     // rule never fires.
     let argv0 = std::env::args_os().next();
-    let invoked = argv0.as_deref().and_then(|p| Path::new(p).file_name()).map(OsStr::to_os_string);
+    let invoked = argv0
+        .as_deref()
+        .and_then(|p| Path::new(p).file_name())
+        .map(OsStr::to_os_string);
     let exe = std::env::current_exe().ok();
     let real = exe
         .as_deref()
@@ -166,7 +171,10 @@ pub fn cli_main() -> i32 {
     match UnixStream::connect(&sock) {
         // App running: forward over the socket and exit immediately.
         Ok(mut stream) => {
-            let req = CliRequest { repo, mode: launch.mode };
+            let req = CliRequest {
+                repo,
+                mode: launch.mode,
+            };
             match serde_json::to_string(&req) {
                 Ok(line) => {
                     let _ = stream.write_all(line.as_bytes());
@@ -249,8 +257,16 @@ mod tests {
     #[test]
     fn cli_mode_when_invoked_through_a_shim() {
         // Distinct names (bundle `DeltaReview` via mainBinaryName) → the name rule alone fires.
-        assert!(is_cli_invocation(Some(OsStr::new("dr")), Some(OsStr::new("DeltaReview")), false));
-        assert!(is_cli_invocation(Some(OsStr::new("dr-dev")), Some(OsStr::new("DeltaReview")), false));
+        assert!(is_cli_invocation(
+            Some(OsStr::new("dr")),
+            Some(OsStr::new("DeltaReview")),
+            false
+        ));
+        assert!(is_cli_invocation(
+            Some(OsStr::new("dr-dev")),
+            Some(OsStr::new("DeltaReview")),
+            false
+        ));
     }
 
     #[test]
@@ -259,23 +275,47 @@ mod tests {
         // to a bundle binary *also* basenamed `delta` (Tauri used the Cargo bin name),
         // so the name rule can't tell them apart. The symlink backstop must still route
         // to CLI mode. The old (name-only) rule returned false here — an inline app run.
-        assert!(is_cli_invocation(Some(OsStr::new("dr")), Some(OsStr::new("dr")), true));
-        assert!(is_cli_invocation(Some(OsStr::new("dr-dev")), Some(OsStr::new("dr")), true));
+        assert!(is_cli_invocation(
+            Some(OsStr::new("dr")),
+            Some(OsStr::new("dr")),
+            true
+        ));
+        assert!(is_cli_invocation(
+            Some(OsStr::new("dr-dev")),
+            Some(OsStr::new("dr")),
+            true
+        ));
     }
 
     #[test]
     fn app_mode_when_invoked_as_the_real_binary() {
         // Bundled app launched by LS/dock: argv0 basename == real exe name, not a symlink.
-        assert!(!is_cli_invocation(Some(OsStr::new("DeltaReview")), Some(OsStr::new("DeltaReview")), false));
+        assert!(!is_cli_invocation(
+            Some(OsStr::new("DeltaReview")),
+            Some(OsStr::new("DeltaReview")),
+            false
+        ));
         // Raw cargo binary run directly during dev: same name AND not reached via symlink.
-        assert!(!is_cli_invocation(Some(OsStr::new("dr")), Some(OsStr::new("dr")), false));
+        assert!(!is_cli_invocation(
+            Some(OsStr::new("dr")),
+            Some(OsStr::new("dr")),
+            false
+        ));
     }
 
     #[test]
     fn app_mode_when_name_is_not_a_shim() {
-        assert!(!is_cli_invocation(Some(OsStr::new("something")), Some(OsStr::new("DeltaReview")), false));
+        assert!(!is_cli_invocation(
+            Some(OsStr::new("something")),
+            Some(OsStr::new("DeltaReview")),
+            false
+        ));
         // A non-shim name is never the CLI client, even reached through a symlink.
-        assert!(!is_cli_invocation(Some(OsStr::new("something")), Some(OsStr::new("DeltaReview")), true));
+        assert!(!is_cli_invocation(
+            Some(OsStr::new("something")),
+            Some(OsStr::new("DeltaReview")),
+            true
+        ));
     }
 
     #[test]
@@ -287,8 +327,8 @@ mod tests {
         // symlink backstop only helps where current_exe() keeps symlinks, i.e.
         // not on Linux). Fails fast on that regression, unlike the basename
         // tests above which can't observe the real build output.
-        let conf: serde_json::Value =
-            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json parses");
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json parses");
         let name = conf.get("mainBinaryName").and_then(|v| v.as_str());
         assert!(
             matches!(name, Some(n) if !SHIMS.contains(&n)),
@@ -298,7 +338,10 @@ mod tests {
 
     #[test]
     fn open_args_appends_flag_only_when_mode_is_explicit() {
-        assert_eq!(open_args("com.x", "/r", None), vec!["-b", "com.x", "--args", "/r"]);
+        assert_eq!(
+            open_args("com.x", "/r", None),
+            vec!["-b", "com.x", "--args", "/r"]
+        );
         assert_eq!(
             open_args("com.x", "/r", Some(DiffMode::Uncommitted)),
             vec!["-b", "com.x", "--args", "/r", "--uncommitted"]
@@ -321,10 +364,16 @@ mod tests {
 
     #[test]
     fn precheck_rejects_unknown_flags() {
-        assert_eq!(precheck(&v(&["--bogus"])), PreCheck::BadFlag("--bogus".into()));
+        assert_eq!(
+            precheck(&v(&["--bogus"])),
+            PreCheck::BadFlag("--bogus".into())
+        );
         assert_eq!(precheck(&v(&["-x"])), PreCheck::BadFlag("-x".into()));
         // A typo'd mode flag is caught instead of silently opening the cwd.
-        assert_eq!(precheck(&v(&["--uncomitted"])), PreCheck::BadFlag("--uncomitted".into()));
+        assert_eq!(
+            precheck(&v(&["--uncomitted"])),
+            PreCheck::BadFlag("--uncomitted".into())
+        );
     }
 
     #[test]

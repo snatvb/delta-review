@@ -1678,7 +1678,7 @@ mod tests {
         use crate::review::model::{
             Anchor, Comment, CommentScope, Review, Side, Snapshot, ViewedEntry,
         };
-        let Some((dir, repo)) = scratch_wc() else {
+        let Some((dir, _repo)) = scratch_wc() else {
             return;
         };
         let wc = dir.path().join("wc");

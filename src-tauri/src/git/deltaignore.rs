@@ -43,7 +43,10 @@ pub fn set_svn_local_dir(dir: PathBuf) {
 /// they live in the app data dir, one file per working-copy root.
 pub fn svn_local_file(root: &Path) -> Option<PathBuf> {
     use sha2::{Digest, Sha256};
-    let dir = SVN_LOCAL_DIR.read().unwrap_or_else(|e| e.into_inner()).clone()?;
+    let dir = SVN_LOCAL_DIR
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()?;
     let digest = Sha256::digest(root.display().to_string().as_bytes());
     let name: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
     Some(dir.join(name))
@@ -54,7 +57,10 @@ pub fn set_global_file(path: PathBuf) {
 }
 
 fn global_file() -> Option<PathBuf> {
-    GLOBAL_FILE.read().unwrap_or_else(|e| e.into_inner()).clone()
+    GLOBAL_FILE
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// mtime+len of one source file; `None` when it is absent.
@@ -116,12 +122,16 @@ impl DeltaIgnore {
                 }
             }
         }
-        Self(Arc::new(builder.build().unwrap_or_else(|_| Gitignore::empty())))
+        Self(Arc::new(
+            builder.build().unwrap_or_else(|_| Gitignore::empty()),
+        ))
     }
 
     /// All three layers for the repo's worktree, memoized (see module doc).
     pub fn for_repo(repo: &Repository) -> Self {
-        let Some(root) = repo.workdir() else { return Self::empty() };
+        let Some(root) = repo.workdir() else {
+            return Self::empty();
+        };
         Self::memoized(
             root,
             [
@@ -134,7 +144,14 @@ impl DeltaIgnore {
 
     /// All three layers for an SVN working copy, memoized like `for_repo`.
     pub fn for_svn(root: &Path) -> Self {
-        Self::memoized(root, [global_file(), Some(root.join(DELTAIGNORE_FILE)), svn_local_file(root)])
+        Self::memoized(
+            root,
+            [
+                global_file(),
+                Some(root.join(DELTAIGNORE_FILE)),
+                svn_local_file(root),
+            ],
+        )
     }
 
     /// Build (or serve the memoized) ruleset for `root` from up to three
@@ -154,7 +171,9 @@ impl DeltaIgnore {
     }
 
     pub fn is_ignored(&self, rel_path: &str) -> bool {
-        self.0.matched_path_or_any_parents(rel_path, false).is_ignore()
+        self.0
+            .matched_path_or_any_parents(rel_path, false)
+            .is_ignore()
     }
 
     /// This checkout's local rules, for the Settings editor.
@@ -167,7 +186,9 @@ impl DeltaIgnore {
     }
 
     pub fn svn_local_rules(root: &Path) -> String {
-        svn_local_file(root).map(|p| read_rules(&p)).unwrap_or_default()
+        svn_local_file(root)
+            .map(|p| read_rules(&p))
+            .unwrap_or_default()
     }
 
     pub fn write_svn_local_rules(root: &Path, rules: &str) -> Result<(), String> {
@@ -222,7 +243,10 @@ mod tests {
         std::fs::write(&project_path, project).unwrap();
         std::fs::create_dir_all(local_path.parent().unwrap()).unwrap();
         std::fs::write(&local_path, local).unwrap();
-        DeltaIgnore::layered(dir.path(), [Some(&global_path), Some(&project_path), Some(&local_path)])
+        DeltaIgnore::layered(
+            dir.path(),
+            [Some(&global_path), Some(&project_path), Some(&local_path)],
+        )
     }
 
     #[test]

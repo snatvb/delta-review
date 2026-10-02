@@ -36,7 +36,9 @@ mod lights {
             (NSWindowButton::MiniaturizeButton, "miniaturize"),
             (NSWindowButton::ZoomButton, "zoom"),
         ] {
-            let Some(btn) = win.standardWindowButton(tag) else { continue };
+            let Some(btn) = win.standardWindowButton(tag) else {
+                continue;
+            };
             if container.is_none() {
                 // close.superview().superview() is the titlebar container wry resizes.
                 let sv2 = unsafe { btn.superview() }.and_then(|v| unsafe { v.superview() });
@@ -89,7 +91,9 @@ pub fn start(app: AppHandle) {
 }
 
 fn handle(app: &AppHandle, mut stream: TcpStream) {
-    let Some((path, body)) = read_request(&mut stream) else { return };
+    let Some((path, body)) = read_request(&mut stream) else {
+        return;
+    };
 
     if path.starts_with("/result") {
         if let Some(tx) = RESULT_TX.lock().unwrap().take() {
@@ -104,7 +108,7 @@ fn handle(app: &AppHandle, mut stream: TcpStream) {
         for (label, w) in app.webview_windows() {
             #[cfg(target_os = "macos")]
             if let Ok(ns) = w.ns_window() {
-                windows.insert(label, lights::report(ns as *mut std::ffi::c_void));
+                windows.insert(label, lights::report(ns));
             }
         }
         let body = serde_json::Value::Object(windows).to_string();
@@ -114,11 +118,17 @@ fn handle(app: &AppHandle, mut stream: TcpStream) {
 
     if path.starts_with("/eval") {
         // ?w=<label> targets a specific window; otherwise the first webview.
-        let want = path.split("w=").nth(1).map(|s| s.split('&').next().unwrap_or(s).to_string());
-        let webview = app.webview_windows().into_iter().find_map(|(label, w)| match &want {
-            Some(l) => (&label == l).then_some(w),
-            None => Some(w),
-        });
+        let want = path
+            .split("w=")
+            .nth(1)
+            .map(|s| s.split('&').next().unwrap_or(s).to_string());
+        let webview = app
+            .webview_windows()
+            .into_iter()
+            .find_map(|(label, w)| match &want {
+                Some(l) => (&label == l).then_some(w),
+                None => Some(w),
+            });
         let Some(webview) = webview else {
             respond(&mut stream, "{\"__error\":\"no matching webview\"}");
             return;

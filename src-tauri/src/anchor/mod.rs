@@ -43,7 +43,11 @@ pub fn reanchor(start_line: u32, snippet: &str, content: &str) -> Option<(u32, O
     // Convert 0-based index back to 1-based result tuple.
     let to_result = |start_idx: usize| -> (u32, Option<u32>) {
         let start = (start_idx as u32).saturating_add(1);
-        let end = if span > 1 { Some(start.saturating_add(span as u32).saturating_sub(1)) } else { None };
+        let end = if span > 1 {
+            Some(start.saturating_add(span as u32).saturating_sub(1))
+        } else {
+            None
+        };
         (start, end)
     };
 
@@ -110,7 +114,10 @@ mod tests {
     #[test]
     fn multiline_snippet_returns_end_line() {
         // two-line snippet at lines 2-3
-        assert_eq!(reanchor(2, "let x = 1;\nlet y = 2;", CONTENT), Some((2, Some(3))));
+        assert_eq!(
+            reanchor(2, "let x = 1;\nlet y = 2;", CONTENT),
+            Some((2, Some(3)))
+        );
     }
 
     #[test]

@@ -210,10 +210,8 @@ pub fn run() {
                 tauri::RunEvent::Reopen {
                     has_visible_windows,
                     ..
-                } => {
-                    if !has_visible_windows {
-                        let _ = crate::launch::open_home_window(app_handle);
-                    }
+                } if !has_visible_windows => {
+                    let _ = crate::launch::open_home_window(app_handle);
                 }
                 _ => {}
             }

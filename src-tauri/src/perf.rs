@@ -16,6 +16,9 @@ pub fn enabled() -> bool {
 /// caller because each site has its own useful fields.
 pub fn log(stage: &str, detail: &str, start: Instant) {
     if enabled() {
-        eprintln!("[perf] {stage} {detail} {:.1}ms", start.elapsed().as_secs_f64() * 1e3);
+        eprintln!(
+            "[perf] {stage} {detail} {:.1}ms",
+            start.elapsed().as_secs_f64() * 1e3
+        );
     }
 }

@@ -52,7 +52,9 @@ pub fn build_diff<'r>(repo: &'r Repository, ep: &Endpoints) -> Result<Diff<'r>, 
     let mut opts = DiffOptions::new();
     // Without show_untracked_content libgit2 reports an untracked file as a delta it
     // never diffs, so the file lands in the summary with no line stats at all.
-    opts.include_untracked(true).recurse_untracked_dirs(true).show_untracked_content(true);
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true);
 
     // ep.from_tree and RightSide::Tree carry tree OIDs (not commit OIDs),
     // as produced by tree_of() in resolve_endpoints.
@@ -92,12 +94,31 @@ fn map_status(s: git2::Delta) -> FileStatus {
 /// Build the summary entry for one delta: path, rename old_path, status, +/- line
 /// stats, and the binary flag. Shared by `compute_diff` (summary only) and
 /// `compute_diff_full` (summary + content) so the two can't drift. (#perf)
-fn summary_entry(diff: &Diff, idx: usize, delta: &DiffDelta, bytes: u64, ignore: &DeltaIgnore) -> FileEntry {
-    let new_path = delta.new_file().path().map(|p| p.to_string_lossy().into_owned());
-    let old_path = delta.old_file().path().map(|p| p.to_string_lossy().into_owned());
-    let path = new_path.clone().or_else(|| old_path.clone()).unwrap_or_default();
+fn summary_entry(
+    diff: &Diff,
+    idx: usize,
+    delta: &DiffDelta,
+    bytes: u64,
+    ignore: &DeltaIgnore,
+) -> FileEntry {
+    let new_path = delta
+        .new_file()
+        .path()
+        .map(|p| p.to_string_lossy().into_owned());
+    let old_path = delta
+        .old_file()
+        .path()
+        .map(|p| p.to_string_lossy().into_owned());
+    let path = new_path
+        .clone()
+        .or_else(|| old_path.clone())
+        .unwrap_or_default();
     let ignored = ignore.is_ignored(&path);
-    let (additions, deletions) = if ignored { (0, 0) } else { line_stats(diff, idx) };
+    let (additions, deletions) = if ignored {
+        (0, 0)
+    } else {
+        line_stats(diff, idx)
+    };
 
     FileEntry {
         path,
@@ -198,11 +219,17 @@ fn delta_for_path<'d>(diff: &'d Diff<'d>, path: &str) -> Option<DiffDelta<'d>> {
 /// Where one delta's two sides live: old from the from-tree blob, new from the
 /// working tree (worktree modes) or the new blob (tree modes). Resolved while the
 /// diff is built, so reading the bytes later needs no second whole-repo diff.
-fn delta_sources(repo: &Repository, ep: &Endpoints, delta: &DiffDelta) -> Result<FileSources, GitError> {
+fn delta_sources(
+    repo: &Repository,
+    ep: &Endpoints,
+    delta: &DiffDelta,
+) -> Result<FileSources, GitError> {
     let old = match (ep.from_tree, delta.old_file().path()) {
         (Some(tree_oid), Some(op)) => {
             let tree = repo.find_tree(tree_oid).map_err(|e| e.to_string())?;
-            tree.get_path(op).ok().map(|entry| OldSide::GitBlob(entry.id()))
+            tree.get_path(op)
+                .ok()
+                .map(|entry| OldSide::GitBlob(entry.id()))
         }
         _ => None,
     }
@@ -223,8 +250,13 @@ impl FileSources {
     /// Git-side size access for the hot extraction loop; cross-backend reads
     /// go through `vcs::Repo::source_size`.
     pub(crate) fn size_git(&self, repo: &Repository, side: BlobSide) -> Option<u64> {
-        let blob_size =
-            |oid: Oid| repo.odb().ok()?.read_header(oid).ok().map(|(size, _)| size as u64);
+        let blob_size = |oid: Oid| {
+            repo.odb()
+                .ok()?
+                .read_header(oid)
+                .ok()
+                .map(|(size, _)| size as u64)
+        };
         match side {
             BlobSide::Old => match &self.old {
                 OldSide::GitBlob(oid) => blob_size(*oid),
@@ -283,7 +315,9 @@ pub fn get_file_diff(repo: &Repository, target: &Target, path: &str) -> Result<F
         Some(b) if normalizes_crlf(repo) => Some(crate::vcs::strip_cr(b)),
         other => other,
     };
-    Ok(crate::vcs::file_diff_from_bytes(&header, old_bytes, new_bytes))
+    Ok(crate::vcs::file_diff_from_bytes(
+        &header, old_bytes, new_bytes,
+    ))
 }
 
 /// Exact byte sizes of one binary file's two sides for the UI's binary/image card.
@@ -347,8 +381,10 @@ pub fn compute_diff_full(repo: &Repository, target: &Target) -> Result<FullDiff,
         if !ignored && bytes <= MAX_CACHED_FILE_BYTES && held_bytes < MAX_CACHED_SNAPSHOT_BYTES {
             let old_bytes = sources.read_git(repo, BlobSide::Old);
             let new_raw = sources.read_git(repo, BlobSide::New);
-            let new_bytes =
-                match new_raw { Some(b) if normalize => Some(crate::vcs::strip_cr(b)), other => other };
+            let new_bytes = match new_raw {
+                Some(b) if normalize => Some(crate::vcs::strip_cr(b)),
+                other => other,
+            };
             let fd = crate::vcs::file_diff_from_bytes(&header, old_bytes, new_bytes);
             let n = fd.old_content.as_deref().map_or(0, str::len)
                 + fd.new_content.as_deref().map_or(0, str::len);
@@ -362,7 +398,11 @@ pub fn compute_diff_full(repo: &Repository, target: &Target) -> Result<FullDiff,
     }
 
     Ok(FullDiff {
-        summary: DiffSummary { files, base_label: ep.base_label, head_label: ep.head_label },
+        summary: DiffSummary {
+            files,
+            base_label: ep.base_label,
+            head_label: ep.head_label,
+        },
         files: contents,
         sources: all_sources,
         headers,
@@ -376,7 +416,13 @@ mod tests {
     use crate::git::test_support::*;
 
     fn target(repo_path: &str, mode: DiffMode) -> Target {
-        Target { repo_path: repo_path.into(), worktree: None, mode, base: None, commit: None }
+        Target {
+            repo_path: repo_path.into(),
+            worktree: None,
+            mode,
+            base: None,
+            commit: None,
+        }
     }
 
     /// Test shim: open the repo the way `vcs::Repo::open` would, then diff one file.
@@ -390,9 +436,16 @@ mod tests {
         let (dir, _repo) = repo_with_commit();
         write(dir.path(), "file.txt", "line1\nCHANGED\nline2\n");
         let fd = file_diff_at(
-            &Target { repo_path: dir.path().to_str().unwrap().into(), worktree: None, mode: DiffMode::Uncommitted, base: None, commit: None },
+            &Target {
+                repo_path: dir.path().to_str().unwrap().into(),
+                worktree: None,
+                mode: DiffMode::Uncommitted,
+                base: None,
+                commit: None,
+            },
             "file.txt",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(fd.old_content.as_deref(), Some("line1\nline2\n"));
         assert_eq!(fd.new_content.as_deref(), Some("line1\nCHANGED\nline2\n"));
     }
@@ -400,10 +453,17 @@ mod tests {
     #[test]
     fn crlf_working_copy_is_normalized_when_git_stores_lf() {
         let (dir, repo) = repo_with_commit();
-        repo.config().unwrap().set_str("core.autocrlf", "true").unwrap();
+        repo.config()
+            .unwrap()
+            .set_str("core.autocrlf", "true")
+            .unwrap();
         write(dir.path(), "file.txt", "line1\r\nCHANGED\r\n");
 
-        let fd = file_diff_at(&target(dir.path().to_str().unwrap(), DiffMode::Uncommitted), "file.txt").unwrap();
+        let fd = file_diff_at(
+            &target(dir.path().to_str().unwrap(), DiffMode::Uncommitted),
+            "file.txt",
+        )
+        .unwrap();
 
         assert_eq!(fd.old_content.as_deref(), Some("line1\nline2\n"));
         assert_eq!(fd.new_content.as_deref(), Some("line1\nCHANGED\n"));
@@ -412,10 +472,17 @@ mod tests {
     #[test]
     fn crlf_working_copy_is_kept_when_git_stores_it_verbatim() {
         let (dir, repo) = repo_with_commit();
-        repo.config().unwrap().set_str("core.autocrlf", "false").unwrap();
+        repo.config()
+            .unwrap()
+            .set_str("core.autocrlf", "false")
+            .unwrap();
         write(dir.path(), "file.txt", "line1\r\nCHANGED\r\n");
 
-        let fd = file_diff_at(&target(dir.path().to_str().unwrap(), DiffMode::Uncommitted), "file.txt").unwrap();
+        let fd = file_diff_at(
+            &target(dir.path().to_str().unwrap(), DiffMode::Uncommitted),
+            "file.txt",
+        )
+        .unwrap();
 
         assert_eq!(fd.new_content.as_deref(), Some("line1\r\nCHANGED\r\n"));
     }
@@ -465,7 +532,11 @@ mod tests {
     fn binary_file_is_flagged_and_content_omitted() {
         let (dir, _repo) = repo_with_commit();
         // an untracked "png" with NUL bytes
-        std::fs::write(dir.path().join("logo.png"), [0x89u8, b'P', b'N', b'G', 0x00, 0x01, 0x02, 0x00]).unwrap();
+        std::fs::write(
+            dir.path().join("logo.png"),
+            [0x89u8, b'P', b'N', b'G', 0x00, 0x01, 0x02, 0x00],
+        )
+        .unwrap();
         let fd = file_diff_at(
             &target(dir.path().to_str().unwrap(), DiffMode::Uncommitted),
             "logo.png",
@@ -476,7 +547,8 @@ mod tests {
     }
 
     fn get_binary_file_diff(t: &Target, path: &str) -> Result<BinaryFileDiff, GitError> {
-        crate::vcs::Repo::with_fresh_sources(t, path, |repo, s| repo.binary_sizes(s)).and_then(|sizes| sizes)
+        crate::vcs::Repo::with_fresh_sources(t, path, |repo, s| repo.binary_sizes(s))
+            .and_then(|sizes| sizes)
     }
 
     fn read_side(t: &Target, path: &str, side: BlobSide) -> Option<Vec<u8>> {
@@ -495,7 +567,10 @@ mod tests {
         let bd = get_binary_file_diff(&t, "logo.png").unwrap();
         assert_eq!(bd.old_size, None, "added file: no old side");
         assert_eq!(bd.new_size, Some(png.len() as u64));
-        assert_eq!(read_side(&t, "logo.png", BlobSide::New).as_deref(), Some(&png[..]));
+        assert_eq!(
+            read_side(&t, "logo.png", BlobSide::New).as_deref(),
+            Some(&png[..])
+        );
         assert_eq!(read_side(&t, "logo.png", BlobSide::Old), None);
     }
 
@@ -511,10 +586,20 @@ mod tests {
 
         let bd = get_binary_file_diff(&t, "logo.png").unwrap();
 
-        assert_eq!(bd.old_size, Some(old_png.len() as u64), "old side read from HEAD's blob");
+        assert_eq!(
+            bd.old_size,
+            Some(old_png.len() as u64),
+            "old side read from HEAD's blob"
+        );
         assert_eq!(bd.new_size, Some(new_png.len() as u64));
-        assert_eq!(read_side(&t, "logo.png", BlobSide::Old).as_deref(), Some(&old_png[..]));
-        assert_eq!(read_side(&t, "logo.png", BlobSide::New).as_deref(), Some(&new_png[..]));
+        assert_eq!(
+            read_side(&t, "logo.png", BlobSide::Old).as_deref(),
+            Some(&old_png[..])
+        );
+        assert_eq!(
+            read_side(&t, "logo.png", BlobSide::New).as_deref(),
+            Some(&new_png[..])
+        );
     }
 
     #[test]
@@ -530,7 +615,10 @@ mod tests {
 
         assert_eq!(bd.old_size, Some(png.len() as u64));
         assert_eq!(bd.new_size, None, "deleted: no new side");
-        assert_eq!(read_side(&t, "gone.png", BlobSide::Old).as_deref(), Some(&png[..]));
+        assert_eq!(
+            read_side(&t, "gone.png", BlobSide::Old).as_deref(),
+            Some(&png[..])
+        );
         assert_eq!(read_side(&t, "gone.png", BlobSide::New), None);
     }
 
@@ -542,8 +630,14 @@ mod tests {
         commit_all(&repo, "add logo");
         let t = target(dir.path().to_str().unwrap(), DiffMode::LastCommit);
 
-        assert_eq!(get_binary_file_diff(&t, "logo.png").unwrap().new_size, Some(png.len() as u64));
-        assert_eq!(read_side(&t, "logo.png", BlobSide::New).as_deref(), Some(&png[..]));
+        assert_eq!(
+            get_binary_file_diff(&t, "logo.png").unwrap().new_size,
+            Some(png.len() as u64)
+        );
+        assert_eq!(
+            read_side(&t, "logo.png", BlobSide::New).as_deref(),
+            Some(&png[..])
+        );
     }
 
     #[test]
@@ -571,7 +665,11 @@ mod tests {
     #[test]
     fn untracked_file_carries_its_line_stats() {
         let (dir, _repo) = repo_with_commit();
-        write(dir.path(), "fresh.ts", "const a = 1\nconst b = 2\nconst c = 3\n");
+        write(
+            dir.path(),
+            "fresh.ts",
+            "const a = 1\nconst b = 2\nconst c = 3\n",
+        );
 
         let summary =
             compute_diff(&target(dir.path().to_str().unwrap(), DiffMode::Uncommitted)).unwrap();
@@ -594,7 +692,7 @@ mod tests {
     #[test]
     fn uncommitted_branch_new_file_shows_modified_not_added() {
         let (dir, repo) = repo_with_commit(); // main: file.txt
-        // branch off and commit a brand-new file
+                                              // branch off and commit a brand-new file
         let head = repo.head().unwrap().peel_to_commit().unwrap();
         repo.branch("feature", &head, false).unwrap();
         repo.set_head("refs/heads/feature").unwrap();
@@ -605,22 +703,35 @@ mod tests {
 
         let summary =
             compute_diff(&target(dir.path().to_str().unwrap(), DiffMode::Uncommitted)).unwrap();
-        let f = summary.files.iter().find(|f| f.path == "feature.txt").unwrap();
-        assert_eq!(f.status, FileStatus::Modified, "expected Modified, got {:?}", f.status);
+        let f = summary
+            .files
+            .iter()
+            .find(|f| f.path == "feature.txt")
+            .unwrap();
+        assert_eq!(
+            f.status,
+            FileStatus::Modified,
+            "expected Modified, got {:?}",
+            f.status
+        );
 
         let fd = file_diff_at(
             &target(dir.path().to_str().unwrap(), DiffMode::Uncommitted),
             "feature.txt",
         )
         .unwrap();
-        assert_eq!(fd.old_content.as_deref(), Some("a\nb\nc\n"), "old content must be HEAD's");
+        assert_eq!(
+            fd.old_content.as_deref(),
+            Some("a\nb\nc\n"),
+            "old content must be HEAD's"
+        );
     }
 
     #[test]
     fn uncommitted_in_linked_worktree_shows_modified_not_added() {
         use git2::WorktreeAddOptions;
         let (_dir, repo) = repo_with_commit(); // main: file.txt
-        // create a linked worktree on a new branch
+                                               // create a linked worktree on a new branch
         let wt_parent = tempfile::TempDir::new().unwrap();
         let wt_path = wt_parent.path().join("wt");
         let wt = repo
@@ -635,7 +746,16 @@ mod tests {
 
         let summary =
             compute_diff(&target(wt_path.to_str().unwrap(), DiffMode::Uncommitted)).unwrap();
-        let f = summary.files.iter().find(|f| f.path == "feature.txt").unwrap();
-        assert_eq!(f.status, FileStatus::Modified, "expected Modified, got {:?}", f.status);
+        let f = summary
+            .files
+            .iter()
+            .find(|f| f.path == "feature.txt")
+            .unwrap();
+        assert_eq!(
+            f.status,
+            FileStatus::Modified,
+            "expected Modified, got {:?}",
+            f.status
+        );
     }
 }

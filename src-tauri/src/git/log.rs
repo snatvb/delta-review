@@ -79,14 +79,21 @@ mod tests {
     use crate::git::test_support::*;
 
     fn target(repo_path: &str) -> Target {
-        Target { repo_path: repo_path.into(), worktree: None, mode: DiffMode::Commit, base: None, commit: None }
+        Target {
+            repo_path: repo_path.into(),
+            worktree: None,
+            mode: DiffMode::Commit,
+            base: None,
+            commit: None,
+        }
     }
 
     #[test]
     fn lists_branch_commits_newest_first_excluding_base() {
         let (dir, repo) = repo_with_commit(); // main @ "initial"
         let base = repo.head().unwrap().peel_to_commit().unwrap().id();
-        repo.branch("feature", &repo.find_commit(base).unwrap(), false).unwrap();
+        repo.branch("feature", &repo.find_commit(base).unwrap(), false)
+            .unwrap();
         repo.set_head("refs/heads/feature").unwrap();
         write(dir.path(), "a.txt", "1\n");
         let c1 = commit_all(&repo, "first on feature");
@@ -105,21 +112,40 @@ mod tests {
         use std::collections::HashSet;
         let (dir, repo) = repo_with_commit();
         let base = repo.head().unwrap().peel_to_commit().unwrap().id();
-        repo.branch("feature", &repo.find_commit(base).unwrap(), false).unwrap();
+        repo.branch("feature", &repo.find_commit(base).unwrap(), false)
+            .unwrap();
         repo.set_head("refs/heads/feature").unwrap();
         let mut made = Vec::new();
         for i in 0..5 {
-            write(dir.path(), "a.txt", &format!("{i}
-"));
+            write(
+                dir.path(),
+                "a.txt",
+                &format!(
+                    "{i}
+"
+                ),
+            );
             made.push(commit_all(&repo, &format!("c{i}")).to_string());
         }
         let t = target(dir.path().to_str().unwrap());
 
         // Same-second commits have no defined TIME order, so compare pages as sets.
-        let pages: Vec<CommitPage> = [0, 2, 4].iter().map(|&skip| list_commits(&t, skip, 2).unwrap()).collect();
-        assert_eq!(pages.iter().map(|p| p.commits.len()).collect::<Vec<_>>(), vec![2, 2, 1]);
-        assert_eq!(pages.iter().map(|p| p.has_more).collect::<Vec<_>>(), vec![true, true, false]);
-        let paged: HashSet<String> = pages.iter().flat_map(|p| p.commits.iter().map(|c| c.oid.clone())).collect();
+        let pages: Vec<CommitPage> = [0, 2, 4]
+            .iter()
+            .map(|&skip| list_commits(&t, skip, 2).unwrap())
+            .collect();
+        assert_eq!(
+            pages.iter().map(|p| p.commits.len()).collect::<Vec<_>>(),
+            vec![2, 2, 1]
+        );
+        assert_eq!(
+            pages.iter().map(|p| p.has_more).collect::<Vec<_>>(),
+            vec![true, true, false]
+        );
+        let paged: HashSet<String> = pages
+            .iter()
+            .flat_map(|p| p.commits.iter().map(|c| c.oid.clone()))
+            .collect();
         assert_eq!(paged, made.into_iter().collect::<HashSet<_>>());
     }
 

@@ -10,7 +10,10 @@ fn main() {
             s.lines()
                 .find_map(|l| l.trim().strip_prefix("\"version\":").map(str::to_string))
         })
-        .map(|v| v.trim_matches(|c: char| c == ' ' || c == '"' || c == ',').to_string())
+        .map(|v| {
+            v.trim_matches(|c: char| c == ' ' || c == '"' || c == ',')
+                .to_string()
+        })
         .unwrap_or_else(|| "0.0.0".to_string());
     println!("cargo:rustc-env=DELTA_VERSION={version}");
     println!("cargo:rerun-if-changed=../package.json");

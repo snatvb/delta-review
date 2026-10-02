@@ -45,7 +45,10 @@ fn build_ignore(root: &Path) -> Gitignore {
 fn classify(path: &Path, root: &Path, ig: &Gitignore) -> Option<Option<String>> {
     let rel = path.strip_prefix(root).unwrap_or(path);
     let rel_str = rel.to_string_lossy().replace('\\', "/");
-    let first = rel.components().next().map(|c| c.as_os_str().to_os_string());
+    let first = rel
+        .components()
+        .next()
+        .map(|c| c.as_os_str().to_os_string());
     if first.as_deref() == Some(std::ffi::OsStr::new(".git")) {
         let meta = rel_str == ".git/HEAD"
             || rel_str == ".git/MERGE_HEAD"
@@ -67,7 +70,10 @@ fn classify(path: &Path, root: &Path, ig: &Gitignore) -> Option<Option<String>> 
     }
     // `matched_path_or_any_parents` (not `matched`) so a file *inside* an ignored
     // directory (e.g. node_modules/x.js) is caught, not just the directory entry.
-    if ig.matched_path_or_any_parents(path, path.is_dir()).is_ignore() {
+    if ig
+        .matched_path_or_any_parents(path, path.is_dir())
+        .is_ignore()
+    {
         return None;
     }
     Some(Some(rel_str))
@@ -83,7 +89,8 @@ fn svn_changed_path(path: &Path, root: &Path) -> Option<String> {
 }
 
 fn is_svn_root(root: &Path) -> bool {
-    crate::vcs::Repo::open(&root.to_string_lossy()).is_ok_and(|r| r.kind() == crate::vcs::VcsKind::Svn)
+    crate::vcs::Repo::open(&root.to_string_lossy())
+        .is_ok_and(|r| r.kind() == crate::vcs::VcsKind::Svn)
 }
 
 /// Begin watching `worktree` for the window `label`. No-op if a watcher can't be
@@ -95,12 +102,13 @@ pub fn start(app: &AppHandle, label: &str, worktree: &Path) {
     let root = worktree.to_path_buf();
     let ig = build_ignore(&root);
     let (tx, rx) = channel::<notify::Result<notify::Event>>();
-    let mut watcher = match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        let _ = tx.send(res);
-    }) {
-        Ok(w) => w,
-        Err(_) => return,
-    };
+    let mut watcher =
+        match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            let _ = tx.send(res);
+        }) {
+            Ok(w) => w,
+            Err(_) => return,
+        };
     if watcher.watch(&root, RecursiveMode::Recursive).is_err() {
         return;
     }
@@ -112,60 +120,65 @@ pub fn start(app: &AppHandle, label: &str, worktree: &Path) {
     let watched_root = root.clone();
     let app = app.clone();
     let label_str = label.to_string();
-    std::thread::spawn(move || loop {
-        // Block until the first event, then coalesce a quiet window.
-        let first = match rx.recv() {
-            Ok(ev) => ev,
-            Err(_) => break, // watcher dropped (window closed)
-        };
-        let mut batch = vec![first];
-        loop {
-            match rx.recv_timeout(DEBOUNCE) {
-                Ok(ev) => batch.push(ev),
-                Err(RecvTimeoutError::Timeout) => break,
-                Err(RecvTimeoutError::Disconnected) => return,
-            }
-        }
-        if svn {
-            let overflowed = batch.iter().any(|ev| ev.as_ref().map_or(true, |e| e.need_rescan()));
-            let changed = batch
-                .iter()
-                .flatten()
-                .flat_map(|ev| ev.paths.iter())
-                .filter_map(|p| svn_changed_path(p, &root));
-            crate::vcs::svn::status::record_changes(&root, changed, overflowed);
-        }
-        let mut paths: Vec<String> = Vec::new();
-        let mut git_meta = false;
-        for ev in batch.iter().flatten() {
-            for p in &ev.paths {
-                match classify(p, &root, &ig) {
-                    Some(Some(rel)) => {
-                        if !paths.contains(&rel) {
-                            paths.push(rel);
-                        }
-                    }
-                    Some(None) => git_meta = true,
-                    None => {}
+    std::thread::spawn(move || {
+        // Block until the first event of a burst, then coalesce a quiet window.
+        // The loop exits when the watcher is dropped (window closed).
+        while let Ok(first) = rx.recv() {
+            let mut batch = vec![first];
+            loop {
+                match rx.recv_timeout(DEBOUNCE) {
+                    Ok(ev) => batch.push(ev),
+                    Err(RecvTimeoutError::Timeout) => break,
+                    Err(RecvTimeoutError::Disconnected) => return,
                 }
             }
-        }
-        if git_meta || !paths.is_empty() {
-            // Drop the cached diff snapshot for this worktree before telling the
-            // window to refresh, so the refetch rebuilds against the new content
-            // instead of serving the memoized (now-stale) working-tree diff. (#perf)
-            if let Some(cache) = app.try_state::<crate::git::cache::DiffCache>() {
-                cache.invalidate(&root.to_string_lossy());
+            if svn {
+                let overflowed = batch
+                    .iter()
+                    .any(|ev| ev.as_ref().map_or(true, |e| e.need_rescan()));
+                let changed = batch
+                    .iter()
+                    .flatten()
+                    .flat_map(|ev| ev.paths.iter())
+                    .filter_map(|p| svn_changed_path(p, &root));
+                crate::vcs::svn::status::record_changes(&root, changed, overflowed);
             }
-            let _ = app.emit_to(
-                EventTarget::webview_window(label_str.as_str()),
-                "fs:changed",
-                ChangePayload { paths, git_meta },
-            );
+            let mut paths: Vec<String> = Vec::new();
+            let mut git_meta = false;
+            for ev in batch.iter().flatten() {
+                for p in &ev.paths {
+                    match classify(p, &root, &ig) {
+                        Some(Some(rel)) => {
+                            if !paths.contains(&rel) {
+                                paths.push(rel);
+                            }
+                        }
+                        Some(None) => git_meta = true,
+                        None => {}
+                    }
+                }
+            }
+            if git_meta || !paths.is_empty() {
+                // Drop the cached diff snapshot for this worktree before telling the
+                // window to refresh, so the refetch rebuilds against the new content
+                // instead of serving the memoized (now-stale) working-tree diff. (#perf)
+                if let Some(cache) = app.try_state::<crate::git::cache::DiffCache>() {
+                    cache.invalidate(&root.to_string_lossy());
+                }
+                let _ = app.emit_to(
+                    EventTarget::webview_window(label_str.as_str()),
+                    "fs:changed",
+                    ChangePayload { paths, git_meta },
+                );
+            }
         }
     });
 
-    let replaced = state.0.lock().unwrap().insert(label.to_string(), (watched_root, watcher));
+    let replaced = state
+        .0
+        .lock()
+        .unwrap()
+        .insert(label.to_string(), (watched_root, watcher));
     if let Some((old_root, _)) = replaced {
         crate::vcs::svn::status::watch_stopped(&old_root);
     }
@@ -175,7 +188,13 @@ pub fn start(app: &AppHandle, label: &str, worktree: &Path) {
 /// Delta Ignore rules change in Settings, so each review offers Refresh
 /// exactly as if the watcher had seen the edit.
 pub fn emit_ignore_changed(app: &AppHandle) {
-    let _ = app.emit("fs:changed", ChangePayload { paths: Vec::new(), git_meta: true });
+    let _ = app.emit(
+        "fs:changed",
+        ChangePayload {
+            paths: Vec::new(),
+            git_meta: true,
+        },
+    );
 }
 
 /// The repo at `root` changed without a filesystem event reaching the
@@ -200,7 +219,10 @@ pub fn notify_repo_changed(app: &AppHandle, root: &Path) {
         let _ = app.emit_to(
             EventTarget::webview_window(label.as_str()),
             "fs:changed",
-            ChangePayload { paths: Vec::new(), git_meta: true },
+            ChangePayload {
+                paths: Vec::new(),
+                git_meta: true,
+            },
         );
     }
 }
@@ -237,18 +259,33 @@ mod tests {
         let ig = b.build().unwrap();
 
         // gitignored → ignored
-        assert_eq!(classify(Path::new("/repo/node_modules/x.js"), root, &ig), None);
+        assert_eq!(
+            classify(Path::new("/repo/node_modules/x.js"), root, &ig),
+            None
+        );
         // .git object churn → ignored
-        assert_eq!(classify(Path::new("/repo/.git/objects/ab/cd"), root, &ig), None);
+        assert_eq!(
+            classify(Path::new("/repo/.git/objects/ab/cd"), root, &ig),
+            None
+        );
         // working-tree file → relevant relpath
         assert_eq!(
             classify(Path::new("/repo/src/a.ts"), root, &ig),
             Some(Some("src/a.ts".to_string()))
         );
         // .git meta → relevant, no path
-        assert_eq!(classify(Path::new("/repo/.git/HEAD"), root, &ig), Some(None));
-        assert_eq!(classify(Path::new("/repo/.git/refs/heads/main"), root, &ig), Some(None));
+        assert_eq!(
+            classify(Path::new("/repo/.git/HEAD"), root, &ig),
+            Some(None)
+        );
+        assert_eq!(
+            classify(Path::new("/repo/.git/refs/heads/main"), root, &ig),
+            Some(None)
+        );
         // hand-edited local Delta Ignore → repo meta, offers Refresh
-        assert_eq!(classify(Path::new("/repo/.git/info/deltaignore"), root, &ig), Some(None));
+        assert_eq!(
+            classify(Path::new("/repo/.git/info/deltaignore"), root, &ig),
+            Some(None)
+        );
     }
 }

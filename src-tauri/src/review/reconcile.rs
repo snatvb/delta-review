@@ -44,10 +44,13 @@ pub fn reconcile(cache: &DiffCache, mut review: Review) -> Result<ReviewSession,
     review.id = review_id(&review.target.repo_path, &worktree);
 
     let summary = cache.summary(&review.target)?;
-    let present: HashSet<String> =
-        summary.files.iter().map(|f| f.path.clone()).collect();
-    let ignored: std::collections::HashSet<String> =
-        summary.files.iter().filter(|f| f.ignored).map(|f| f.path.clone()).collect();
+    let present: HashSet<String> = summary.files.iter().map(|f| f.path.clone()).collect();
+    let ignored: std::collections::HashSet<String> = summary
+        .files
+        .iter()
+        .filter(|f| f.ignored)
+        .map(|f| f.path.clone())
+        .collect();
 
     // History maintenance is git-only: handing untagged comments to newly
     // landed commits, and freezing commit-tagged ones against reachability.
@@ -137,7 +140,12 @@ pub fn reconcile(cache: &DiffCache, mut review: Review) -> Result<ReviewSession,
     review.snapshot = repo.snapshot_of(&review.target)?;
     review.last_opened_at = now();
 
-    Ok(ReviewSession { review, summary, vcs, repo_name: String::new() })
+    Ok(ReviewSession {
+        review,
+        summary,
+        vcs,
+        repo_name: String::new(),
+    })
 }
 
 /// Hand untagged comments over to the commits that landed since the last
@@ -164,7 +172,10 @@ fn hand_off_to_new_commits(repo: &Repository, review: &mut Review) -> Option<Oid
     if prev_oid == head_oid {
         return Some(head_oid); // nothing landed
     }
-    if !repo.graph_descendant_of(head_oid, prev_oid).unwrap_or(false) {
+    if !repo
+        .graph_descendant_of(head_oid, prev_oid)
+        .unwrap_or(false)
+    {
         return Some(head_oid); // rewritten/switched — not a plain addition
     }
 
@@ -176,12 +187,17 @@ fn hand_off_to_new_commits(repo: &Repository, review: &mut Review) -> Option<Oid
         let _ = walk.set_sorting(Sort::TIME);
         if walk.push(head_oid).is_ok() && walk.hide(prev_oid).is_ok() {
             for oid in walk.flatten() {
-                let Ok(commit) = repo.find_commit(oid) else { continue };
+                let Ok(commit) = repo.find_commit(oid) else {
+                    continue;
+                };
                 let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
                 let Ok(tree) = commit.tree() else { continue };
                 if let Ok(diff) = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None) {
                     for delta in diff.deltas() {
-                        for path in [delta.old_file().path(), delta.new_file().path()].into_iter().flatten() {
+                        for path in [delta.old_file().path(), delta.new_file().path()]
+                            .into_iter()
+                            .flatten()
+                        {
                             owner
                                 .entry(path.to_string_lossy().into_owned())
                                 .or_insert_with(|| commit.id().to_string());
@@ -209,11 +225,15 @@ fn hand_off_to_new_commits(repo: &Repository, review: &mut Review) -> Option<Oid
 /// `main`) don't read as stale.
 fn commit_reachable_from_head(repo: &Repository, head_oid: Option<Oid>, oid: &str) -> bool {
     let Some(head) = head_oid else { return false };
-    let Ok(target) = Oid::from_str(oid) else { return false };
+    let Ok(target) = Oid::from_str(oid) else {
+        return false;
+    };
     if target == head {
         return true; // libgit2 does not count a commit as its own descendant
     }
-    let Ok(commit) = repo.find_commit(target) else { return false };
+    let Ok(commit) = repo.find_commit(target) else {
+        return false;
+    };
     repo.graph_descendant_of(head, commit.id()).unwrap_or(false)
 }
 
@@ -290,7 +310,9 @@ mod tests {
     use super::*;
     use crate::git::model::{DiffMode, Target};
     use crate::git::test_support::*;
-    use crate::review::model::{Anchor, Comment, CommentScope, Review, Side, Snapshot, ViewedEntry};
+    use crate::review::model::{
+        Anchor, Comment, CommentScope, Review, Side, Snapshot, ViewedEntry,
+    };
 
     fn empty_review(repo_path: &str) -> Review {
         let target = Target {
@@ -303,7 +325,12 @@ mod tests {
         Review::new(
             "id".into(),
             target,
-            Snapshot { base_oid: "".into(), head_oid: None, head_commit: None, captured_at: "".into() },
+            Snapshot {
+                base_oid: "".into(),
+                head_oid: None,
+                head_commit: None,
+                captured_at: "".into(),
+            },
             "t".into(),
         )
     }
@@ -332,7 +359,8 @@ mod tests {
     fn repo_with_feature_commit() -> (tempfile::TempDir, git2::Repository, git2::Oid) {
         let (dir, repo) = repo_with_commit(); // main @ initial
         let base = repo.head().unwrap().peel_to_commit().unwrap().id();
-        repo.branch("feature", &repo.find_commit(base).unwrap(), false).unwrap();
+        repo.branch("feature", &repo.find_commit(base).unwrap(), false)
+            .unwrap();
         repo.set_head("refs/heads/feature").unwrap();
         write(dir.path(), "file.txt", "line1\nADDED\nline2\n");
         let oid = commit_all(&repo, "second on feature");
@@ -348,7 +376,10 @@ mod tests {
         c.commit = Some(oid.to_string());
         r.comments.push(c);
         let session = reconcile(&DiffCache::default(), r).unwrap();
-        assert!(!session.review.comments[0].stale, "a present commit's comment stays fresh");
+        assert!(
+            !session.review.comments[0].stale,
+            "a present commit's comment stays fresh"
+        );
     }
 
     #[test]
@@ -360,7 +391,10 @@ mod tests {
         c.commit = Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".into());
         r.comments.push(c);
         let session = reconcile(&DiffCache::default(), r).unwrap();
-        assert!(session.review.comments[0].stale, "an unknown commit oid => stale");
+        assert!(
+            session.review.comments[0].stale,
+            "an unknown commit oid => stale"
+        );
     }
 
     #[test]
@@ -375,7 +409,10 @@ mod tests {
         c.commit = Some(head.to_string());
         r.comments.push(c);
         let session = reconcile(&DiffCache::default(), r).unwrap();
-        assert!(!session.review.comments[0].stale, "a commit reachable from HEAD is not stale, even on the base branch");
+        assert!(
+            !session.review.comments[0].stale,
+            "a commit reachable from HEAD is not stale, even on the base branch"
+        );
     }
 
     #[test]
@@ -410,13 +447,31 @@ mod tests {
 
         let second = reconcile(&DiffCache::default(), first.review).unwrap();
         let by_file = |f: &str| {
-            second.review.comments.iter().find(|c| c.anchor.as_ref().unwrap().file == f).unwrap()
+            second
+                .review
+                .comments
+                .iter()
+                .find(|c| c.anchor.as_ref().unwrap().file == f)
+                .unwrap()
         };
-        assert_eq!(by_file("file.txt").commit, Some(oid.to_string()), "the committed file's comment is handed to that commit");
-        assert!(by_file("other.txt").commit.is_none(), "a still-uncommitted file's comment stays live");
-        assert!(!by_file("file.txt").stale, "the handed-off comment is fresh — its commit is reachable");
+        assert_eq!(
+            by_file("file.txt").commit,
+            Some(oid.to_string()),
+            "the committed file's comment is handed to that commit"
+        );
+        assert!(
+            by_file("other.txt").commit.is_none(),
+            "a still-uncommitted file's comment stays live"
+        );
+        assert!(
+            !by_file("file.txt").stale,
+            "the handed-off comment is fresh — its commit is reachable"
+        );
         // And the snapshot advanced, so the same handoff can't fire twice.
-        assert_eq!(second.review.snapshot.head_commit.as_deref(), Some(oid.to_string().as_str()));
+        assert_eq!(
+            second.review.snapshot.head_commit.as_deref(),
+            Some(oid.to_string().as_str())
+        );
     }
 
     #[test]
@@ -435,10 +490,14 @@ mod tests {
         write(dir.path(), "file.txt", "line1\nADDED\nline2\nextra\n");
         let _mid = commit_all(&repo, "to be undone");
         let old = repo.find_commit(start).unwrap();
-        repo.reset(old.as_object(), git2::ResetType::Hard, None).unwrap();
+        repo.reset(old.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
 
         let second = reconcile(&DiffCache::default(), first.review).unwrap();
-        assert!(second.review.comments[0].commit.is_none(), "a rewritten-away HEAD must not tag comments");
+        assert!(
+            second.review.comments[0].commit.is_none(),
+            "a rewritten-away HEAD must not tag comments"
+        );
     }
 
     #[test]
@@ -452,7 +511,7 @@ mod tests {
         let session = reconcile(&DiffCache::default(), r).unwrap();
         let a = session.review.comments[0].anchor.as_ref().unwrap();
         assert_eq!(a.start_line, Some(2));
-        assert_eq!(session.review.comments[0].stale, false);
+        assert!(!session.review.comments[0].stale);
     }
 
     #[test]
@@ -462,7 +521,7 @@ mod tests {
         let mut r = empty_review(dir.path().to_str().unwrap());
         r.comments.push(line_comment("file.txt", 1, "line1"));
         let session = reconcile(&DiffCache::default(), r).unwrap();
-        assert_eq!(session.review.comments[0].stale, true);
+        assert!(session.review.comments[0].stale);
     }
 
     #[test]
@@ -472,15 +531,30 @@ mod tests {
         write(dir.path(), "file.txt", "completely\ndifferent\n");
         let mut r = empty_review(dir.path().to_str().unwrap());
         r.comments.push(line_comment("file.txt", 1, "line1"));
-        r.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: "stale-hash".into() });
+        r.viewed.push(ViewedEntry {
+            file: "file.txt".into(),
+            diff_hash: "stale-hash".into(),
+        });
 
         let session = reconcile(&DiffCache::default(), r).unwrap();
 
-        let file = session.summary.files.iter().find(|f| f.path == "file.txt").unwrap();
+        let file = session
+            .summary
+            .files
+            .iter()
+            .find(|f| f.path == "file.txt")
+            .unwrap();
         assert!(file.ignored);
         assert_eq!((file.additions, file.deletions), (0, 0));
-        assert_eq!(session.review.comments[0].stale, false);
-        assert_eq!(session.review.comments[0].anchor.as_ref().unwrap().start_line, Some(1));
+        assert!(!session.review.comments[0].stale);
+        assert_eq!(
+            session.review.comments[0]
+                .anchor
+                .as_ref()
+                .unwrap()
+                .start_line,
+            Some(1)
+        );
         assert_eq!(session.review.viewed.len(), 1);
         assert_eq!(session.review.viewed[0].diff_hash, "stale-hash");
     }
@@ -491,7 +565,10 @@ mod tests {
         // the Uncommitted diff is empty → file.txt is absent from the diff.
         let (dir, _repo) = repo_with_commit();
         let mut r = empty_review(dir.path().to_str().unwrap());
-        r.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: "anything".into() });
+        r.viewed.push(ViewedEntry {
+            file: "file.txt".into(),
+            diff_hash: "anything".into(),
+        });
         let session = reconcile(&DiffCache::default(), r).unwrap();
         assert_eq!(session.review.viewed.len(), 0);
     }
@@ -502,7 +579,10 @@ mod tests {
         write(dir.path(), "file.txt", "line1\nCHANGED\n");
         let mut r = empty_review(dir.path().to_str().unwrap());
         // FE toggles viewed with empty hash (doesn't know the hash)
-        r.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: "".into() });
+        r.viewed.push(ViewedEntry {
+            file: "file.txt".into(),
+            diff_hash: "".into(),
+        });
         let session = reconcile(&DiffCache::default(), r).unwrap();
         // Entry must be kept and its hash must now be non-empty (stamped)
         assert_eq!(session.review.viewed.len(), 1);
@@ -517,19 +597,21 @@ mod tests {
         let r = empty_review(dir.path().to_str().unwrap());
         let first = reconcile(&DiffCache::default(), r.clone()).unwrap();
         // mark viewed with the correct current hash
-        let fd =
-            crate::git::diff::get_file_diff(
-                &crate::git::open_repo(&first.review.target.repo_path).unwrap(),
-                &first.review.target,
-                "file.txt",
-            )
-            .unwrap();
+        let fd = crate::git::diff::get_file_diff(
+            &crate::git::open_repo(&first.review.target.repo_path).unwrap(),
+            &first.review.target,
+            "file.txt",
+        )
+        .unwrap();
         let h = crate::anchor::diff_hash(
             fd.old_content.as_deref().unwrap_or(""),
             fd.new_content.as_deref().unwrap_or(""),
         );
         let mut r = first.review;
-        r.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: h });
+        r.viewed.push(ViewedEntry {
+            file: "file.txt".into(),
+            diff_hash: h,
+        });
         let kept = reconcile(&DiffCache::default(), r.clone()).unwrap();
         assert_eq!(kept.review.viewed.len(), 1);
         // now change the file -> viewed should drop
@@ -553,7 +635,10 @@ mod tests {
         );
 
         // The FE marks the file viewed with an empty hash (it never computes the baseline).
-        r.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: String::new() });
+        r.viewed.push(ViewedEntry {
+            file: "file.txt".into(),
+            diff_hash: String::new(),
+        });
 
         // The working tree changes before the stamp runs, but the cache is NOT invalidated.
         // Stamping must hash the cached snapshot the user saw — not re-diff current disk. With
@@ -594,7 +679,10 @@ mod tests {
         cache.invalidate(dir.path().to_str().unwrap());
 
         // The user toggles viewed against the still-displayed AAA diff.
-        r.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: String::new() });
+        r.viewed.push(ViewedEntry {
+            file: "file.txt".into(),
+            diff_hash: String::new(),
+        });
         stamp_viewed_baselines(&cache, &mut r);
 
         assert_eq!(

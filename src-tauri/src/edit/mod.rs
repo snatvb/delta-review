@@ -35,7 +35,11 @@ pub struct FileText {
 fn hash_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Normalize CRLF to LF for the editor. Mirrors `git::diff::strip_cr`'s
@@ -44,11 +48,22 @@ fn hash_bytes(bytes: &[u8]) -> String {
 /// non-overlapping match semantics.
 fn normalize_to_lf(raw: &str) -> (String, bool) {
     let crlf = raw.contains("\r\n");
-    (if crlf { raw.replace("\r\n", "\n") } else { raw.to_string() }, crlf)
+    (
+        if crlf {
+            raw.replace("\r\n", "\n")
+        } else {
+            raw.to_string()
+        },
+        crlf,
+    )
 }
 
 fn restore_line_endings(content: &str, crlf: bool) -> String {
-    if crlf { content.replace('\n', "\r\n") } else { content.to_string() }
+    if crlf {
+        content.replace('\n', "\r\n")
+    } else {
+        content.to_string()
+    }
 }
 
 fn read_verified(resolved: &Path) -> Result<(Vec<u8>, String), String> {
@@ -66,7 +81,10 @@ pub fn read_file_text(target: &Target, path: &str) -> Result<FileText, String> {
     let resolved = resolve_in_workdir(&root, path)?;
     let (bytes, raw) = read_verified(&resolved)?;
     let (content, _crlf) = normalize_to_lf(&raw);
-    Ok(FileText { content, hash: hash_bytes(&bytes) })
+    Ok(FileText {
+        content,
+        hash: hash_bytes(&bytes),
+    })
 }
 
 pub fn write_file_text(
@@ -87,7 +105,10 @@ pub fn write_file_text(
     fs::write(&resolved, restored.as_bytes())
         .map_err(|e| format!("write {}: {e}", resolved.display()))?;
     let (out_content, _) = normalize_to_lf(&restored);
-    Ok(FileText { content: out_content, hash: hash_bytes(restored.as_bytes()) })
+    Ok(FileText {
+        content: out_content,
+        hash: hash_bytes(restored.as_bytes()),
+    })
 }
 
 fn resolve_in_workdir(workdir: &Path, rel: &str) -> Result<PathBuf, String> {
@@ -104,7 +125,12 @@ fn resolve_in_workdir(workdir: &Path, rel: &str) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
-fn replace_line_on_disk(file: &Path, line: u32, expected: &str, replacement: &str) -> Result<(), String> {
+fn replace_line_on_disk(
+    file: &Path,
+    line: u32,
+    expected: &str,
+    replacement: &str,
+) -> Result<(), String> {
     if line == 0 {
         return Err("line numbers are 1-based".into());
     }
@@ -145,7 +171,13 @@ mod tests {
     use crate::git::test_support::*;
 
     fn target(repo_path: &str, mode: DiffMode) -> Target {
-        Target { repo_path: repo_path.into(), worktree: None, mode, base: None, commit: None }
+        Target {
+            repo_path: repo_path.into(),
+            worktree: None,
+            mode,
+            base: None,
+            commit: None,
+        }
     }
 
     #[test]
@@ -219,7 +251,10 @@ mod tests {
     #[test]
     fn path_traversal_errs() {
         let (dir, _repo) = repo_with_commit();
-        let unique = format!("{}--outside.txt", dir.path().file_name().unwrap().to_string_lossy());
+        let unique = format!(
+            "{}--outside.txt",
+            dir.path().file_name().unwrap().to_string_lossy()
+        );
         let outside = dir.path().parent().unwrap().join(&unique);
         fs::write(&outside, "secret\n").unwrap();
         let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
@@ -245,7 +280,11 @@ mod tests {
     #[test]
     fn binary_file_errs() {
         let (dir, _repo) = repo_with_commit();
-        fs::write(dir.path().join("logo.png"), [0x89u8, b'P', b'N', b'G', 0x00, 0x01, 0x02, 0x00]).unwrap();
+        fs::write(
+            dir.path().join("logo.png"),
+            [0x89u8, b'P', b'N', b'G', 0x00, 0x01, 0x02, 0x00],
+        )
+        .unwrap();
         let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
 
         let err = edit_file_line(&t, "logo.png", 1, "x", "X").unwrap_err();
@@ -270,7 +309,8 @@ mod tests {
         let read = read_file_text(&t, "file.txt").unwrap();
         assert_eq!(read.content, "line1\nline2\nline3\n");
 
-        let written = write_file_text(&t, "file.txt", &read.hash, "line1\nCHANGED\nline2\nline3\n").unwrap();
+        let written =
+            write_file_text(&t, "file.txt", &read.hash, "line1\nCHANGED\nline2\nline3\n").unwrap();
 
         let content = fs::read_to_string(dir.path().join("file.txt")).unwrap();
         assert_eq!(content, "line1\nCHANGED\nline2\nline3\n");
@@ -290,7 +330,10 @@ mod tests {
         write_file_text(&t, "crlf.txt", &read.hash, "a\nBEE\nc\n").unwrap();
 
         let raw = fs::read(dir.path().join("crlf.txt")).unwrap();
-        assert_eq!(raw, b"a\r\nBEE\r\nc\r\n", "write must restore CRLF, not leave LF");
+        assert_eq!(
+            raw, b"a\r\nBEE\r\nc\r\n",
+            "write must restore CRLF, not leave LF"
+        );
     }
 
     #[test]
@@ -305,7 +348,10 @@ mod tests {
         write_file_text(&t, "notail.txt", &read.hash, "line1\nLINE2").unwrap();
 
         let content = fs::read_to_string(dir.path().join("notail.txt")).unwrap();
-        assert_eq!(content, "line1\nLINE2", "must not gain a trailing newline it didn't have");
+        assert_eq!(
+            content, "line1\nLINE2",
+            "must not gain a trailing newline it didn't have"
+        );
     }
 
     #[test]
@@ -322,13 +368,19 @@ mod tests {
         assert!(err.contains("changed on disk"), "unexpected error: {err}");
 
         let content = fs::read_to_string(dir.path().join("file.txt")).unwrap();
-        assert_eq!(content, "line1\nEXTERNAL\nline2\n", "a refused write must leave the file untouched");
+        assert_eq!(
+            content, "line1\nEXTERNAL\nline2\n",
+            "a refused write must leave the file untouched"
+        );
     }
 
     #[test]
     fn write_path_traversal_is_rejected() {
         let (dir, _repo) = repo_with_commit();
-        let unique = format!("{}--outside2.txt", dir.path().file_name().unwrap().to_string_lossy());
+        let unique = format!(
+            "{}--outside2.txt",
+            dir.path().file_name().unwrap().to_string_lossy()
+        );
         let outside = dir.path().parent().unwrap().join(&unique);
         fs::write(&outside, "secret\n").unwrap();
         let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
@@ -344,7 +396,11 @@ mod tests {
     #[test]
     fn read_binary_file_errs() {
         let (dir, _repo) = repo_with_commit();
-        fs::write(dir.path().join("logo.png"), [0x89u8, b'P', b'N', b'G', 0x00, 0x01, 0x02, 0x00]).unwrap();
+        fs::write(
+            dir.path().join("logo.png"),
+            [0x89u8, b'P', b'N', b'G', 0x00, 0x01, 0x02, 0x00],
+        )
+        .unwrap();
         let t = target(dir.path().to_str().unwrap(), DiffMode::Uncommitted);
 
         let err = read_file_text(&t, "logo.png").unwrap_err();
@@ -357,9 +413,15 @@ mod tests {
         let t = target(dir.path().to_str().unwrap(), DiffMode::BranchVsBase);
 
         let read_err = read_file_text(&t, "file.txt").unwrap_err();
-        assert!(read_err.contains("working-tree"), "unexpected error: {read_err}");
+        assert!(
+            read_err.contains("working-tree"),
+            "unexpected error: {read_err}"
+        );
 
         let write_err = write_file_text(&t, "file.txt", "whatever", "X").unwrap_err();
-        assert!(write_err.contains("working-tree"), "unexpected error: {write_err}");
+        assert!(
+            write_err.contains("working-tree"),
+            "unexpected error: {write_err}"
+        );
     }
 }

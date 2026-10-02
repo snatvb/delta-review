@@ -47,9 +47,20 @@ impl RootState {
         self.dirty.clear();
     }
 
-    fn store_baseline(&mut self, entries: Vec<SvnStatusEntry>, wc_db: Option<SystemTime>, watch_epoch: Option<u64>) {
+    fn store_baseline(
+        &mut self,
+        entries: Vec<SvnStatusEntry>,
+        wc_db: Option<SystemTime>,
+        watch_epoch: Option<u64>,
+    ) {
         self.generation += 1;
-        self.baseline = Some(Baseline { entries, wc_db, watch_epoch, verified: true, generation: self.generation });
+        self.baseline = Some(Baseline {
+            entries,
+            wc_db,
+            watch_epoch,
+            verified: true,
+            generation: self.generation,
+        });
     }
 }
 
@@ -60,11 +71,15 @@ struct Persisted {
     full_status_ms: u64,
 }
 
-static ROOTS: LazyLock<Mutex<HashMap<PathBuf, RootState>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
-static PERSIST_DIR: OnceLock<PathBuf> = OnceLock::new();
-static VERIFIED_CHANGE: OnceLock<Box<dyn Fn(&Path) + Send + Sync>> = OnceLock::new();
+type RootsGuard<'a> = MutexGuard<'a, HashMap<PathBuf, RootState>>;
+type VerifiedChangeFn = Box<dyn Fn(&Path) + Send + Sync>;
 
-fn roots() -> MutexGuard<'static, HashMap<PathBuf, RootState>> {
+static ROOTS: LazyLock<Mutex<HashMap<PathBuf, RootState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static PERSIST_DIR: OnceLock<PathBuf> = OnceLock::new();
+static VERIFIED_CHANGE: OnceLock<VerifiedChangeFn> = OnceLock::new();
+
+fn roots() -> RootsGuard<'static> {
     ROOTS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -114,9 +129,18 @@ pub fn record_changes(root: &Path, paths: impl IntoIterator<Item = String>, over
 }
 
 enum Step {
-    Incremental { base: Baseline, dirty: HashSet<String> },
-    Provisional { entries: Vec<SvnStatusEntry>, dirty: HashSet<String>, start_verification: bool },
-    Full { watch_epoch: Option<u64> },
+    Incremental {
+        base: Baseline,
+        dirty: HashSet<String>,
+    },
+    Provisional {
+        entries: Vec<SvnStatusEntry>,
+        dirty: HashSet<String>,
+        start_verification: bool,
+    },
+    Full {
+        watch_epoch: Option<u64>,
+    },
 }
 
 pub(super) fn current_entries(root: &Path) -> Result<Vec<SvnStatusEntry>, VcsError> {
@@ -124,22 +148,38 @@ pub(super) fn current_entries(root: &Path) -> Result<Vec<SvnStatusEntry>, VcsErr
     let step = {
         let mut roots = roots();
         let state = roots.entry(root.to_path_buf()).or_default();
-        let tracked = state.baseline.as_ref().is_some_and(|b| state.tracks(b, wc_db));
+        let tracked = state
+            .baseline
+            .as_ref()
+            .is_some_and(|b| state.tracks(b, wc_db));
         if tracked {
             let base = state.baseline.clone().expect("tracked implies a baseline");
-            Step::Incremental { base, dirty: std::mem::take(&mut state.dirty) }
+            Step::Incremental {
+                base,
+                dirty: std::mem::take(&mut state.dirty),
+            }
         } else if let Some(entries) = provisional_entries(state, root) {
             let start_verification = !std::mem::replace(&mut state.verifying, true);
-            Step::Provisional { entries, dirty: state.dirty.clone(), start_verification }
+            Step::Provisional {
+                entries,
+                dirty: state.dirty.clone(),
+                start_verification,
+            }
         } else {
             state.dirty.clear();
-            Step::Full { watch_epoch: (state.watchers > 0).then_some(state.watch_epoch) }
+            Step::Full {
+                watch_epoch: (state.watchers > 0).then_some(state.watch_epoch),
+            }
         }
     };
 
     let entries = match step {
         Step::Incremental { base, dirty } => incremental(root, base, dirty, wc_db)?,
-        Step::Provisional { entries, dirty, start_verification } => {
+        Step::Provisional {
+            entries,
+            dirty,
+            start_verification,
+        } => {
             if start_verification {
                 spawn_verification(root.to_path_buf());
             }
@@ -195,7 +235,11 @@ fn incremental(
     Ok(entries)
 }
 
-fn full(root: &Path, wc_db: Option<SystemTime>, watch_epoch: Option<u64>) -> Result<Vec<SvnStatusEntry>, VcsError> {
+fn full(
+    root: &Path,
+    wc_db: Option<SystemTime>,
+    watch_epoch: Option<u64>,
+) -> Result<Vec<SvnStatusEntry>, VcsError> {
     let started = Instant::now();
     let entries = full_status(root)?;
     let took = started.elapsed();
@@ -261,7 +305,9 @@ fn refresh_paths(
         return Ok(entries.to_vec());
     }
     let (queried, fresh) = targeted(root, dirty.iter().map(String::as_str))?;
-    Ok(merge(entries, &queried, fresh, |rel| std::fs::symlink_metadata(root.join(rel)).is_ok()))
+    Ok(merge(entries, &queried, fresh, |rel| {
+        std::fs::symlink_metadata(root.join(rel)).is_ok()
+    }))
 }
 
 pub(super) fn targeted<'a>(
@@ -270,8 +316,15 @@ pub(super) fn targeted<'a>(
 ) -> Result<(HashSet<String>, Vec<SvnStatusEntry>), VcsError> {
     let queried = with_ancestors(paths);
     let targets: Vec<String> = queried.iter().cloned().collect();
-    let xml = run_with_targets(root, &["status", "--xml", "--depth", "empty", "--ignore-externals"], &targets)?;
-    let fresh = parse_status_xml(&xml).into_iter().filter(|e| e.item != "ignored").collect();
+    let xml = run_with_targets(
+        root,
+        &["status", "--xml", "--depth", "empty", "--ignore-externals"],
+        &targets,
+    )?;
+    let fresh = parse_status_xml(&xml)
+        .into_iter()
+        .filter(|e| e.item != "ignored")
+        .collect();
     Ok((queried, fresh))
 }
 
@@ -292,10 +345,16 @@ fn merge(
     fresh: Vec<SvnStatusEntry>,
     exists: impl Fn(&str) -> bool,
 ) -> Vec<SvnStatusEntry> {
-    let gone: Vec<String> = queried.iter().filter(|p| !exists(p)).map(|p| format!("{p}/")).collect();
+    let gone: Vec<String> = queried
+        .iter()
+        .filter(|p| !exists(p))
+        .map(|p| format!("{p}/"))
+        .collect();
     let mut merged: Vec<SvnStatusEntry> = base
         .iter()
-        .filter(|e| !queried.contains(&e.path) && !gone.iter().any(|g| e.path.starts_with(g.as_str())))
+        .filter(|e| {
+            !queried.contains(&e.path) && !gone.iter().any(|g| e.path.starts_with(g.as_str()))
+        })
         .cloned()
         .collect();
     merged.extend(fresh);
@@ -316,7 +375,11 @@ fn peg_safe(path: &str) -> String {
     }
 }
 
-pub(super) fn run_with_targets(root: &Path, args: &[&str], paths: &[String]) -> Result<String, VcsError> {
+pub(super) fn run_with_targets(
+    root: &Path,
+    args: &[&str],
+    paths: &[String],
+) -> Result<String, VcsError> {
     let escaped: Vec<String> = paths.iter().map(|p| peg_safe(p)).collect();
     if escaped.len() <= MAX_INLINE_TARGETS {
         let mut full: Vec<&str> = args.to_vec();
@@ -330,7 +393,8 @@ pub(super) fn run_with_targets(root: &Path, args: &[&str], paths: &[String]) -> 
         std::process::id(),
         TARGETS_FILE_SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::write(&file, escaped.join("\n")).map_err(|e| format!("write svn targets file: {e}"))?;
+    std::fs::write(&file, escaped.join("\n"))
+        .map_err(|e| format!("write svn targets file: {e}"))?;
     let file_arg = file.display().to_string();
     let mut full: Vec<&str> = args.to_vec();
     full.extend(["--targets", file_arg.as_str()]);
@@ -340,7 +404,9 @@ pub(super) fn run_with_targets(root: &Path, args: &[&str], paths: &[String]) -> 
 }
 
 fn wc_db_stamp(root: &Path) -> Option<SystemTime> {
-    std::fs::metadata(root.join(".svn/wc.db")).and_then(|m| m.modified()).ok()
+    std::fs::metadata(root.join(".svn/wc.db"))
+        .and_then(|m| m.modified())
+        .ok()
 }
 
 fn persisted_path(root: &Path) -> Option<PathBuf> {
@@ -364,7 +430,10 @@ fn persist(root: &Path, entries: &[SvnStatusEntry], full_status_time: Option<Dur
         Some(took) => took.as_millis() as u64,
         None => load_persisted(root).map_or(0, |p| p.full_status_ms),
     };
-    let Ok(json) = serde_json::to_vec(&Persisted { entries: entries.to_vec(), full_status_ms }) else {
+    let Ok(json) = serde_json::to_vec(&Persisted {
+        entries: entries.to_vec(),
+        full_status_ms,
+    }) else {
         return;
     };
     if let Some(parent) = path.parent() {
@@ -434,7 +503,11 @@ pub(super) fn is_verified_and_tracked(root: &Path) -> bool {
     let Some(state) = roots.get(root) else {
         return false;
     };
-    !state.verifying && state.baseline.as_ref().is_some_and(|b| state.tracks(b, wc_db_stamp(root)))
+    !state.verifying
+        && state
+            .baseline
+            .as_ref()
+            .is_some_and(|b| state.tracks(b, wc_db_stamp(root)))
 }
 
 #[cfg(test)]
@@ -442,7 +515,10 @@ mod tests {
     use super::*;
 
     fn entry(path: &str, item: &str) -> SvnStatusEntry {
-        SvnStatusEntry { path: path.into(), item: item.into() }
+        SvnStatusEntry {
+            path: path.into(),
+            item: item.into(),
+        }
     }
 
     #[test]
@@ -455,17 +531,35 @@ mod tests {
 
     #[test]
     fn merge_replaces_queried_paths_and_keeps_the_rest() {
-        let base = vec![entry("keep.txt", "modified"), entry("src/a.txt", "modified"), entry("src/b.txt", "added")];
+        let base = vec![
+            entry("keep.txt", "modified"),
+            entry("src/a.txt", "modified"),
+            entry("src/b.txt", "added"),
+        ];
         let queried = with_ancestors(["src/a.txt", "src/new.txt"]);
         let fresh = vec![entry("src/new.txt", "unversioned")];
         let merged = merge(&base, &queried, fresh, |_| true);
-        let paths: Vec<_> = merged.iter().map(|e| (e.path.as_str(), e.item.as_str())).collect();
-        assert_eq!(paths, vec![("keep.txt", "modified"), ("src/b.txt", "added"), ("src/new.txt", "unversioned")]);
+        let paths: Vec<_> = merged
+            .iter()
+            .map(|e| (e.path.as_str(), e.item.as_str()))
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                ("keep.txt", "modified"),
+                ("src/b.txt", "added"),
+                ("src/new.txt", "unversioned")
+            ]
+        );
     }
 
     #[test]
     fn merge_drops_everything_under_a_vanished_directory() {
-        let base = vec![entry("gone", "unversioned"), entry("gone/x.txt", "modified"), entry("gone2.txt", "modified")];
+        let base = vec![
+            entry("gone", "unversioned"),
+            entry("gone/x.txt", "modified"),
+            entry("gone2.txt", "modified"),
+        ];
         let queried = with_ancestors(["gone"]);
         let merged = merge(&base, &queried, Vec::new(), |p| p != "gone");
         let paths: Vec<_> = merged.iter().map(|e| e.path.as_str()).collect();
@@ -491,7 +585,11 @@ mod tests {
         let state_epoch = roots().get(&root).unwrap().watch_epoch;
         assert_ne!(state_epoch, epoch);
         assert!(roots().get(&root).unwrap().dirty.is_empty());
-        record_changes(&root, (0..=MAX_TARGETED_PATHS).map(|i| format!("f{i}")), false);
+        record_changes(
+            &root,
+            (0..=MAX_TARGETED_PATHS).map(|i| format!("f{i}")),
+            false,
+        );
         assert!(roots().get(&root).unwrap().dirty.is_empty());
         watch_stopped(&root);
     }
