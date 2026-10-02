@@ -250,6 +250,28 @@ describe("FilesPanel", () => {
       expect(onSetViewedBulk).toHaveBeenCalled();
     });
 
+    it("keeps the checkbox when the same folder also holds ignored files (no Ignored-group overwrite)", () => {
+      // The Ignored group rebuilds folder paths that exist in the main tree
+      // (godot/game/icons holds both a reviewable png and an ignored .import).
+      // Its zeroed rollup must not overwrite the real folder's entry — that
+      // used to strip the checkbox +/− stats from every folder containing at
+      // least one ignored file, i.e. most high-level folders.
+      const mixed: FileEntry[] = [
+        { path: "godot/game/classes/class.ron", status: "modified", additions: 11, deletions: 1, binary: false },
+        { path: "godot/game/icons/hunter.png", status: "modified", additions: 5, deletions: 0, binary: false },
+        { path: "godot/game/icons/hunter.png.import", status: "modified", additions: 0, deletions: 0, binary: false, ignored: true },
+      ];
+      const onSetViewedBulk = vi.fn();
+      render(<FilesPanel files={mixed} selected={null} onSelect={() => {}} viewedFiles={new Set()} onToggleViewed={() => {}} onSetViewedBulk={onSetViewedBulk} />);
+      expect(screen.getByRole("button", { name: "viewed folder godot" })).toHaveAttribute("title", "Mark all viewed (2 files)");
+      expect(screen.getByRole("button", { name: "viewed folder godot/game" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "viewed folder godot/game/icons" })).toBeInTheDocument();
+      expect(screen.getByTitle("+16 / −1 under godot")).toBeInTheDocument();
+      // Bulk still acts on reviewable files only — the .import stays out.
+      fireEvent.click(screen.getByRole("button", { name: "viewed folder godot" }));
+      expect(onSetViewedBulk.mock.calls[0][0].sort()).toEqual(["godot/game/classes/class.ron", "godot/game/icons/hunter.png"]);
+    });
+
     it("renders no checkbox on the Ignored group or in list mode", () => {
       const withIgnored: FileEntry[] = [...tree, { path: "gen/api.ts", status: "modified", additions: 0, deletions: 0, binary: false, ignored: true }];
       const { rerender } = render(

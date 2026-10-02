@@ -315,17 +315,25 @@ export function FilesPanel({
   // unviewed-only mode viewed files drop out of adds/dels (the checkbox counts
   // stay whole). Ignored-only folders (the Ignored group and its subtree) end
   // up with total 0 and render no checkbox. Empty in list mode (no dir nodes).
+  //
+  // The map is keyed by path, and the Ignored group replays folder paths that
+  // already exist in the main tree (godot/ holds both reviewable .ron files
+  // and ignored *.import ones). Its subtree aggregates to zeros, so if it were
+  // recorded it would overwrite the real rollup and strip the checkbox +/−
+  // stats from every folder that also contains ignored files — which is most
+  // high-level folders. Walk it (the group header still needs its entry), but
+  // stop recording inside it.
   const dirViewed = useMemo(() => {
     const m = new Map<string, DirViewed>();
-    (function walk(nodes: TreeNode[]): DirViewed {
+    (function walk(nodes: TreeNode[], record: boolean): DirViewed {
       let total = 0;
       let viewed = 0;
       let adds = 0;
       let dels = 0;
       for (const n of nodes) {
         if (n.kind === "dir") {
-          const a = walk(n.children);
-          m.set(n.path, a);
+          const a = walk(n.children, record && n.path !== IGNORED_GROUP);
+          if (record) m.set(n.path, a);
           total += a.total;
           viewed += a.viewed;
           adds += a.adds;
@@ -341,7 +349,7 @@ export function FilesPanel({
         }
       }
       return { total, viewed, adds, dels };
-    })(roots);
+    })(roots, true);
     return m;
   }, [roots, viewedFiles, excluding]);
 
