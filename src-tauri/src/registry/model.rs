@@ -17,6 +17,16 @@ pub struct WorktreeEntry {
     pub dirty: bool,
 }
 
+/// How a repo resolves its diff base when a window carries no explicit one.
+/// `Auto` = detect the branch HEAD was cut from (fork-point heuristic); a pinned
+/// branch is used verbatim. Absent (legacy registries) means Auto.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", tag = "kind")]
+pub enum BaseStrategy {
+    Auto,
+    Branch { name: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoEntry {
@@ -25,6 +35,10 @@ pub struct RepoEntry {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_branch: Option<String>,
+    /// Diff-base strategy for the whole repo (all worktrees). User-set from the
+    /// base picker; preserved across `upsert_repo` metadata refreshes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_strategy: Option<BaseStrategy>,
     #[serde(default)]
     pub worktrees: Vec<WorktreeEntry>,
     /// Which backend detected this repo (stamped on every metadata refresh).
@@ -67,7 +81,12 @@ pub struct Registry {
 
 impl Registry {
     pub fn empty() -> Self {
-        Registry { version: 2, repos: Vec::new(), reviews: Vec::new(), home: None }
+        Registry {
+            version: 2,
+            repos: Vec::new(),
+            reviews: Vec::new(),
+            home: None,
+        }
     }
 
     pub fn upsert_review(&mut self, entry: ReviewEntry) {
@@ -84,12 +103,12 @@ impl Registry {
     pub fn upsert_repo(&mut self, entry: RepoEntry) {
         match self.repos.iter_mut().find(|r| r.id == entry.id) {
             // Metadata refreshes (worktrees, name, vcs stamp) replace the
-            // entry wholesale — except the manual override, which belongs to
-            // the user and must survive every automated rewrite.
+            // entry wholesale — except settings that belong to the user and
+            // must survive every automated rewrite (vcs override, base strategy).
             Some(slot) => {
-                let override_kept = slot.vcs_override;
+                let overrides_kept = (slot.vcs_override, slot.base_strategy.clone());
                 *slot = entry;
-                slot.vcs_override = override_kept;
+                (slot.vcs_override, slot.base_strategy) = overrides_kept;
             }
             None => self.repos.push(entry),
         }
@@ -102,8 +121,16 @@ impl ReviewEntry {
         let comment_count = review.comments.iter().filter(visible).count() as u32;
         // Resolved comments aren't counted as stale — resolving acknowledges the
         // drift, so the recents "stale" badge shouldn't keep nagging about them.
-        let stale_count = review.comments.iter().filter(|c| c.stale && !c.resolved && visible(c)).count() as u32;
-        let resolved_count = review.comments.iter().filter(|c| c.resolved && visible(c)).count() as u32;
+        let stale_count = review
+            .comments
+            .iter()
+            .filter(|c| c.stale && !c.resolved && visible(c))
+            .count() as u32;
+        let resolved_count = review
+            .comments
+            .iter()
+            .filter(|c| c.resolved && visible(c))
+            .count() as u32;
         ReviewEntry {
             id: review.id.clone(),
             repo_name,
@@ -144,7 +171,12 @@ mod tests {
         let mut r = Review::new(
             "0123456789abcdef".into(),
             target,
-            Snapshot { base_oid: "b".into(), head_oid: None, head_commit: None, captured_at: "t".into() },
+            Snapshot {
+                base_oid: "b".into(),
+                head_oid: None,
+                head_commit: None,
+                captured_at: "t".into(),
+            },
             "t".into(),
         );
         r.comments = comments;
@@ -174,7 +206,10 @@ mod tests {
                 comment(CommentScope::File, true, false),
                 comment(CommentScope::General, false, false),
             ],
-            vec![ViewedEntry { file: "a".into(), diff_hash: "h".into() }],
+            vec![ViewedEntry {
+                file: "a".into(),
+                diff_hash: "h".into(),
+            }],
         );
         let e = ReviewEntry::from_review(&r, 7, "proj".into());
         assert_eq!(e.comment_count, 2, "general excluded");
@@ -202,9 +237,9 @@ mod tests {
     fn from_review_counts_resolved_excluding_general() {
         let r = review_with(
             vec![
-                comment(CommentScope::Line, false, true),    // resolved → counts
-                comment(CommentScope::File, false, true),    // resolved → counts
-                comment(CommentScope::Line, false, false),   // open
+                comment(CommentScope::Line, false, true), // resolved → counts
+                comment(CommentScope::File, false, true), // resolved → counts
+                comment(CommentScope::Line, false, false), // open
                 comment(CommentScope::General, false, true), // resolved but general → excluded
             ],
             vec![],
@@ -227,7 +262,11 @@ mod tests {
     #[test]
     fn remove_review_drops_entry() {
         let mut reg = Registry::empty();
-        reg.upsert_review(ReviewEntry::from_review(&review_with(vec![], vec![]), 1, "proj".into()));
+        reg.upsert_review(ReviewEntry::from_review(
+            &review_with(vec![], vec![]),
+            1,
+            "proj".into(),
+        ));
         reg.remove_review("0123456789abcdef");
         assert!(reg.reviews.is_empty());
     }
@@ -236,5 +275,52 @@ mod tests {
     fn repo_name_from_path_is_basename() {
         assert_eq!(repo_name_from_path("/Users/me/projects/delta"), "delta");
         assert_eq!(repo_name_from_path("/Users/me/projects/delta/"), "delta");
+    }
+
+    fn repo_entry(id: &str) -> RepoEntry {
+        RepoEntry {
+            id: id.into(),
+            root: format!("/r/{id}"),
+            name: id.into(),
+            default_branch: Some("main".into()),
+            base_strategy: None,
+            worktrees: Vec::new(),
+            vcs: VcsKind::Git,
+            vcs_override: None,
+        }
+    }
+
+    #[test]
+    fn upsert_repo_preserves_base_strategy_across_refreshes() {
+        let mut reg = Registry::empty();
+        reg.upsert_repo(repo_entry("demo"));
+        // The user pins a base…
+        reg.repos[0].base_strategy = Some(BaseStrategy::Branch { name: "dev".into() });
+        // …then any open/refresh rewrites the entry from a fresh scan.
+        reg.upsert_repo(repo_entry("demo"));
+        assert_eq!(
+            reg.repos[0].base_strategy,
+            Some(BaseStrategy::Branch { name: "dev".into() }),
+            "a metadata refresh must not wipe the pinned base strategy",
+        );
+    }
+
+    #[test]
+    fn base_strategy_serializes_tagged_kebab_case() {
+        let pinned = BaseStrategy::Branch { name: "dev".into() };
+        assert_eq!(
+            serde_json::to_string(&pinned).unwrap(),
+            r#"{"kind":"branch","name":"dev"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&BaseStrategy::Auto).unwrap(),
+            r#"{"kind":"auto"}"#
+        );
+        // Legacy registry entries carry no baseStrategy → None (Auto).
+        let legacy = serde_json::from_str::<RepoEntry>(
+            r#"{"id":"x","root":"/r","name":"r","defaultBranch":"main","worktrees":[],"vcs":"git"}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.base_strategy, None);
     }
 }

@@ -6,7 +6,7 @@ import type { OnOff } from "../lib/onOffPref";
 // On/Off pill, and the chevron for native selects. One place so every section
 // page renders identically.
 
-export function Row({ label, hint, control }: { label: string; hint?: string; control: ReactNode }) {
+export function Row({ label, hint, control }: { label: string; hint?: ReactNode; control: ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-6 py-2.5">
       <div className="min-w-0">

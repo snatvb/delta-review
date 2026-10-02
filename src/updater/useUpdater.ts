@@ -1,95 +1,125 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { track } from '@/analytics';
 import { isTauri } from '@tauri-apps/api/core';
-import { check, type Update } from '@tauri-apps/plugin-updater';
+import { listen } from '@tauri-apps/api/event';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { api } from '../api';
+import type { UpdaterSnapshot, UpdaterStatus } from '../types';
 import { useUpdateCheck } from './updateCheckPref';
+import { getAutoDownload } from './autoDownloadPref';
 
-export type UpdaterStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error';
+// While the app stays open, re-check for updates this often. The timer calls
+// with manual=true so the backend's once-per-process guard doesn't swallow it.
+const RECHECK_EVERY_MS = 4 * 60 * 60 * 1000;
 
-export interface UpdaterState {
-  status: UpdaterStatus;
-  version: string | null;
-  /** 0..1 while downloading; null when unknown (pre-start / indeterminate). */
-  progress: number | null;
-  /** User-initiated: start downloading + installing the available update. */
+const IDLE: UpdaterSnapshot = { status: 'idle', version: null, progress: null, lastCheckedAt: null };
+
+export type { UpdaterStatus };
+
+export interface UpdaterState extends UpdaterSnapshot {
+  /** Manual re-check (Settings → About). */
+  check: () => void;
+  /** Start downloading + installing the available update. */
   download: () => void;
   restart: () => Promise<void>;
 }
 
-// Checks for an update on mount (once per app process — see the leader-election
-// gate) and surfaces it as `available`; the download only starts when the user
-// asks via `download()`. Flow: checking → available → downloading → ready.
+// The backend owns the whole update lifecycle (src-tauri/src/updater.rs): the
+// check and the download run in the app process and every transition is
+// broadcast as `updater:state`, so the banner — and a transfer in flight —
+// survive any window closing, and all windows always agree. This hook is the
+// frontend half: mirror that snapshot, fire the launch/periodic checks, and
+// auto-download when the pref says so. Flow: idle → checking → available →
+// downloading → ready (the download still only starts when asked — by the
+// user or the auto-download pref).
 export function useUpdater(): UpdaterState {
-  const [status, setStatus] = useState<UpdaterStatus>('idle');
-  const [version, setVersion] = useState<string | null>(null);
-  const [progress, setProgress] = useState<number | null>(null);
-  const updateRef = useRef<Update | null>(null);
+  const [snapshot, setSnapshot] = useState<UpdaterSnapshot>(IDLE);
   const [updateCheck] = useUpdateCheck();
 
+  // Adopt the process's current state (a window opened mid-download sees it
+  // immediately instead of waiting for the next broadcast), then follow the
+  // broadcasts. The bootstrap fetch only applies if no event beat it to us —
+  // an event always carries newer state than a fetch captured earlier.
+  const seenEventRef = useRef(false);
   useEffect(() => {
     if (!isTauri()) return; // dev / dev:mock — no Tauri IPC available
-    if (updateCheck === 'off') return;
-    let cancelled = false;
-    (async () => {
-      try {
-        // Only one window per app process checks/downloads; other windows lose the
-        // gate and stay idle, so concurrent windows never race on the download /
-        // .app replacement. (#updater-race)
-        const acquired = await api.acquireUpdaterGate();
-        if (cancelled || !acquired) return;
-        setStatus('checking');
-        const update = await check();
-        if (cancelled) return;
-        if (!update) {
-          setStatus('idle');
-          return;
-        }
-        updateRef.current = update;
-        setVersion(update.version);
-        setStatus('available'); // wait for the user to start the download
-      } catch (err) {
-        console.error('updater: check failed', err);
-        if (!cancelled) setStatus('error');
-      }
-    })();
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    api.updaterStatus()
+      .then((s) => {
+        if (!disposed && !seenEventRef.current) setSnapshot(s);
+      })
+      .catch(() => {});
+    void listen<UpdaterSnapshot>('updater:state', (e) => {
+      seenEventRef.current = true;
+      setSnapshot(e.payload);
+    }).then((un) => {
+      if (disposed) un();
+      else unlisten = un;
+    });
     return () => {
-      cancelled = true;
+      disposed = true;
+      unlisten?.();
     };
-  }, [updateCheck]);
-
-  const download = useCallback(() => {
-    const update = updateRef.current;
-    if (!update) return;
-    setStatus('downloading');
-    let downloaded = 0;
-    let total = 0;
-    void (async () => {
-      try {
-        await update.downloadAndInstall((e) => {
-          switch (e.event) {
-            case 'Started':
-              total = e.data.contentLength ?? 0;
-              setProgress(total > 0 ? 0 : null);
-              break;
-            case 'Progress':
-              downloaded += e.data.chunkLength;
-              if (total > 0) setProgress(Math.min(1, downloaded / total));
-              break;
-            case 'Finished':
-              setProgress(1);
-              break;
-          }
-        });
-        setStatus('ready');
-        track('update_applied');
-      } catch (err) {
-        console.error('updater: download failed', err);
-        setStatus('error');
-      }
-    })();
   }, []);
 
-  return { status, version, progress, download, restart: relaunch };
+  // Launch check: every window asks, the backend runs it once per process and
+  // answers the rest with the current state.
+  useEffect(() => {
+    if (!isTauri() || updateCheck === 'off') return;
+    void api.updaterCheck(false).then((s) => setSnapshot(s)).catch(() => {});
+  }, [updateCheck]);
+
+  // Periodic re-check while the app is open (same pref as the launch check).
+  useEffect(() => {
+    if (!isTauri() || updateCheck === 'off') return;
+    const id = window.setInterval(() => {
+      void api.updaterCheck(true).then(setSnapshot).catch(() => {});
+    }, RECHECK_EVERY_MS);
+    return () => window.clearInterval(id);
+  }, [updateCheck]);
+
+  // Auto-download: when the pref is on, a found update starts transferring
+  // without waiting for a click. Fired once per availability — every window
+  // may fire it, the backend no-ops all but the first.
+  const autoDownloadRef = useRef(false);
+  useEffect(() => {
+    if (snapshot.status === 'idle' || snapshot.status === 'error') {
+      autoDownloadRef.current = false;
+      return;
+    }
+    if (snapshot.status !== 'available' || autoDownloadRef.current || getAutoDownload() !== 'on') {
+      return;
+    }
+    autoDownloadRef.current = true;
+    void api.updaterDownload().then(setSnapshot).catch(() => {});
+  }, [snapshot.status]);
+
+  const trackedRef = useRef(false);
+  useEffect(() => {
+    if (snapshot.status === 'ready' && !trackedRef.current) {
+      trackedRef.current = true;
+      track('update_applied');
+    }
+  }, [snapshot.status]);
+
+  const check = useCallback(() => {
+    void api.updaterCheck(true)
+      .then((s) => setSnapshot(s))
+      .catch((err) => {
+        console.error('updater: check failed', err);
+        setSnapshot((s) => ({ ...s, status: 'error' }));
+      });
+  }, []);
+
+  const download = useCallback(() => {
+    void api.updaterDownload()
+      .then((s) => setSnapshot(s))
+      .catch((err) => {
+        console.error('updater: download failed', err);
+        setSnapshot((s) => ({ ...s, status: 'error' }));
+      });
+  }, []);
+
+  return { ...snapshot, check, download, restart: relaunch };
 }

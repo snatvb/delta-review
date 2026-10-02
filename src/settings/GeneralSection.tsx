@@ -4,6 +4,7 @@ import { useWindowPerBranch } from "../windowPerBranch";
 import { useChangeDetection } from "../changeDetection";
 import { useViewedStatsExclude } from "../viewedStatsPref";
 import { useUpdateCheck } from "../updater/updateCheckPref";
+import { useAutoDownload } from "../updater/autoDownloadPref";
 import { Chevron, Divider, OnOffToggle, Row, selectClass } from "./controls";
 
 // General: how reviews open, how the app reacts to file changes, and updates.
@@ -16,6 +17,7 @@ export function GeneralSection() {
   const [changeDetection, setChangeDetection] = useChangeDetection();
   const [excludeViewed, setExcludeViewed] = useViewedStatsExclude();
   const [updateCheck, setUpdateCheck] = useUpdateCheck();
+  const [autoDownload, setAutoDownload] = useAutoDownload();
 
   return (
     <div>
@@ -112,14 +114,30 @@ export function GeneralSection() {
 
       <Row
         label="Check for updates"
-        hint="Look for a new version on launch."
+        hint="Look for a new version on launch and every few hours while open."
         control={
           <OnOffToggle
             label="Check for updates"
             value={updateCheck}
             onChange={setUpdateCheck}
-            onTitle="Check for updates on launch"
+            onTitle="Check on launch and periodically"
             offTitle="Never check for updates"
+          />
+        }
+      />
+
+      <Divider />
+
+      <Row
+        label="Download updates automatically"
+        hint="Download a found update in the background; just restart to apply."
+        control={
+          <OnOffToggle
+            label="Download updates automatically"
+            value={autoDownload}
+            onChange={setAutoDownload}
+            onTitle="Download as soon as an update is found"
+            offTitle="Ask before downloading"
           />
         }
       />

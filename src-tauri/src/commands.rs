@@ -1,39 +1,27 @@
 use crate::export::export_markdown;
+use crate::git::branches::{self, BranchList};
 use crate::git::cache::DiffCache;
 use crate::git::diff::{BinaryFileDiff, DiffSummary, FileDiff};
 use crate::git::log::CommitPage;
 use crate::git::model::{DiffMode, Target};
 use crate::launch::{
-    cli_status as launch_cli_status, install_cli as launch_install_cli,
-    open_target_window, rewatch_target, repo_display_name, CliStatus, InstallOutcome,
+    cli_status as launch_cli_status, install_cli as launch_install_cli, open_target_window,
+    repo_display_name, repo_entry_id, rewatch_target, CliStatus, InstallOutcome,
 };
-use crate::registry::model::{Registry, RepoEntry, ReviewEntry, WorktreeEntry};
+use crate::registry::model::{BaseStrategy, Registry, RepoEntry, ReviewEntry, WorktreeEntry};
 use crate::review::model::{review_id, Review, Snapshot};
-use crate::review::reconcile::{adopt_persisted_viewed_hashes, reconcile, restore_persisted_comments, stamp_viewed_baselines, ReviewSession};
+use crate::review::reconcile::{
+    adopt_persisted_viewed_hashes, reconcile, restore_persisted_comments, stamp_viewed_baselines,
+    ReviewSession,
+};
 use crate::settings::Settings;
 use crate::storage::{JsonRegistryStore, JsonStorage, RegistryStore, Storage};
 use crate::vcs::{Repo, VcsKind};
-use std::path::PathBuf;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
-
-/// Process-wide one-shot latch for the self-updater. `useUpdater` runs per
-/// window (App mounts in each), so two windows open at once could otherwise
-/// both `check()` + `downloadAndInstall()` and race on replacing the .app.
-/// The first window to call this wins; the rest skip for the process lifetime.
-/// (#updater-race)
-#[derive(Default)]
-pub struct UpdaterGate(AtomicBool);
-
-#[tauri::command]
-pub fn updater_try_acquire(gate: tauri::State<'_, UpdaterGate>) -> bool {
-    gate.0
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
-}
 
 /// True unless telemetry is disabled by build or environment. This reports only
 /// what the frontend cannot see (the debug/release flag and process env); the
@@ -74,12 +62,55 @@ pub fn list_commits_impl(target: Target, skip: usize, limit: usize) -> Result<Co
     Repo::open(&target.repo_path)?.list_commits(&target, skip, limit)
 }
 
+/// Fill a Target's implicit base from a repo's saved strategy. An explicit base
+/// always wins; a pinned strategy is injected so every command below (diff,
+/// commit walk, reconcile) agrees on one base — the DiffCache is keyed by the
+/// Target, so a partially-filled base would re-run whole-repo diffs per file.
+/// Auto stays `None` and is resolved per-call by the fork-point heuristic in
+/// `git::resolve_base`.
+pub fn fill_base_from_strategy(target: Target, strategy: Option<&BaseStrategy>) -> Target {
+    match (&target.base, strategy) {
+        (Some(_), _) | (None, None | Some(BaseStrategy::Auto)) => target,
+        (None, Some(BaseStrategy::Branch { name })) => Target {
+            base: Some(name.clone()),
+            ..target
+        },
+    }
+}
+
+/// The repo-wide base strategy for any worktree path of a repo (git only).
+/// Resolved by the registry's commondir-keyed repo id, so it works from the
+/// main worktree and linked worktrees alike.
+fn repo_base_strategy(app: &tauri::AppHandle, repo_path: &str) -> Option<BaseStrategy> {
+    let repo = crate::git::open_repo(repo_path).ok()?;
+    let id = repo_entry_id(&repo);
+    registry_of(app)
+        .ok()?
+        .repos
+        .iter()
+        .find(|r| r.id == id)
+        .and_then(|r| r.base_strategy.clone())
+}
+
+/// `fill_base_from_strategy` with the strategy loaded from this app's registry.
+fn with_base_strategy(app: &tauri::AppHandle, target: Target) -> Target {
+    let strategy = repo_base_strategy(app, &target.repo_path);
+    fill_base_from_strategy(target, strategy.as_ref())
+}
+
 fn reviews_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let base = app.path().app_data_dir().map_err(|e| format!("app data dir: {e}"))?;
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app data dir: {e}"))?;
     Ok(base.join("reviews"))
 }
 
-pub fn open_review_impl(cache: &DiffCache, storage: &dyn Storage, input: Target) -> Result<ReviewSession, String> {
+pub fn open_review_impl(
+    cache: &DiffCache,
+    storage: &dyn Storage,
+    input: Target,
+) -> Result<ReviewSession, String> {
     let repo = Repo::open(&input.repo_path)?;
     let worktree = repo.worktree_label()?;
     let mut target = input;
@@ -100,7 +131,12 @@ pub fn open_review_impl(cache: &DiffCache, storage: &dyn Storage, input: Target)
         None => Review::new(
             id,
             target,
-            Snapshot { base_oid: String::new(), head_oid: None, head_commit: None, captured_at: String::new() },
+            Snapshot {
+                base_oid: String::new(),
+                head_oid: None,
+                head_commit: None,
+                captured_at: String::new(),
+            },
             chrono::Utc::now().to_rfc3339(),
         ),
     };
@@ -109,7 +145,11 @@ pub fn open_review_impl(cache: &DiffCache, storage: &dyn Storage, input: Target)
     Ok(session)
 }
 
-pub fn refresh_review_impl(cache: &DiffCache, storage: &dyn Storage, mut review: Review) -> Result<ReviewSession, String> {
+pub fn refresh_review_impl(
+    cache: &DiffCache,
+    storage: &dyn Storage,
+    mut review: Review,
+) -> Result<ReviewSession, String> {
     // A refresh means "recompute against the current state", so drop any memoized
     // diff snapshot for this worktree. Covers a manual Refresh and one racing the
     // fs watcher's debounce. The served copies survive — the viewed-baseline stamp
@@ -133,7 +173,11 @@ pub fn refresh_review_impl(cache: &DiffCache, storage: &dyn Storage, mut review:
     Ok(session)
 }
 
-pub fn save_review_impl(cache: &DiffCache, storage: &dyn Storage, mut review: Review) -> Result<(), String> {
+pub fn save_review_impl(
+    cache: &DiffCache,
+    storage: &dyn Storage,
+    mut review: Review,
+) -> Result<(), String> {
     // Stamp a content baseline onto freshly-toggled viewed entries now, while the
     // files are still at the version the user saw — see stamp_viewed_baselines.
     // Served from the diff cache (a map read), not a fresh whole-repo diff per entry.
@@ -142,12 +186,18 @@ pub fn save_review_impl(cache: &DiffCache, storage: &dyn Storage, mut review: Re
 }
 
 fn registry_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let base = app.path().app_data_dir().map_err(|e| format!("app data dir: {e}"))?;
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app data dir: {e}"))?;
     Ok(base.join("registry.json"))
 }
 
 fn reg_store(app: &tauri::AppHandle) -> Result<JsonRegistryStore, String> {
-    Ok(JsonRegistryStore::new(registry_path(app)?, reviews_dir(app)?))
+    Ok(JsonRegistryStore::new(
+        registry_path(app)?,
+        reviews_dir(app)?,
+    ))
 }
 
 /// True when a recent review already covers this worktree (so the picker lists it
@@ -169,8 +219,7 @@ fn sync_registry_after_open(reg_store: &dyn RegistryStore, review: &Review, file
         }
         let name = repo_display_name(&review.target.repo_path);
         reg.upsert_review(ReviewEntry::from_review(review, file_count, name));
-        reg_store.save(&reg)
-            .and_then(|_| sync_vcs_overrides(&reg))
+        reg_store.save(&reg).and_then(|_| sync_vcs_overrides(&reg))
     })();
     if let Err(e) = result {
         eprintln!("[delta] registry sync (open) failed: {e}");
@@ -191,8 +240,8 @@ pub fn sync_vcs_overrides(reg: &Registry) -> Result<(), String> {
         .iter()
         .filter_map(|r| {
             r.vcs_override.map(|kind| {
-                let root = std::fs::canonicalize(&r.root)
-                    .unwrap_or_else(|_| PathBuf::from(&r.root));
+                let root =
+                    std::fs::canonicalize(&r.root).unwrap_or_else(|_| PathBuf::from(&r.root));
                 (root, kind)
             })
         })
@@ -221,7 +270,12 @@ fn sync_registry_after_save(reg_store: &dyn RegistryStore, review: &Review) {
 }
 
 #[cfg(test)]
-pub fn open_review_impl_with_registry(cache: &DiffCache, storage: &dyn Storage, reg_store: &dyn RegistryStore, input: Target) -> Result<ReviewSession, String> {
+pub fn open_review_impl_with_registry(
+    cache: &DiffCache,
+    storage: &dyn Storage,
+    reg_store: &dyn RegistryStore,
+    input: Target,
+) -> Result<ReviewSession, String> {
     let session = with_repo_name(open_review_impl(cache, storage, input)?);
     sync_registry_after_open(reg_store, &session.review, session.reviewable_file_count());
     Ok(session)
@@ -285,13 +339,22 @@ fn drain_registry_sync_queue() {
     }
 }
 
-pub fn save_review_impl_with_registry(cache: &DiffCache, storage: &dyn Storage, reg_store: &dyn RegistryStore, review: Review) -> Result<(), String> {
+pub fn save_review_impl_with_registry(
+    cache: &DiffCache,
+    storage: &dyn Storage,
+    reg_store: &dyn RegistryStore,
+    review: Review,
+) -> Result<(), String> {
     save_review_impl(cache, storage, review.clone())?;
     sync_registry_after_save(reg_store, &review);
     Ok(())
 }
 
-pub fn delete_review_impl(storage: &dyn Storage, reg_store: &dyn RegistryStore, id: &str) -> Result<(), String> {
+pub fn delete_review_impl(
+    storage: &dyn Storage,
+    reg_store: &dyn RegistryStore,
+    id: &str,
+) -> Result<(), String> {
     storage.delete(id)?;
     let mut reg = reg_store.load()?;
     reg.remove_review(id);
@@ -299,7 +362,12 @@ pub fn delete_review_impl(storage: &dyn Storage, reg_store: &dyn RegistryStore, 
 }
 
 #[tauri::command]
-pub async fn compute_diff(target: Target, cache: tauri::State<'_, DiffCache>) -> Result<DiffSummary, String> {
+pub async fn compute_diff(
+    app: tauri::AppHandle,
+    target: Target,
+    cache: tauri::State<'_, DiffCache>,
+) -> Result<DiffSummary, String> {
+    let target = with_base_strategy(&app, target);
     let cache = cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || cache.summary(&target))
         .await
@@ -307,9 +375,15 @@ pub async fn compute_diff(target: Target, cache: tauri::State<'_, DiffCache>) ->
 }
 
 #[tauri::command]
-pub async fn get_file_diff(target: Target, path: String, cache: tauri::State<'_, DiffCache>) -> Result<FileDiff, String> {
+pub async fn get_file_diff(
+    app: tauri::AppHandle,
+    target: Target,
+    path: String,
+    cache: tauri::State<'_, DiffCache>,
+) -> Result<FileDiff, String> {
     // Served from the memoized snapshot — the whole-repo diff runs once per snapshot,
     // not once per file (the large-review perf fix). (#perf)
+    let target = with_base_strategy(&app, target);
     let cache = cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || cache.file(&target, &path))
         .await
@@ -320,20 +394,30 @@ pub async fn get_file_diff(target: Target, path: String, cache: tauri::State<'_,
 /// Image bytes are served separately by the `delta-blob` URI scheme.
 #[tauri::command]
 pub async fn get_binary_file_diff(
+    app: tauri::AppHandle,
     target: Target,
     path: String,
     cache: tauri::State<'_, DiffCache>,
 ) -> Result<BinaryFileDiff, String> {
+    let target = with_base_strategy(&app, target);
     let cache = cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        cache.with_sources(&target, &path, |repo, s| repo.binary_sizes(s)).and_then(|sizes| sizes)
+        cache
+            .with_sources(&target, &path, |repo, s| repo.binary_sizes(s))
+            .and_then(|sizes| sizes)
     })
-        .await
-        .map_err(|e| format!("get_binary_file_diff task: {e}"))?
+    .await
+    .map_err(|e| format!("get_binary_file_diff task: {e}"))?
 }
 
 #[tauri::command]
-pub async fn list_commits(target: Target, skip: usize, limit: usize) -> Result<CommitPage, String> {
+pub async fn list_commits(
+    app: tauri::AppHandle,
+    target: Target,
+    skip: usize,
+    limit: usize,
+) -> Result<CommitPage, String> {
+    let target = with_base_strategy(&app, target);
     tauri::async_runtime::spawn_blocking(move || list_commits_impl(target, skip, limit))
         .await
         .map_err(|e| format!("list_commits task: {e}"))?
@@ -341,6 +425,7 @@ pub async fn list_commits(target: Target, skip: usize, limit: usize) -> Result<C
 
 #[tauri::command]
 pub async fn open_review(app: tauri::AppHandle, target: Target) -> Result<ReviewSession, String> {
+    let target = with_base_strategy(&app, target);
     let reviews = reviews_dir(&app)?;
     let reg_path = registry_path(&app)?;
     let cache = app.state::<DiffCache>().inner().clone();
@@ -356,7 +441,12 @@ pub async fn open_review(app: tauri::AppHandle, target: Target) -> Result<Review
 }
 
 #[tauri::command]
-pub async fn refresh_review(app: tauri::AppHandle, review: Review, cache: tauri::State<'_, DiffCache>) -> Result<ReviewSession, String> {
+pub async fn refresh_review(
+    app: tauri::AppHandle,
+    mut review: Review,
+    cache: tauri::State<'_, DiffCache>,
+) -> Result<ReviewSession, String> {
+    review.target = with_base_strategy(&app, review.target);
     let cache = cache.inner().clone();
     let reviews = reviews_dir(&app)?;
     let reg_path = registry_path(&app)?;
@@ -371,7 +461,11 @@ pub async fn refresh_review(app: tauri::AppHandle, review: Review, cache: tauri:
 }
 
 #[tauri::command]
-pub async fn save_review(app: tauri::AppHandle, review: Review, cache: tauri::State<'_, DiffCache>) -> Result<(), String> {
+pub async fn save_review(
+    app: tauri::AppHandle,
+    review: Review,
+    cache: tauri::State<'_, DiffCache>,
+) -> Result<(), String> {
     // Async + spawn_blocking (like the diff commands) so persistence never runs on
     // the main thread — a sync command here froze the UI on every comment/viewed save.
     let cache = cache.inner().clone();
@@ -429,21 +523,34 @@ pub struct PickerData {
 
 /// Recents + the live, currently-checked-out worktrees of every known repo, with
 /// worktrees already covered by a review removed (they show under recents).
-pub fn list_picker_impl(reg_store: &dyn RegistryStore, home: Option<String>) -> Result<PickerData, String> {
+pub fn list_picker_impl(
+    reg_store: &dyn RegistryStore,
+    home: Option<String>,
+) -> Result<PickerData, String> {
     let reg = reg_store.load()?;
     let recents = reg.reviews.clone();
     let mut worktrees = Vec::new();
     for repo in &reg.repos {
         // Best-effort: a repo whose worktrees can't be listed (moved/deleted) is skipped.
-        let wts = Repo::open(&repo.root).and_then(|r| r.list_worktrees()).unwrap_or_default();
+        let wts = Repo::open(&repo.root)
+            .and_then(|r| r.list_worktrees())
+            .unwrap_or_default();
         for w in wts {
             if worktree_has_review(&w, &repo.name, &recents) {
                 continue;
             }
-            worktrees.push(PickerWorktree { worktree: w, repo_name: repo.name.clone(), repo_id: repo.id.clone() });
+            worktrees.push(PickerWorktree {
+                worktree: w,
+                repo_name: repo.name.clone(),
+                repo_id: repo.id.clone(),
+            });
         }
     }
-    Ok(PickerData { recents, worktrees, home })
+    Ok(PickerData {
+        recents,
+        worktrees,
+        home,
+    })
 }
 
 // Async so Tauri runs the git enumeration OFF the main thread. A synchronous command
@@ -461,6 +568,46 @@ pub async fn list_picker(app: tauri::AppHandle) -> Result<PickerData, String> {
 #[tauri::command]
 pub fn list_worktrees(repo_path: String) -> Result<Vec<WorktreeEntry>, String> {
     Repo::open(&repo_path)?.list_worktrees()
+}
+
+/// Every branch (local + remote) with picker metadata — recency, ahead/behind,
+/// default/current marks — plus the fork-point suggestion for HEAD. Feeds the
+/// base picker in the review toolbar. (#base)
+#[tauri::command]
+pub async fn list_branches(repo_path: String) -> Result<BranchList, String> {
+    tauri::async_runtime::spawn_blocking(move || branches::list_branches(&repo_path))
+        .await
+        .map_err(|e| format!("list_branches task: {e}"))?
+}
+
+#[tauri::command]
+pub fn get_base_strategy(
+    app: tauri::AppHandle,
+    repo_path: String,
+) -> Result<Option<BaseStrategy>, String> {
+    Ok(repo_base_strategy(&app, &repo_path))
+}
+
+/// Set (or clear, with `None`) the repo-wide base strategy. Git only — the
+/// caller is the base picker, which never renders for other VCSes. (#base)
+#[tauri::command]
+pub fn set_base_strategy(
+    app: tauri::AppHandle,
+    repo_path: String,
+    strategy: Option<BaseStrategy>,
+) -> Result<(), String> {
+    let repo = crate::git::open_repo(&repo_path)
+        .map_err(|e| format!("{repo_path} is not a git repository: {e}"))?;
+    let id = repo_entry_id(&repo);
+    let store = reg_store(&app)?;
+    let mut reg = store.load()?;
+    let entry = reg
+        .repos
+        .iter_mut()
+        .find(|r| r.id == id)
+        .ok_or_else(|| "open this repository in a review window first".to_string())?;
+    entry.base_strategy = strategy;
+    store.save(&reg)
 }
 
 #[tauri::command]
@@ -502,16 +649,27 @@ pub async fn import_repo(app: tauri::AppHandle) -> Result<Option<RepoEntry>, Str
 // Async on purpose: Tauri runs a synchronous command on the main thread, and creating
 // a window there deadlocks — the builder waits for an event loop that is busy running
 // this very command, and every later IPC call queues behind it forever.
-pub async fn open_target(app: tauri::AppHandle, repo_path: String, mode: DiffMode, base: Option<String>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || open_target_window(&app, &repo_path, mode, base).map(|_| ()))
-        .await
-        .map_err(|e| format!("open target task: {e}"))?
+pub async fn open_target(
+    app: tauri::AppHandle,
+    repo_path: String,
+    mode: DiffMode,
+    base: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        open_target_window(&app, &repo_path, mode, base).map(|_| ())
+    })
+    .await
+    .map_err(|e| format!("open target task: {e}"))?
 }
 
 /// Re-point the calling window's fs watcher at `repo_path`'s worktree — used when
 /// a review window navigates in place ("replace current" picker mode). (#replace)
 #[tauri::command]
-pub fn rewatch_window(window: tauri::WebviewWindow, app: tauri::AppHandle, repo_path: String) -> Result<(), String> {
+pub fn rewatch_window(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    repo_path: String,
+) -> Result<(), String> {
     rewatch_target(&app, window.label(), &repo_path)
 }
 
@@ -528,7 +686,10 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), Str
 /// Where the global Delta Ignore file lives (app data dir). Also wired into the
 /// ignore engine at startup — see lib.rs setup.
 pub fn global_deltaignore_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let base = app.path().app_data_dir().map_err(|e| format!("app data dir: {e}"))?;
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app data dir: {e}"))?;
     Ok(base.join(crate::git::deltaignore::GLOBAL_DELTAIGNORE_FILE))
 }
 
@@ -569,8 +730,12 @@ pub fn set_global_delta_ignore(
 pub fn get_local_delta_ignore(repo_path: String) -> Result<LocalDeltaIgnore, String> {
     use crate::git::deltaignore::DeltaIgnore;
     match Repo::open(&repo_path)? {
-        Repo::Git(repo) => Ok(LocalDeltaIgnore::GitInfo { rules: DeltaIgnore::local_rules(&repo) }),
-        Repo::Svn(svn) => Ok(LocalDeltaIgnore::AppData { rules: DeltaIgnore::svn_local_rules(svn.root()) }),
+        Repo::Git(repo) => Ok(LocalDeltaIgnore::GitInfo {
+            rules: DeltaIgnore::local_rules(&repo),
+        }),
+        Repo::Svn(svn) => Ok(LocalDeltaIgnore::AppData {
+            rules: DeltaIgnore::svn_local_rules(svn.root()),
+        }),
     }
 }
 
@@ -604,7 +769,11 @@ pub fn cli_status() -> CliStatus {
 
 // "Open in your editor" (#editor). Each curated editor maps to a CLI; where the
 // CLI supports it, `line` jumps to that line. Pure so it's unit-testable.
-fn editor_invocation(editor: &str, path: &str, line: Option<u32>) -> Result<(&'static str, Vec<String>), String> {
+fn editor_invocation(
+    editor: &str,
+    path: &str,
+    line: Option<u32>,
+) -> Result<(&'static str, Vec<String>), String> {
     let prog = match editor {
         "vscode" => "code",
         "cursor" => "cursor",
@@ -640,7 +809,12 @@ fn resolve_program(prog: &str) -> Option<PathBuf> {
 }
 
 #[tauri::command]
-pub fn open_in_editor(editor: String, repo_path: String, file: Option<String>, line: Option<u32>) -> Result<(), String> {
+pub fn open_in_editor(
+    editor: String,
+    repo_path: String,
+    file: Option<String>,
+    line: Option<u32>,
+) -> Result<(), String> {
     // file omitted → open the repo/worktree root; otherwise join it onto the root.
     let target = match file {
         Some(f) => PathBuf::from(&repo_path).join(f),
@@ -658,7 +832,13 @@ pub fn open_in_editor(editor: String, repo_path: String, file: Option<String>, l
 }
 
 #[tauri::command]
-pub fn edit_file_line(target: Target, path: String, line: u32, expected: String, replacement: String) -> Result<(), String> {
+pub fn edit_file_line(
+    target: Target,
+    path: String,
+    line: u32,
+    expected: String,
+    replacement: String,
+) -> Result<(), String> {
     crate::edit::edit_file_line(&target, &path, line, &expected, &replacement)
 }
 
@@ -668,7 +848,12 @@ pub fn read_file_text(target: Target, path: String) -> Result<crate::edit::FileT
 }
 
 #[tauri::command]
-pub fn write_file_text(target: Target, path: String, expected_hash: String, content: String) -> Result<crate::edit::FileText, String> {
+pub fn write_file_text(
+    target: Target,
+    path: String,
+    expected_hash: String,
+    content: String,
+) -> Result<crate::edit::FileText, String> {
     crate::edit::write_file_text(&target, &path, &expected_hash, &content)
 }
 
@@ -682,7 +867,37 @@ mod tests {
 
     fn stores(dir: &std::path::Path) -> (JsonStorage, JsonRegistryStore) {
         let reviews = dir.join("reviews");
-        (JsonStorage::new(reviews.clone()), JsonRegistryStore::new(dir.join("registry.json"), reviews))
+        (
+            JsonStorage::new(reviews.clone()),
+            JsonRegistryStore::new(dir.join("registry.json"), reviews),
+        )
+    }
+
+    #[test]
+    fn fill_base_from_strategy_respects_the_cascade() {
+        let t = |base: Option<&str>| Target {
+            repo_path: "/r".into(),
+            worktree: None,
+            mode: DiffMode::BranchVsBase,
+            base: base.map(str::to_string),
+            commit: None,
+        };
+        // Explicit base wins over any strategy.
+        let explicit = fill_base_from_strategy(
+            t(Some("main")),
+            Some(&BaseStrategy::Branch { name: "dev".into() }),
+        );
+        assert_eq!(explicit.base.as_deref(), Some("main"));
+        // A pinned strategy fills an implicit base.
+        let pinned =
+            fill_base_from_strategy(t(None), Some(&BaseStrategy::Branch { name: "dev".into() }));
+        assert_eq!(pinned.base.as_deref(), Some("dev"));
+        // Auto (and no strategy) stays implicit — the fork heuristic resolves it.
+        assert_eq!(
+            fill_base_from_strategy(t(None), Some(&BaseStrategy::Auto)).base,
+            None
+        );
+        assert_eq!(fill_base_from_strategy(t(None), None).base, None);
     }
 
     #[test]
@@ -690,19 +905,51 @@ mod tests {
         let recents = vec![ReviewEntry {
             id: "x".into(),
             repo_name: "demo".into(),
-            target: Target { repo_path: "/r/demo".into(), worktree: Some("feat/a".into()), mode: DiffMode::AllChanges, base: None, commit: None },
+            target: Target {
+                repo_path: "/r/demo".into(),
+                worktree: Some("feat/a".into()),
+                mode: DiffMode::AllChanges,
+                base: None,
+                commit: None,
+            },
             last_opened_at: "t".into(),
-            comment_count: 0, stale_count: 0, resolved_count: 0, viewed_count: 0, file_count: 1,
+            comment_count: 0,
+            stale_count: 0,
+            resolved_count: 0,
+            viewed_count: 0,
+            file_count: 1,
         }];
-        let wt = |path: &str, branch: &str| WorktreeEntry { path: path.into(), branch: branch.into(), is_main: false, last_commit_at: None, dirty: false };
+        let wt = |path: &str, branch: &str| WorktreeEntry {
+            path: path.into(),
+            branch: branch.into(),
+            is_main: false,
+            last_commit_at: None,
+            dirty: false,
+        };
         // same path → covered
-        assert!(worktree_has_review(&wt("/r/demo", "feat/a"), "demo", &recents));
+        assert!(worktree_has_review(
+            &wt("/r/demo", "feat/a"),
+            "demo",
+            &recents
+        ));
         // same repo + branch, different path (linked worktree) → covered
-        assert!(worktree_has_review(&wt("/r/demo-a", "feat/a"), "demo", &recents));
+        assert!(worktree_has_review(
+            &wt("/r/demo-a", "feat/a"),
+            "demo",
+            &recents
+        ));
         // different branch → not covered
-        assert!(!worktree_has_review(&wt("/r/demo-b", "feat/b"), "demo", &recents));
+        assert!(!worktree_has_review(
+            &wt("/r/demo-b", "feat/b"),
+            "demo",
+            &recents
+        ));
         // different repo (different path + name) → not covered, even on a same-named branch
-        assert!(!worktree_has_review(&wt("/r/other", "feat/a"), "other", &recents));
+        assert!(!worktree_has_review(
+            &wt("/r/other", "feat/a"),
+            "other",
+            &recents
+        ));
     }
 
     #[test]
@@ -720,16 +967,30 @@ mod tests {
         reg.upsert_review(ReviewEntry {
             id: "rev1".into(),
             repo_name: repo_name.clone(),
-            target: Target { repo_path: root.clone(), worktree: Some("main".into()), mode: DiffMode::AllChanges, base: None, commit: None },
+            target: Target {
+                repo_path: root.clone(),
+                worktree: Some("main".into()),
+                mode: DiffMode::AllChanges,
+                base: None,
+                commit: None,
+            },
             last_opened_at: "t".into(),
-            comment_count: 0, stale_count: 0, resolved_count: 0, viewed_count: 0, file_count: 1,
+            comment_count: 0,
+            stale_count: 0,
+            resolved_count: 0,
+            viewed_count: 0,
+            file_count: 1,
         });
         reg_store.save(&reg).unwrap();
 
         let data = list_picker_impl(&reg_store, Some("/Users/me".into())).unwrap();
         assert_eq!(data.recents.len(), 1);
         // "main" is covered by a review → only "feat/a" appears under other worktrees.
-        let branches: Vec<&str> = data.worktrees.iter().map(|w| w.worktree.branch.as_str()).collect();
+        let branches: Vec<&str> = data
+            .worktrees
+            .iter()
+            .map(|w| w.worktree.branch.as_str())
+            .collect();
         assert_eq!(branches, vec!["feat/a"]);
         assert_eq!(data.worktrees[0].repo_name, repo_name);
         assert_eq!(data.home.as_deref(), Some("/Users/me"));
@@ -761,7 +1022,13 @@ mod tests {
         let store_dir = tempfile::TempDir::new().unwrap();
         let storage = JsonStorage::new(store_dir.path().join("reviews"));
 
-        let target = Target { repo_path: dir.path().to_str().unwrap().into(), worktree: None, mode: DiffMode::Uncommitted, base: None, commit: None };
+        let target = Target {
+            repo_path: dir.path().to_str().unwrap().into(),
+            worktree: None,
+            mode: DiffMode::Uncommitted,
+            base: None,
+            commit: None,
+        };
         let session = open_review_impl(&DiffCache::default(), &storage, target).unwrap();
 
         assert!(session.summary.files.iter().any(|f| f.path == "file.txt"));
@@ -779,8 +1046,19 @@ mod tests {
         let storage = JsonStorage::new(store_dir.path().join("reviews"));
         let now = chrono::Utc::now().to_rfc3339();
 
-        let target = Target { repo_path: "/repo".into(), worktree: Some("main".into()), mode: DiffMode::Uncommitted, base: None, commit: None };
-        let snapshot = Snapshot { base_oid: "abc123".into(), head_oid: None, head_commit: None, captured_at: now.clone() };
+        let target = Target {
+            repo_path: "/repo".into(),
+            worktree: Some("main".into()),
+            mode: DiffMode::Uncommitted,
+            base: None,
+            commit: None,
+        };
+        let snapshot = Snapshot {
+            base_oid: "abc123".into(),
+            head_oid: None,
+            head_commit: None,
+            captured_at: now.clone(),
+        };
         let review = Review::new("0123456789abcdef".into(), target, snapshot, now);
 
         save_review_impl(&DiffCache::default(), &storage, review.clone()).unwrap();
@@ -798,10 +1076,17 @@ mod tests {
         let store_dir = tempfile::TempDir::new().unwrap();
         let storage = JsonStorage::new(store_dir.path().join("reviews"));
 
-        let target = Target { repo_path: dir.path().to_str().unwrap().into(), worktree: None, mode: DiffMode::Uncommitted, base: None, commit: None };
+        let target = Target {
+            repo_path: dir.path().to_str().unwrap().into(),
+            worktree: None,
+            mode: DiffMode::Uncommitted,
+            base: None,
+            commit: None,
+        };
         let session = open_review_impl(&DiffCache::default(), &storage, target).unwrap();
 
-        let refreshed = refresh_review_impl(&DiffCache::default(), &storage, session.review.clone()).unwrap();
+        let refreshed =
+            refresh_review_impl(&DiffCache::default(), &storage, session.review.clone()).unwrap();
         assert!(!refreshed.summary.files.is_empty());
         let persisted = storage.load(&session.review.id).unwrap();
         assert!(persisted.is_some());
@@ -821,7 +1106,13 @@ mod tests {
         write(dir.path(), "file.txt", "line1\nAAA\nline2\n");
         let store_dir = tempfile::TempDir::new().unwrap();
         let storage = JsonStorage::new(store_dir.path().join("reviews"));
-        let target = Target { repo_path: dir.path().to_str().unwrap().into(), worktree: None, mode: DiffMode::Uncommitted, base: None, commit: None };
+        let target = Target {
+            repo_path: dir.path().to_str().unwrap().into(),
+            worktree: None,
+            mode: DiffMode::Uncommitted,
+            base: None,
+            commit: None,
+        };
 
         // The review the user has open. The diff pane fetched the file — the
         // served snapshot is AAA, the version on screen.
@@ -832,7 +1123,10 @@ mod tests {
         // The user toggles viewed; the toggle's save is still in flight, so disk
         // has no viewed entry for refresh to adopt.
         let mut fe = opened.review.clone();
-        fe.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: String::new() });
+        fe.viewed.push(ViewedEntry {
+            file: "file.txt".into(),
+            diff_hash: String::new(),
+        });
 
         // The agent's edit lands; the watcher's refresh wins the race with the save.
         write(dir.path(), "file.txt", "line1\nBBB\nline2\n");
@@ -852,16 +1146,31 @@ mod tests {
         write(dir.path(), "file.txt", "line1\nCHANGED\nline2\n");
         let store_dir = tempfile::TempDir::new().unwrap();
         let storage = JsonStorage::new(store_dir.path().join("reviews"));
-        let target = Target { repo_path: dir.path().to_str().unwrap().into(), worktree: None, mode: DiffMode::Uncommitted, base: None, commit: None };
+        let target = Target {
+            repo_path: dir.path().to_str().unwrap().into(),
+            worktree: None,
+            mode: DiffMode::Uncommitted,
+            base: None,
+            commit: None,
+        };
 
         let note = |id: &str, body: &str| Comment {
-            id: id.into(), scope: CommentScope::General, anchor: None, body: body.into(),
-            stale: false, resolved: false, commit: None, created_at: "t".into(), updated_at: "t".into(),
+            id: id.into(),
+            scope: CommentScope::General,
+            anchor: None,
+            body: body.into(),
+            stale: false,
+            resolved: false,
+            commit: None,
+            created_at: "t".into(),
+            updated_at: "t".into(),
         };
         let ids = |cs: &[Comment]| cs.iter().map(|c| c.id.clone()).collect::<Vec<_>>();
 
         // Two comments are created and persisted — the on-disk review is the source of truth.
-        let mut review = open_review_impl(&DiffCache::default(), &storage, target).unwrap().review;
+        let mut review = open_review_impl(&DiffCache::default(), &storage, target)
+            .unwrap()
+            .review;
         review.comments = vec![note("c1", "first"), note("c2", "second")];
         save_review_impl(&DiffCache::default(), &storage, review.clone()).unwrap();
 
@@ -873,9 +1182,17 @@ mod tests {
 
         let refreshed = refresh_review_impl(&DiffCache::default(), &storage, stale).unwrap();
 
-        assert_eq!(ids(&refreshed.review.comments), vec!["c1", "c2"], "refresh must not drop a persisted comment missing from a stale FE copy");
+        assert_eq!(
+            ids(&refreshed.review.comments),
+            vec!["c1", "c2"],
+            "refresh must not drop a persisted comment missing from a stale FE copy"
+        );
         let persisted = storage.load(&review.id).unwrap().unwrap();
-        assert_eq!(ids(&persisted.comments), vec!["c1", "c2"], "the on-disk review must still hold both comments after refresh");
+        assert_eq!(
+            ids(&persisted.comments),
+            vec!["c1", "c2"],
+            "the on-disk review must still hold both comments after refresh"
+        );
     }
 
     #[test]
@@ -888,20 +1205,41 @@ mod tests {
         write(dir.path(), "file.txt", "line1\nCHANGED\nline2\n");
         let store_dir = tempfile::TempDir::new().unwrap();
         let storage = JsonStorage::new(store_dir.path().join("reviews"));
-        let target = Target { repo_path: dir.path().to_str().unwrap().into(), worktree: None, mode: DiffMode::Uncommitted, base: None, commit: None };
+        let target = Target {
+            repo_path: dir.path().to_str().unwrap().into(),
+            worktree: None,
+            mode: DiffMode::Uncommitted,
+            base: None,
+            commit: None,
+        };
 
         // A file-scoped comment: an anchor with a file + side but no line/snippet.
         let file_note = |id: &str, file: &str| Comment {
             id: id.into(),
             scope: CommentScope::File,
-            anchor: Some(Anchor { file: file.into(), side: Side::New, start_line: None, end_line: None, snippet: None }),
-            body: "note".into(), stale: false, resolved: false, commit: None,
-            created_at: "t".into(), updated_at: "t".into(),
+            anchor: Some(Anchor {
+                file: file.into(),
+                side: Side::New,
+                start_line: None,
+                end_line: None,
+                snippet: None,
+            }),
+            body: "note".into(),
+            stale: false,
+            resolved: false,
+            commit: None,
+            created_at: "t".into(),
+            updated_at: "t".into(),
         };
         let ids = |cs: &[Comment]| cs.iter().map(|c| c.id.clone()).collect::<Vec<_>>();
 
-        let mut review = open_review_impl(&DiffCache::default(), &storage, target).unwrap().review;
-        review.comments = vec![file_note("in-diff", "file.txt"), file_note("gone", "other.txt")];
+        let mut review = open_review_impl(&DiffCache::default(), &storage, target)
+            .unwrap()
+            .review;
+        review.comments = vec![
+            file_note("in-diff", "file.txt"),
+            file_note("gone", "other.txt"),
+        ];
         save_review_impl(&DiffCache::default(), &storage, review.clone()).unwrap();
 
         // Stale FE copy dropped both file-scoped comments.
@@ -911,11 +1249,32 @@ mod tests {
         let refreshed = refresh_review_impl(&DiffCache::default(), &storage, stale).unwrap();
 
         // Both survive on disk; the one whose file left the diff is flagged stale, not removed.
-        assert_eq!(ids(&refreshed.review.comments), vec!["in-diff", "gone"], "file-scoped comments must not be dropped by a refresh");
-        let by_id = |id: &str| refreshed.review.comments.iter().find(|c| c.id == id).unwrap();
-        assert!(!by_id("in-diff").stale, "a file-scoped comment on a file still in the diff stays fresh");
-        assert!(by_id("gone").stale, "a file-scoped comment whose file left the diff is marked stale — but kept");
-        assert_eq!(storage.load(&review.id).unwrap().unwrap().comments.len(), 2, "both file-scoped comments persist");
+        assert_eq!(
+            ids(&refreshed.review.comments),
+            vec!["in-diff", "gone"],
+            "file-scoped comments must not be dropped by a refresh"
+        );
+        let by_id = |id: &str| {
+            refreshed
+                .review
+                .comments
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap()
+        };
+        assert!(
+            !by_id("in-diff").stale,
+            "a file-scoped comment on a file still in the diff stays fresh"
+        );
+        assert!(
+            by_id("gone").stale,
+            "a file-scoped comment whose file left the diff is marked stale — but kept"
+        );
+        assert_eq!(
+            storage.load(&review.id).unwrap().unwrap().comments.len(),
+            2,
+            "both file-scoped comments persist"
+        );
     }
 
     #[test]
@@ -929,15 +1288,33 @@ mod tests {
         write(dir.path(), "file.txt", "line1\nADDED\nline2\n");
         let store_dir = tempfile::TempDir::new().unwrap();
         let storage = JsonStorage::new(store_dir.path().join("reviews"));
-        let target = Target { repo_path: dir.path().to_str().unwrap().into(), worktree: None, mode: DiffMode::Uncommitted, base: None, commit: None };
+        let target = Target {
+            repo_path: dir.path().to_str().unwrap().into(),
+            worktree: None,
+            mode: DiffMode::Uncommitted,
+            base: None,
+            commit: None,
+        };
 
-        let mut review = open_review_impl(&DiffCache::default(), &storage, target).unwrap().review;
+        let mut review = open_review_impl(&DiffCache::default(), &storage, target)
+            .unwrap()
+            .review;
         review.comments.push(Comment {
             id: "c1".into(),
             scope: CommentScope::Line,
-            anchor: Some(Anchor { file: "file.txt".into(), side: Side::New, start_line: Some(2), end_line: None, snippet: Some("ADDED".into()) }),
-            body: "why?".into(), stale: false, resolved: false, commit: None,
-            created_at: "t".into(), updated_at: "t".into(),
+            anchor: Some(Anchor {
+                file: "file.txt".into(),
+                side: Side::New,
+                start_line: Some(2),
+                end_line: None,
+                snippet: Some("ADDED".into()),
+            }),
+            body: "why?".into(),
+            stale: false,
+            resolved: false,
+            commit: None,
+            created_at: "t".into(),
+            updated_at: "t".into(),
         });
         save_review_impl(&DiffCache::default(), &storage, review.clone()).unwrap();
 
@@ -946,10 +1323,20 @@ mod tests {
 
         let refreshed = refresh_review_impl(&DiffCache::default(), &storage, review).unwrap();
         let c = &refreshed.review.comments[0];
-        assert_eq!(c.commit.as_deref(), Some(oid.to_string().as_str()), "refresh hands the comment to the commit that took its file");
+        assert_eq!(
+            c.commit.as_deref(),
+            Some(oid.to_string().as_str()),
+            "refresh hands the comment to the commit that took its file"
+        );
         assert!(!c.stale, "the handed-off comment is fresh");
         assert_eq!(
-            storage.load(&refreshed.review.id).unwrap().unwrap().comments[0].commit.as_deref(),
+            storage
+                .load(&refreshed.review.id)
+                .unwrap()
+                .unwrap()
+                .comments[0]
+                .commit
+                .as_deref(),
             Some(oid.to_string().as_str()),
             "the handoff persists",
         );
@@ -964,7 +1351,13 @@ mod tests {
         write(dir.path(), "file.txt", "line1\nCHANGED\nline2\n");
         let store_dir = tempfile::TempDir::new().unwrap();
         let storage = JsonStorage::new(store_dir.path().join("reviews"));
-        let target = Target { repo_path: dir.path().to_str().unwrap().into(), worktree: None, mode: DiffMode::Uncommitted, base: None, commit: None };
+        let target = Target {
+            repo_path: dir.path().to_str().unwrap().into(),
+            worktree: None,
+            mode: DiffMode::Uncommitted,
+            base: None,
+            commit: None,
+        };
         let session = open_review_impl(&DiffCache::default(), &storage, target).unwrap();
         let mut review = session.review;
 
@@ -973,12 +1366,18 @@ mod tests {
         cache.file(&review.target, "file.txt").unwrap();
 
         // The FE toggles "viewed" with an empty hash (it doesn't compute the baseline).
-        review.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: String::new() });
+        review.viewed.push(ViewedEntry {
+            file: "file.txt".into(),
+            diff_hash: String::new(),
+        });
         save_review_impl(&cache, &storage, review.clone()).unwrap();
 
         // Save must have stamped the baseline from the served content.
         let persisted = storage.load(&review.id).unwrap().unwrap();
-        assert!(!persisted.viewed[0].diff_hash.is_empty(), "save must stamp the baseline hash before persisting");
+        assert!(
+            !persisted.viewed[0].diff_hash.is_empty(),
+            "save must stamp the baseline hash before persisting"
+        );
     }
 
     #[test]
@@ -991,7 +1390,13 @@ mod tests {
         write(dir.path(), "file.txt", "line1\nV1\nline2\n");
         let store_dir = tempfile::TempDir::new().unwrap();
         let storage = JsonStorage::new(store_dir.path().join("reviews"));
-        let target = Target { repo_path: dir.path().to_str().unwrap().into(), worktree: None, mode: DiffMode::Uncommitted, base: None, commit: None };
+        let target = Target {
+            repo_path: dir.path().to_str().unwrap().into(),
+            worktree: None,
+            mode: DiffMode::Uncommitted,
+            base: None,
+            commit: None,
+        };
         let session = open_review_impl(&DiffCache::default(), &storage, target).unwrap();
         let mut review = session.review;
 
@@ -1001,7 +1406,10 @@ mod tests {
 
         // User marks file.txt viewed. The FE persists an entry with an empty hash;
         // save runs immediately, while the file is still at V1.
-        review.viewed.push(ViewedEntry { file: "file.txt".into(), diff_hash: String::new() });
+        review.viewed.push(ViewedEntry {
+            file: "file.txt".into(),
+            diff_hash: String::new(),
+        });
         save_review_impl(&cache, &storage, review.clone()).unwrap();
 
         // The file changes to V2 before the next refresh (e.g. an agent edits it).
@@ -1011,7 +1419,11 @@ mod tests {
         // the empty hash. It must still drop the viewed entry, because the file
         // changed since the user marked it viewed.
         let refreshed = refresh_review_impl(&cache, &storage, review).unwrap();
-        assert_eq!(refreshed.review.viewed.len(), 0, "a file changed after being viewed must be un-viewed on refresh");
+        assert_eq!(
+            refreshed.review.viewed.len(),
+            0,
+            "a file changed after being viewed must be un-viewed on refresh"
+        );
     }
 
     #[test]
@@ -1020,12 +1432,24 @@ mod tests {
         write(repo_dir.path(), "file.txt", "line1\nCHANGED\nline2\n");
         let store_dir = tempfile::TempDir::new().unwrap();
         let (storage, reg_store) = stores(store_dir.path());
-        let target = Target { repo_path: repo_dir.path().to_str().unwrap().into(), worktree: None, mode: DiffMode::Uncommitted, base: None, commit: None };
+        let target = Target {
+            repo_path: repo_dir.path().to_str().unwrap().into(),
+            worktree: None,
+            mode: DiffMode::Uncommitted,
+            base: None,
+            commit: None,
+        };
 
-        let session = open_review_impl_with_registry(&DiffCache::default(), &storage, &reg_store, target).unwrap();
+        let session =
+            open_review_impl_with_registry(&DiffCache::default(), &storage, &reg_store, target)
+                .unwrap();
 
         let reg = reg_store.load().unwrap();
-        let entry = reg.reviews.iter().find(|e| e.id == session.review.id).expect("review entry");
+        let entry = reg
+            .reviews
+            .iter()
+            .find(|e| e.id == session.review.id)
+            .expect("review entry");
         assert_eq!(entry.file_count, session.summary.files.len() as u32);
         assert!(reg.repos.iter().any(|r| !r.worktrees.is_empty()));
     }
@@ -1036,17 +1460,43 @@ mod tests {
         write(repo_dir.path(), "file.txt", "line1\nCHANGED\nline2\n");
         let store_dir = tempfile::TempDir::new().unwrap();
         let (storage, reg_store) = stores(store_dir.path());
-        let target = Target { repo_path: repo_dir.path().to_str().unwrap().into(), worktree: None, mode: DiffMode::Uncommitted, base: None, commit: None };
-        let session = open_review_impl_with_registry(&DiffCache::default(), &storage, &reg_store, target).unwrap();
+        let target = Target {
+            repo_path: repo_dir.path().to_str().unwrap().into(),
+            worktree: None,
+            mode: DiffMode::Uncommitted,
+            base: None,
+            commit: None,
+        };
+        let session =
+            open_review_impl_with_registry(&DiffCache::default(), &storage, &reg_store, target)
+                .unwrap();
         let original_file_count = session.summary.files.len() as u32;
 
         let mut review = session.review.clone();
-        review.comments.push(Comment { id: "c1".into(), scope: CommentScope::Line, anchor: None, body: "hi".into(), stale: false, resolved: false, commit: None, created_at: "t".into(), updated_at: "t".into() });
-        save_review_impl_with_registry(&DiffCache::default(), &storage, &reg_store, review).unwrap();
+        review.comments.push(Comment {
+            id: "c1".into(),
+            scope: CommentScope::Line,
+            anchor: None,
+            body: "hi".into(),
+            stale: false,
+            resolved: false,
+            commit: None,
+            created_at: "t".into(),
+            updated_at: "t".into(),
+        });
+        save_review_impl_with_registry(&DiffCache::default(), &storage, &reg_store, review)
+            .unwrap();
 
         let reg = reg_store.load().unwrap();
-        let entry = reg.reviews.iter().find(|e| e.id == session.review.id).unwrap();
-        assert_eq!(entry.file_count, original_file_count, "file_count preserved across save");
+        let entry = reg
+            .reviews
+            .iter()
+            .find(|e| e.id == session.review.id)
+            .unwrap();
+        assert_eq!(
+            entry.file_count, original_file_count,
+            "file_count preserved across save"
+        );
         assert_eq!(entry.comment_count, 1);
     }
 
@@ -1062,7 +1512,10 @@ mod tests {
         );
         assert_eq!(
             editor_invocation("intellij", "/a/b.ts", Some(3)).unwrap(),
-            ("idea", vec!["--line".to_string(), "3".to_string(), "/a/b.ts".to_string()])
+            (
+                "idea",
+                vec!["--line".to_string(), "3".to_string(), "/a/b.ts".to_string()]
+            )
         );
         // No line → just the path (e.g. opening the repo root).
         assert_eq!(
@@ -1078,13 +1531,26 @@ mod tests {
         write(repo_dir.path(), "file.txt", "line1\nCHANGED\nline2\n");
         let store_dir = tempfile::TempDir::new().unwrap();
         let (storage, reg_store) = stores(store_dir.path());
-        let target = Target { repo_path: repo_dir.path().to_str().unwrap().into(), worktree: None, mode: DiffMode::Uncommitted, base: None, commit: None };
-        let session = open_review_impl_with_registry(&DiffCache::default(), &storage, &reg_store, target).unwrap();
+        let target = Target {
+            repo_path: repo_dir.path().to_str().unwrap().into(),
+            worktree: None,
+            mode: DiffMode::Uncommitted,
+            base: None,
+            commit: None,
+        };
+        let session =
+            open_review_impl_with_registry(&DiffCache::default(), &storage, &reg_store, target)
+                .unwrap();
 
         delete_review_impl(&storage, &reg_store, &session.review.id).unwrap();
 
         assert!(storage.load(&session.review.id).unwrap().is_none());
-        assert!(reg_store.load().unwrap().reviews.iter().all(|e| e.id != session.review.id));
+        assert!(reg_store
+            .load()
+            .unwrap()
+            .reviews
+            .iter()
+            .all(|e| e.id != session.review.id));
     }
 }
 

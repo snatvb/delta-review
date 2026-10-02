@@ -15,6 +15,7 @@ mod registry;
 mod review;
 mod settings;
 mod storage;
+mod updater;
 mod vcs;
 mod watch;
 
@@ -100,7 +101,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(crate::watch::Watchers::default())
-        .manage(crate::commands::UpdaterGate::default())
+        .manage(crate::updater::UpdaterShared::default())
         .manage(crate::git::cache::DiffCache::default())
         .register_asynchronous_uri_scheme_protocol(blob_scheme::SCHEME, blob_scheme::handle)
         .invoke_handler(tauri::generate_handler![
@@ -123,6 +124,9 @@ pub fn run() {
             commands::list_registry,
             commands::list_picker,
             commands::list_worktrees,
+            commands::list_branches,
+            commands::get_base_strategy,
+            commands::set_base_strategy,
             commands::import_repo,
             commands::delete_review,
             commands::install_cli,
@@ -131,7 +135,9 @@ pub fn run() {
             commands::edit_file_line,
             commands::read_file_text,
             commands::write_file_text,
-            commands::updater_try_acquire,
+            updater::updater_check,
+            updater::updater_download,
+            updater::updater_status,
             commands::telemetry_allowed
         ])
         .setup(|app| {
@@ -149,7 +155,9 @@ pub fn run() {
                 crate::git::deltaignore::set_svn_local_dir(dir.join("svn-local-deltaignore"));
             }
             let handle = app.handle().clone();
-            crate::vcs::svn::status::on_verified_change(move |root| crate::watch::notify_repo_changed(&handle, root));
+            crate::vcs::svn::status::on_verified_change(move |root| {
+                crate::watch::notify_repo_changed(&handle, root)
+            });
             if let Ok(reg) = crate::commands::registry_of(app.handle()) {
                 let _ = crate::commands::sync_vcs_overrides(&reg);
             }
@@ -171,7 +179,11 @@ pub fn run() {
                 // (#9 cleanup, #14, #31). On macOS the process is kept alive by the
                 // ExitRequested arm below; other platforms have no dock/tray to recover
                 // a windowless process, so exit to avoid an orphan.
-                tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } => {
+                tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::Destroyed,
+                    ..
+                } => {
                     crate::watch::stop(app_handle, &label);
                     let remaining = app_handle
                         .webview_windows()
@@ -195,7 +207,10 @@ pub fn run() {
                 }
                 // macOS: clicking the dock icon with no open windows reopens home.
                 #[cfg(target_os = "macos")]
-                tauri::RunEvent::Reopen { has_visible_windows, .. } => {
+                tauri::RunEvent::Reopen {
+                    has_visible_windows,
+                    ..
+                } => {
                     if !has_visible_windows {
                         let _ = crate::launch::open_home_window(app_handle);
                     }

@@ -3,6 +3,7 @@ import { EyeOff, Info, Palette, SlidersHorizontal, X } from "lucide-react";
 import { APP_VERSION } from "../appVersion";
 import { reloadWindowPerBranch } from "../windowPerBranch";
 import type { Target } from "../types";
+import type { UpdaterState } from "../updater/useUpdater";
 import { GeneralSection } from "./GeneralSection";
 import { AppearanceSection } from "./AppearanceSection";
 import { DeltaIgnoreSection } from "./DeltaIgnoreSection";
@@ -43,11 +44,14 @@ export function SettingsDialog({
   open,
   onOpenChange,
   target,
+  updater,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   /** The review this window shows — enables the per-repo local ignore editor. */
   target?: Target;
+  /** The app-wide update state — drives the About section's check UI. */
+  updater: UpdaterState;
 }) {
   const [section, setSection] = useState<SectionId>(readStoredSection);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -151,7 +155,7 @@ export function SettingsDialog({
             {/* key: a target switch remounts the section, so its loaded state
                 resets by remount instead of prop-syncing inside an effect. */}
             {section === "ignore" && <DeltaIgnoreSection key={target?.repoPath ?? ""} target={target} />}
-            {section === "about" && <AboutSection />}
+            {section === "about" && <AboutSection updater={updater} />}
           </div>
         </div>
       </div>

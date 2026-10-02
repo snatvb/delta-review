@@ -5,7 +5,7 @@
 // Keep fixtures realistic but small. As Plan 2 adds commands (open_review,
 // refresh_review, save_review, export_review) extend the switch + fixtures here.
 import { __setBlobUrlForDev, __setInvokeForDev } from "../api";
-import type { AppSettings, DiffSummary, FileDiff, PickerData, Registry, Review, ReviewSession } from "../types";
+import type { AppSettings, BaseStrategy, DiffSummary, FileDiff, PickerData, Registry, Review, ReviewSession } from "../types";
 
 // Canvas-drawn PNG data URL so an image compare card shows something in browser dev.
 function mockPng(w: number, h: number, color: string): string {
@@ -442,6 +442,8 @@ const REVIEW: Review = {
 };
 
 let mockSettings: AppSettings = { windowPerBranch: true };
+// Base-strategy fixture (#base): the chip shows "auto → dev" by default.
+let mockBaseStrategy: BaseStrategy | null = null;
 
 // Delta Ignore rules for the Settings editor (mock defaults show the flavor).
 let mockGlobalDeltaIgnore = "*.gen.ts\n";
@@ -619,7 +621,17 @@ export function installMockBackend(): void {
       }
       case "open_review":
       case "refresh_review": {
-        const session: ReviewSession = { review: ds.review, summary: ds.summary, repoName: "demo", vcs: "git" };
+        // Echo the effective base (#base): explicit override > repo pin > the
+        // auto suggestion, so the chip follows picks and pins in mock mode.
+        const t = args?.target as { base?: string } | undefined;
+        const baseLabel = t?.base
+          ?? (mockBaseStrategy?.kind === "branch" ? mockBaseStrategy.name : "dev");
+        const session: ReviewSession = {
+          review: ds.review,
+          summary: { ...ds.summary, baseLabel },
+          repoName: "demo",
+          vcs: "git",
+        };
         return structuredClone(session) as T;
       }
       case "save_review":
@@ -660,6 +672,24 @@ export function installMockBackend(): void {
         }
         return all as T;
       }
+      case "list_branches": {
+        const now = Math.floor(Date.now() / 1000);
+        const day = 86400;
+        return {
+          branches: [
+            { name: "feat/auth", remote: false, isCurrent: true, isDefault: false, shortOid: "a1b2c3d", lastCommitAt: now - 3600, lastSubject: "wip auth", ahead: 0, behind: 0 },
+            { name: "dev", remote: false, isCurrent: false, isDefault: true, shortOid: "e4f5a6b", lastCommitAt: now - 3 * day, lastSubject: "dev work", ahead: 4, behind: 1 },
+            { name: "main", remote: false, isCurrent: false, isDefault: false, shortOid: "0f1e2d3", lastCommitAt: now - 14 * day, lastSubject: "release", ahead: 12, behind: 0 },
+            { name: "origin/dev", remote: true, isCurrent: false, isDefault: true, shortOid: "e4f5a6b", lastCommitAt: now - 4 * day, lastSubject: "dev work", ahead: 4, behind: 0 },
+          ],
+          suggested: { name: "dev", mergeBaseShortOid: "e4f5a6b", mergeBaseAt: now - 3 * day },
+        } as T;
+      }
+      case "get_base_strategy":
+        return mockBaseStrategy as T;
+      case "set_base_strategy":
+        mockBaseStrategy = (args?.strategy as BaseStrategy | null) ?? null;
+        return undefined as T;
       case "import_repo":
         // `?import=nonrepo` → reject like the backend does for a non-git folder, to
         // exercise the "Can't add repository" modal.
@@ -774,10 +804,12 @@ export function installMockBackend(): void {
         console.info("[delta mock] write_file_text", a.path);
         return { content: a.content, hash: a.content } as T;
       }
-      case "updater_try_acquire":
-        // Never reached in mock mode (useUpdater bails on !isTauri), but keep the
-        // IPC surface mirrored. The sole caller always wins the gate.
-        return true as T;
+      case "updater_status":
+      case "updater_check":
+      case "updater_download":
+        // Never reached in mock mode (useUpdater bails on !isTauri), but keep
+        // the IPC surface mirrored: any stray call reads a quiet idle snapshot.
+        return { status: "idle", version: null, progress: null, lastCheckedAt: null } as T;
       case "telemetry_allowed":
         // Mock/browser mode is never a real, permitted client.
         return false as T;

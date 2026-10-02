@@ -7,6 +7,7 @@ const openTarget = vi.fn();
 const refreshReview = vi.fn();
 const listCommits = vi.fn();
 const computeDiff = vi.fn();
+const getBaseStrategy = vi.fn();
 vi.mock("../api", () => ({
   api: {
     openReview: (...a: unknown[]) => openReview(...a),
@@ -14,6 +15,10 @@ vi.mock("../api", () => ({
     refreshReview: (...a: unknown[]) => refreshReview(...a),
     listCommits: (...a: unknown[]) => listCommits(...a),
     computeDiff: (...a: unknown[]) => computeDiff(...a),
+    // The base chip asks for the repo strategy on mount; default = auto.
+    getBaseStrategy: (...a: unknown[]) => getBaseStrategy(...a),
+    setBaseStrategy: vi.fn(),
+    listBranches: vi.fn().mockResolvedValue({ branches: [], suggested: null }),
     saveReview: vi.fn(),
     exportReview: vi.fn(),
     getFileDiff: vi.fn(),
@@ -69,6 +74,7 @@ describe("Workspace", () => {
     refreshReview.mockReset();
     listCommits.mockReset().mockResolvedValue({ commits: [], hasMore: false });
     computeDiff.mockReset().mockResolvedValue({ files: [], baseLabel: "p", headLabel: "c" });
+    getBaseStrategy.mockReset().mockResolvedValue(null);
     fsChanged = null;
     setMode = null;
     reopen = null;
@@ -101,6 +107,33 @@ describe("Workspace", () => {
     act(() => setMode?.({ payload: "uncommitted" }));
     await waitFor(() => expect(openReview).toHaveBeenCalledWith({ repoPath: "/r", mode: "uncommitted", base: undefined }));
     expect(openTarget).not.toHaveBeenCalled();
+  });
+
+  it("shows the base chip with its resolved base on base-diffing modes only (#base)", async () => {
+    openReview.mockResolvedValue({ ...minimalSession, summary: { ...minimalSession.summary, baseLabel: "dev" } });
+    getBaseStrategy.mockResolvedValue(null); // auto
+    render(<Workspace target={target} />); // all-changes → base participates
+    const chip = await screen.findByRole("button", { name: /base branch/i });
+    expect(chip).toHaveTextContent("vs");
+    expect(chip).toHaveTextContent("dev");
+    expect(chip).toHaveTextContent("(auto)");
+
+    // Switching to a mode without a base hides the chip.
+    openReview.mockClear();
+    act(() => setMode?.({ payload: "uncommitted" }));
+    await waitFor(() => expect(openReview).toHaveBeenCalledWith({ repoPath: "/r", mode: "uncommitted", base: undefined }));
+    expect(screen.queryByRole("button", { name: /base branch/i })).toBeNull();
+  });
+
+  it("a pinned repo strategy badges the chip and the URL carries an explicit base (#base)", async () => {
+    getBaseStrategy.mockResolvedValue({ kind: "branch", name: "dev" });
+    // The persisted review echoes the injected base back, like the real backend.
+    openReview.mockResolvedValue({ ...minimalSession, review: { ...minimalSession.review, target: { repoPath: "/r", worktree: "main", mode: "all-changes", base: "dev" } } });
+    render(<Workspace target={{ ...target, base: "dev" }} />);
+    const chip = await screen.findByRole("button", { name: /base branch/i });
+    expect(chip).toHaveTextContent("dev");
+    expect(chip).not.toHaveTextContent("(auto)"); // explicit override → no badge
+    expect(openReview).toHaveBeenCalledWith({ repoPath: "/r", mode: "all-changes", base: "dev" });
   });
 
   it("renders the commit stepper in commit mode and steps to the next commit", async () => {

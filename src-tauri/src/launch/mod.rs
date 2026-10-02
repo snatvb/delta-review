@@ -1,5 +1,5 @@
 use crate::git::model::DiffMode;
-use crate::git::{common_git_dir, main_worktree_dir, resolve_base, resolve_worktree};
+use crate::git::{common_git_dir, main_worktree_dir, resolve_worktree};
 use crate::registry::model::{repo_name_from_path, RepoEntry, WorktreeEntry};
 use crate::review::model::review_id;
 use crate::vcs::{Repo, VcsKind};
@@ -197,17 +197,29 @@ pub fn list_git_worktrees(repo: &git2::Repository) -> Result<Vec<WorktreeEntry>,
         });
     }
     // Resolve linked-worktree paths up front (cheap), then scan them concurrently.
-    let names = repo.worktrees().map_err(|e| format!("list worktrees: {e}"))?;
+    let names = repo
+        .worktrees()
+        .map_err(|e| format!("list worktrees: {e}"))?;
     let paths: Vec<PathBuf> = names
         .iter()
         .flatten()
-        .filter_map(|name| repo.find_worktree(name).ok().map(|wt| wt.path().to_path_buf()))
+        .filter_map(|name| {
+            repo.find_worktree(name)
+                .ok()
+                .map(|wt| wt.path().to_path_buf())
+        })
         .collect();
     // Bounded fan-out: up to 16 worktrees scanned at once per batch.
     for chunk in paths.chunks(16) {
         let batch: Vec<WorktreeEntry> = std::thread::scope(|s| {
-            let handles: Vec<_> = chunk.iter().map(|p| s.spawn(|| linked_worktree_entry(p))).collect();
-            handles.into_iter().filter_map(|h| h.join().ok().flatten()).collect()
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|p| s.spawn(|| linked_worktree_entry(p)))
+                .collect();
+            handles
+                .into_iter()
+                .filter_map(|h| h.join().ok().flatten())
+                .collect()
         });
         out.extend(batch);
     }
@@ -222,22 +234,41 @@ pub fn repo_display_name(repo_path: &str) -> String {
         .unwrap_or_else(|_| repo_name_from_path(repo_path))
 }
 
+/// Stable registry id for a repo: SHA256(common git dir)[..8]. Shared by every
+/// worktree of the repo, so per-repo settings (e.g. the base strategy) group
+/// under one entry no matter which worktree path was opened.
+pub fn repo_entry_id(repo: &git2::Repository) -> String {
+    let commondir = common_git_dir(repo).display().to_string();
+    let mut h = Sha256::new();
+    h.update(commondir.as_bytes());
+    h.finalize()[..8]
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
+}
+
 /// Registry repo entry for a git repo: keyed by the git commondir so linked
 /// worktrees group together. `root`/`name` describe the main worktree, not
 /// whichever worktree path was opened.
 pub fn git_repo_entry(repo: &git2::Repository) -> Result<RepoEntry, String> {
-    let commondir = common_git_dir(repo).display().to_string();
-    let mut h = Sha256::new();
-    h.update(commondir.as_bytes());
-    let id: String = h.finalize()[..8].iter().map(|b| format!("{:02x}", b)).collect();
+    let id = repo_entry_id(repo);
     let root = main_worktree_dir(repo)
         .map(|p| p.display().to_string())
         .or_else(|| repo.workdir().map(|p| p.display().to_string()))
         .unwrap_or_else(|| repo.path().display().to_string());
     let name = repo_name_from_path(&root);
-    let default_branch = resolve_base(repo, None).ok().map(|(label, _)| label);
+    let default_branch = crate::git::default_branch(repo).map(|(label, _)| label);
     let worktrees = list_git_worktrees(repo)?;
-    Ok(RepoEntry { id, root, name, default_branch, worktrees, vcs: VcsKind::Git, vcs_override: None })
+    Ok(RepoEntry {
+        id,
+        root,
+        name,
+        default_branch,
+        base_strategy: None,
+        worktrees,
+        vcs: VcsKind::Git,
+        vcs_override: None,
+    })
 }
 
 /// Minimal percent-encoder for URL query values (RFC 3986 unreserved set preserved).
@@ -245,7 +276,9 @@ pub fn enc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{:02X}", b)),
         }
     }
@@ -261,7 +294,12 @@ pub enum Opened {
 }
 
 /// The single choke point for "open this target". Focus-or-create, ≤1 per target.
-pub fn open_target_window(app: &AppHandle, repo_path: &str, mode: DiffMode, base: Option<String>) -> Result<Opened, String> {
+pub fn open_target_window(
+    app: &AppHandle,
+    repo_path: &str,
+    mode: DiffMode,
+    base: Option<String>,
+) -> Result<Opened, String> {
     let repo = Repo::open(repo_path)?;
     let canonical = repo.root().display().to_string();
     let worktree = repo.worktree_label()?;
@@ -300,7 +338,10 @@ pub fn open_target_window(app: &AppHandle, repo_path: &str, mode: DiffMode, base
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
             .hidden_title(true)
-            .traffic_light_position(tauri::LogicalPosition::new(TRAFFIC_LIGHT_X, TRAFFIC_LIGHT_Y));
+            .traffic_light_position(tauri::LogicalPosition::new(
+                TRAFFIC_LIGHT_X,
+                TRAFFIC_LIGHT_Y,
+            ));
     }
     let window = builder.build().map_err(|e| format!("create window: {e}"))?;
     #[cfg(target_os = "macos")]
@@ -341,9 +382,14 @@ pub fn open_home_window(app: &AppHandle) -> Result<(), String> {
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
             .hidden_title(true)
-            .traffic_light_position(tauri::LogicalPosition::new(TRAFFIC_LIGHT_X, TRAFFIC_LIGHT_Y));
+            .traffic_light_position(tauri::LogicalPosition::new(
+                TRAFFIC_LIGHT_X,
+                TRAFFIC_LIGHT_Y,
+            ));
     }
-    let window = builder.build().map_err(|e| format!("create home window: {e}"))?;
+    let window = builder
+        .build()
+        .map_err(|e| format!("create home window: {e}"))?;
     #[cfg(target_os = "macos")]
     keep_traffic_lights(&window);
     Ok(())
@@ -385,7 +431,10 @@ pub struct CliStatus {
 }
 
 /// Pure: pick the install dir. Prefer /usr/local/bin, else the first writable PATH dir.
-pub fn choose_install_dir(path_dirs: &[PathBuf], is_writable: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+pub fn choose_install_dir(
+    path_dirs: &[PathBuf],
+    is_writable: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
     path_dirs
         .iter()
         .find(|p| p.ends_with("usr/local/bin") && is_writable(p.as_path()))
@@ -415,7 +464,9 @@ fn link_into(dir: &Path, exe: &Path) -> Result<InstallOutcome, String> {
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(exe, &link).map_err(|e| format!("symlink: {e}"))?;
-        Ok(InstallOutcome::Linked { path: link.display().to_string() })
+        Ok(InstallOutcome::Linked {
+            path: link.display().to_string(),
+        })
     }
     #[cfg(not(unix))]
     {
@@ -433,7 +484,9 @@ const LEGACY_SHIMS: [&str; 2] = ["delta-review", "delta-review-dev"];
 /// this binary, in the dirs an install (or a manual `ln -s`) would have used.
 /// Only provably-ours links are touched; anything else stays.
 fn remove_legacy_shims(exe: &Path, extra_dir: Option<&Path>) {
-    let Some(real) = std::fs::canonicalize(exe).ok() else { return };
+    let Some(real) = std::fs::canonicalize(exe).ok() else {
+        return;
+    };
     let mut dirs = preferred_bin_dirs();
     if let Some(home) = std::env::var("HOME").ok() {
         dirs.push(PathBuf::from(home).join(".local/bin"));
@@ -459,7 +512,10 @@ fn remove_legacy_shims(exe: &Path, extra_dir: Option<&Path>) {
 /// PATH usually omits (launchd hands a minimal PATH). Linking here lets `delta`
 /// resolve in already-open and new terminals without touching any shell config.
 fn preferred_bin_dirs() -> Vec<PathBuf> {
-    vec![PathBuf::from("/usr/local/bin"), PathBuf::from("/opt/homebrew/bin")]
+    vec![
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+    ]
 }
 
 pub fn install_cli() -> Result<InstallOutcome, String> {
@@ -495,7 +551,11 @@ pub fn install_cli() -> Result<InstallOutcome, String> {
     }
 
     Ok(InstallOutcome::ManualNeeded {
-        command: format!("sudo ln -sf '{}' /usr/local/bin/{}", exe.display(), CLI_NAME),
+        command: format!(
+            "sudo ln -sf '{}' /usr/local/bin/{}",
+            exe.display(),
+            CLI_NAME
+        ),
         reason: "No writable directory found on your PATH.".into(),
     })
 }
@@ -514,16 +574,28 @@ pub fn cli_status() -> CliStatus {
     for dir in dirs {
         let link = dir.join(CLI_NAME);
         if fs::symlink_metadata(&link).is_ok() {
-            return CliStatus { supported: true, installed: true, path: Some(link.display().to_string()) };
+            return CliStatus {
+                supported: true,
+                installed: true,
+                path: Some(link.display().to_string()),
+            };
         }
     }
-    CliStatus { supported: true, installed: false, path: None }
+    CliStatus {
+        supported: true,
+        installed: false,
+        path: None,
+    }
 }
 
 /// The shim rides a unix socket and `open -b`, so it can't exist on Windows.
 #[cfg(not(unix))]
 pub fn cli_status() -> CliStatus {
-    CliStatus { supported: false, installed: false, path: None }
+    CliStatus {
+        supported: false,
+        installed: false,
+        path: None,
+    }
 }
 
 /// Tags the block we append to a shell config so re-running install is idempotent.
@@ -574,12 +646,18 @@ fn ensure_dir_on_path(home: &Path, dir: &Path) -> Vec<String> {
         .iter()
         .map(|f| home.join(f))
         .filter(|p| p.exists())
-        .fold(false, |acc, p| append_block_if_missing(&p, &posix_path_block(dir), false) || acc);
+        .fold(false, |acc, p| {
+            append_block_if_missing(&p, &posix_path_block(dir), false) || acc
+        });
     if bash_updated {
         updated.push("bash".to_string());
     }
     if home.join(".config/fish").is_dir() {
-        if append_block_if_missing(&home.join(".config/fish/config.fish"), &fish_path_block(dir), true) {
+        if append_block_if_missing(
+            &home.join(".config/fish/config.fish"),
+            &fish_path_block(dir),
+            true,
+        ) {
             updated.push("fish".to_string());
         }
     }
@@ -627,13 +705,16 @@ mod tests {
         // a fresh handle, so this asserts the enumeration is genuinely live (not cached).
         let (dir, repo) = repo_with_commit();
         let root = dir.path().to_str().unwrap();
-        assert_eq!(list_git_worktrees(&repo).unwrap().len(), 1, "main only before add");
+        assert_eq!(
+            list_git_worktrees(&repo).unwrap().len(),
+            1,
+            "main only before add"
+        );
 
-        let wt_path = dir
-            .path()
-            .parent()
-            .unwrap()
-            .join(format!("{}--cli", dir.path().file_name().unwrap().to_string_lossy()));
+        let wt_path = dir.path().parent().unwrap().join(format!(
+            "{}--cli",
+            dir.path().file_name().unwrap().to_string_lossy()
+        ));
         let out = std::process::Command::new("git")
             .arg("-C")
             .arg(dir.path())
@@ -641,12 +722,20 @@ mod tests {
             .arg(&wt_path)
             .output()
             .expect("run git worktree add");
-        assert!(out.status.success(), "git worktree add: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "git worktree add: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         let second = list_git_worktrees(&git2::Repository::open(root).unwrap()).unwrap();
         let branches: Vec<&str> = second.iter().map(|w| w.branch.as_str()).collect();
         let _ = std::fs::remove_dir_all(&wt_path);
-        assert_eq!(second.len(), 2, "new CLI worktree must appear; got {branches:?}");
+        assert_eq!(
+            second.len(),
+            2,
+            "new CLI worktree must appear; got {branches:?}"
+        );
         assert!(branches.contains(&"feat/cli"), "got {branches:?}");
     }
 
@@ -672,8 +761,14 @@ mod tests {
     fn parse_launch_no_mode_flag_is_none_not_all_changes() {
         // `None` is what lets the socket handler tell "no --mode given" (focus only)
         // from an explicit `--all` (switch the open window to all-changes).
-        assert_eq!(parse_launch(&["/abs/repo".into()], Path::new("/c")).mode, None);
-        assert_eq!(parse_launch(&["--all".into()], Path::new("/c")).mode, Some(DiffMode::AllChanges));
+        assert_eq!(
+            parse_launch(&["/abs/repo".into()], Path::new("/c")).mode,
+            None
+        );
+        assert_eq!(
+            parse_launch(&["--all".into()], Path::new("/c")).mode,
+            Some(DiffMode::AllChanges)
+        );
     }
 
     #[test]
@@ -696,15 +791,30 @@ mod tests {
 
     #[test]
     fn parse_launch_mode_flags() {
-        assert_eq!(parse_launch(&["--all".into()], Path::new("/c")).mode, Some(DiffMode::AllChanges));
-        assert_eq!(parse_launch(&["--uncommitted".into()], Path::new("/c")).mode, Some(DiffMode::Uncommitted));
-        assert_eq!(parse_launch(&["--last-commit".into()], Path::new("/c")).mode, Some(DiffMode::LastCommit));
-        assert_eq!(parse_launch(&["--branch".into()], Path::new("/c")).mode, Some(DiffMode::BranchVsBase));
+        assert_eq!(
+            parse_launch(&["--all".into()], Path::new("/c")).mode,
+            Some(DiffMode::AllChanges)
+        );
+        assert_eq!(
+            parse_launch(&["--uncommitted".into()], Path::new("/c")).mode,
+            Some(DiffMode::Uncommitted)
+        );
+        assert_eq!(
+            parse_launch(&["--last-commit".into()], Path::new("/c")).mode,
+            Some(DiffMode::LastCommit)
+        );
+        assert_eq!(
+            parse_launch(&["--branch".into()], Path::new("/c")).mode,
+            Some(DiffMode::BranchVsBase)
+        );
     }
 
     #[test]
     fn parse_launch_flag_then_path() {
-        let l = parse_launch(&["--uncommitted".into(), "/abs/repo".into()], Path::new("/c"));
+        let l = parse_launch(
+            &["--uncommitted".into(), "/abs/repo".into()],
+            Path::new("/c"),
+        );
         assert_eq!(l.repo_path, PathBuf::from("/abs/repo"));
         assert_eq!(l.mode, Some(DiffMode::Uncommitted));
     }
@@ -713,7 +823,10 @@ mod tests {
     fn launch_targets_non_repo_distinguishes_repo_from_plain_dir() {
         // Inside a repo (discover walks up) → valid, not rejected.
         let (repo_dir, _repo) = repo_with_commit();
-        assert!(!launch_targets_non_repo(&parse_launch(&[], repo_dir.path())));
+        assert!(!launch_targets_non_repo(&parse_launch(
+            &[],
+            repo_dir.path()
+        )));
         // A plain directory with no git anywhere above → rejected.
         let plain = tempfile::TempDir::new().unwrap();
         assert!(launch_targets_non_repo(&parse_launch(&[], plain.path())));
@@ -721,13 +834,22 @@ mod tests {
 
     #[test]
     fn choose_prefers_usr_local_bin_when_writable() {
-        let dirs = vec![PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")];
-        assert_eq!(choose_install_dir(&dirs, |_| true), Some(PathBuf::from("/usr/local/bin")));
+        let dirs = vec![
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+        ];
+        assert_eq!(
+            choose_install_dir(&dirs, |_| true),
+            Some(PathBuf::from("/usr/local/bin"))
+        );
     }
 
     #[test]
     fn choose_falls_back_to_first_writable() {
-        let dirs = vec![PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")];
+        let dirs = vec![
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+        ];
         let chosen = choose_install_dir(&dirs, |p: &Path| p.ends_with("homebrew/bin"));
         assert_eq!(chosen, Some(PathBuf::from("/opt/homebrew/bin")));
     }
@@ -785,9 +907,15 @@ mod tests {
 
         // zshrc was created; bash kept its original content + our block; fish wired.
         assert!(home.join(".zshrc").exists());
-        assert!(fs::read_to_string(home.join(".bashrc")).unwrap().contains("# mine"));
-        assert!(fs::read_to_string(home.join(".bashrc")).unwrap().contains(RC_MARKER));
-        assert!(fs::read_to_string(home.join(".config/fish/config.fish")).unwrap().contains("fish_add_path"));
+        assert!(fs::read_to_string(home.join(".bashrc"))
+            .unwrap()
+            .contains("# mine"));
+        assert!(fs::read_to_string(home.join(".bashrc"))
+            .unwrap()
+            .contains(RC_MARKER));
+        assert!(fs::read_to_string(home.join(".config/fish/config.fish"))
+            .unwrap()
+            .contains("fish_add_path"));
         // We never created a bash_profile the user didn't have.
         assert!(!home.join(".bash_profile").exists());
     }

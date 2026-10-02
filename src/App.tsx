@@ -43,7 +43,7 @@ export default function App() {
   // notify() channel so non-component actions can raise it from any call site. (#add-repo-nonrepo)
   const [notice, setNotice] = useState<Notice | null>(null);
   useEffect(() => onNotice(setNotice), []);
-  const { status, version, progress, download, restart } = useUpdater();
+  const updater = useUpdater();
   const [updateDismissed, setUpdateDismissed] = useState(false);
 
   useEffect(() => {
@@ -116,6 +116,7 @@ export default function App() {
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         target={route.kind === "review" ? route.target : undefined}
+        updater={updater}
       />
       <NoticeDialog
         open={notice != null}
@@ -125,11 +126,11 @@ export default function App() {
       />
       {!updateDismissed && (
         <UpdateBanner
-          status={status}
-          version={version}
-          progress={progress}
-          onDownload={download}
-          onRestart={() => void restart()}
+          status={updater.status}
+          version={updater.version}
+          progress={updater.progress}
+          onDownload={updater.download}
+          onRestart={() => void updater.restart()}
           onDismiss={() => setUpdateDismissed(true)}
         />
       )}

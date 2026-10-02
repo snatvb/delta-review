@@ -18,6 +18,9 @@ import type {
   FileTextResult,
   AppSettings,
   LocalDeltaIgnore,
+  BaseStrategy,
+  BranchList,
+  UpdaterSnapshot,
 } from "./types";
 
 // Transport indirection: a dev-only fixture backend (VITE_MOCK_IPC) can replace
@@ -71,6 +74,14 @@ export const api = {
   listPicker: (): Promise<PickerData> => invokeImpl("list_picker"),
   listWorktrees: (repoPath: string): Promise<WorktreeEntry[]> =>
     invokeImpl("list_worktrees", { repoPath }),
+  // Base-branch picker (#base): all branches + the fork-point suggestion, and the
+  // repo-wide base strategy (auto = detect the fork; branch = always this one).
+  listBranches: (repoPath: string): Promise<BranchList> =>
+    invokeImpl("list_branches", { repoPath }),
+  getBaseStrategy: (repoPath: string): Promise<BaseStrategy | null> =>
+    invokeImpl("get_base_strategy", { repoPath }),
+  setBaseStrategy: (repoPath: string, strategy: BaseStrategy | null): Promise<void> =>
+    invokeImpl("set_base_strategy", { repoPath, strategy }),
   importRepo: (): Promise<RepoEntry | null> => invokeImpl("import_repo"),
   openTarget: (repoPath: string, mode: DiffMode, base?: string): Promise<void> =>
     invokeImpl("open_target", { repoPath, mode, base }),
@@ -110,10 +121,14 @@ export const api = {
   // refuses the write (and leaves the file untouched).
   writeFileText: (target: Target, path: string, expectedHash: string, content: string): Promise<FileTextResult> =>
     invokeImpl("write_file_text", { target, path, expectedHash, content }),
-  // Process-wide updater leader election: the first window to call this gets
-  // `true` and runs the check/download; other windows get `false` and stay idle,
-  // so we never run concurrent downloads or .app replacements. (#updater-race)
-  acquireUpdaterGate: (): Promise<boolean> => invokeImpl("updater_try_acquire"),
+  // Self-updater lifecycle. The backend owns the check and the download
+  // (src-tauri/src/updater.rs) so a transfer survives the launcher window
+  // closing and every window sees the same state via `updater:state` events;
+  // `manual` marks checks that may re-run (Settings button, periodic timer) —
+  // the mount-time auto check runs at most once per process.
+  updaterStatus: (): Promise<UpdaterSnapshot> => invokeImpl("updater_status"),
+  updaterCheck: (manual: boolean): Promise<UpdaterSnapshot> => invokeImpl("updater_check", { manual }),
+  updaterDownload: (): Promise<UpdaterSnapshot> => invokeImpl("updater_download"),
   // True unless telemetry is disabled by build/env (debug build, DO_NOT_TRACK,
   // or DELTA_TELEMETRY=0). The user's Settings toggle is checked separately in
   // src/analytics.ts. SLEEPING TELEMETRY: dormant in this fork — unused at

@@ -9,6 +9,8 @@ export interface VcsProfile {
   modes: { id: DiffMode; label: string }[];
   /** Whether commit history features exist (stepper, commit picker, commit mode, pagination, [ / ] keys). */
   history: boolean;
+  /** Whether the base-branch picker exists (shown on modes that diff against a base). */
+  basePicker: boolean;
 }
 
 // Git keeps every mode and every history feature; SVN is working-copy-only.
@@ -22,11 +24,13 @@ const PROFILES: Record<VcsKind, VcsProfile> = {
       { id: "branch-vs-base", label: "Branch vs base" },
     ],
     history: true,
+    basePicker: true,
   },
   svn: {
     vcs: "svn",
     modes: [{ id: "uncommitted", label: "Uncommitted" }],
     history: false,
+    basePicker: false,
   },
 };
 

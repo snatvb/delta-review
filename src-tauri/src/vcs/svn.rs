@@ -11,10 +11,14 @@
 pub mod status;
 
 use crate::git::deltaignore::DeltaIgnore;
-use crate::git::diff::{DiffSummary, FileDiff, FileStatus, MAX_CACHED_FILE_BYTES, MAX_CACHED_SNAPSHOT_BYTES};
+use crate::git::diff::{
+    DiffSummary, FileDiff, FileStatus, MAX_CACHED_FILE_BYTES, MAX_CACHED_SNAPSHOT_BYTES,
+};
 use crate::git::model::Target;
 use crate::registry::model::{repo_name_from_path, RepoEntry, WorktreeEntry};
-use crate::vcs::{file_entry, FileHeader, FileSources, FullDiff, NewSide, OldSide, PinnedBase, VcsError, VcsKind};
+use crate::vcs::{
+    file_entry, FileHeader, FileSources, FullDiff, NewSide, OldSide, PinnedBase, VcsError, VcsKind,
+};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -40,7 +44,10 @@ impl SvnRepo {
     /// (The two labels produce different review ids; installing the CLI
     /// mid-review starts a fresh review. Documented in docs/svn.md.)
     pub fn worktree_label(&self) -> String {
-        info(&self.root).ok().map(|i| url_tail(&i.url)).unwrap_or_else(|| "svn".into())
+        info(&self.root)
+            .ok()
+            .map(|i| url_tail(&i.url))
+            .unwrap_or_else(|| "svn".into())
     }
 
     /// One checked-out working copy — SVN has no linked worktrees.
@@ -60,7 +67,10 @@ impl SvnRepo {
         let root = self.root.display().to_string();
         let mut h = Sha256::new();
         h.update(root.as_bytes());
-        let id: String = h.finalize()[..8].iter().map(|b| format!("{:02x}", b)).collect();
+        let id: String = h.finalize()[..8]
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect();
         RepoEntry {
             id,
             root,
@@ -69,6 +79,7 @@ impl SvnRepo {
             worktrees: self.list_worktrees(),
             vcs: VcsKind::Svn,
             vcs_override: None,
+            base_strategy: None,
         }
     }
 
@@ -90,8 +101,10 @@ impl SvnRepo {
         let mut held_bytes: usize = 0;
         for chunk in plans.chunks(16) {
             let slots: Vec<FileSlot> = std::thread::scope(|s| {
-                let handles: Vec<_> =
-                    chunk.iter().map(|p| s.spawn(|| self.extract_slot(p, &ignore, true))).collect();
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .map(|p| s.spawn(|| self.extract_slot(p, &ignore, true)))
+                    .collect();
                 handles
                     .into_iter()
                     .map(|h| h.join().expect("svn extract thread panicked"))
@@ -139,7 +152,9 @@ impl SvnRepo {
 
     pub fn fresh_sources(&self, _target: &Target, path: &str) -> Result<FileSources, VcsError> {
         let plan = self.plan_for(path)?;
-        Ok(self.extract_slot(&plan, &DeltaIgnore::for_svn(&self.root), false)?.sources)
+        Ok(self
+            .extract_slot(&plan, &DeltaIgnore::for_svn(&self.root), false)?
+            .sources)
     }
 
     fn plan_for(&self, path: &str) -> Result<FilePlan, VcsError> {
@@ -175,47 +190,69 @@ impl SvnRepo {
         let versioned = if removed.is_empty() {
             HashMap::new()
         } else {
-            let info_xml = status::run_with_targets(&self.root, &["info", "--xml", "--depth", "infinity"], &removed)?;
+            let info_xml = status::run_with_targets(
+                &self.root,
+                &["info", "--xml", "--depth", "infinity"],
+                &removed,
+            )?;
             parse_info(&info_xml).1
         };
         Ok(self.plans_from(entries, &versioned))
     }
 
-    fn plans_from(&self, entries: Vec<SvnStatusEntry>, versioned: &HashMap<String, String>) -> Vec<FilePlan> {
-        let is_versioned_dir =
-            |p: &str| versioned.get(p).map(|k| k == "dir").unwrap_or(false);
+    fn plans_from(
+        &self,
+        entries: Vec<SvnStatusEntry>,
+        versioned: &HashMap<String, String>,
+    ) -> Vec<FilePlan> {
+        let is_versioned_dir = |p: &str| versioned.get(p).map(|k| k == "dir").unwrap_or(false);
 
         let mut plans = Vec::new();
         for e in entries {
             let abs = self.root.join(&e.path);
             match e.item.as_str() {
-                "modified" | "conflicted" if !abs.is_dir() && !is_versioned_dir(&e.path) => {
-                    plans.push(FilePlan { rel: e.path, status: FileStatus::Modified, has_base: true })
-                }
+                "modified" | "conflicted" if !abs.is_dir() && !is_versioned_dir(&e.path) => plans
+                    .push(FilePlan {
+                        rel: e.path,
+                        status: FileStatus::Modified,
+                        has_base: true,
+                    }),
                 // v1 limitation (verified against 1.14.5): a replaced file
                 // has no pristine until it's committed — `svn cat -r BASE`
                 // fails with E200009 and the pre-replace content is only
                 // reachable through the server. Rather than error the whole
                 // diff or fake a missing side silently, a replacement
                 // reviews as an added file. See docs/svn.md.
-                "replaced" if !abs.is_dir() && !is_versioned_dir(&e.path) => {
-                    plans.push(FilePlan { rel: e.path, status: FileStatus::Added, has_base: false })
-                }
+                "replaced" if !abs.is_dir() && !is_versioned_dir(&e.path) => plans.push(FilePlan {
+                    rel: e.path,
+                    status: FileStatus::Added,
+                    has_base: false,
+                }),
                 // Both scheduled deletes (svn rm) and missing files (deleted
                 // behind svn's back) review against BASE with no new side.
                 "deleted" | "missing" => {
                     if is_versioned_dir(&e.path) {
                         let prefix = format!("{}/", e.path);
                         for file in versioned_files_under(versioned, &prefix) {
-                            plans.push(FilePlan { rel: file, status: FileStatus::Deleted, has_base: true });
+                            plans.push(FilePlan {
+                                rel: file,
+                                status: FileStatus::Deleted,
+                                has_base: true,
+                            });
                         }
                     } else {
-                        plans.push(FilePlan { rel: e.path, status: FileStatus::Deleted, has_base: true })
+                        plans.push(FilePlan {
+                            rel: e.path,
+                            status: FileStatus::Deleted,
+                            has_base: true,
+                        })
                     }
                 }
-                "added" if !abs.is_dir() && !is_versioned_dir(&e.path) => {
-                    plans.push(FilePlan { rel: e.path, status: FileStatus::Added, has_base: false })
-                }
+                "added" if !abs.is_dir() && !is_versioned_dir(&e.path) => plans.push(FilePlan {
+                    rel: e.path,
+                    status: FileStatus::Added,
+                    has_base: false,
+                }),
                 "unversioned" => {
                     if abs.is_dir() {
                         // svn lists an unversioned directory as a single entry
@@ -224,10 +261,18 @@ impl SvnRepo {
                         // unversioned directories are not re-applied in v1 —
                         // `.deltaignore` still is.
                         for rel in walk_files(&self.root, &abs) {
-                            plans.push(FilePlan { rel, status: FileStatus::Added, has_base: false });
+                            plans.push(FilePlan {
+                                rel,
+                                status: FileStatus::Added,
+                                has_base: false,
+                            });
                         }
                     } else {
-                        plans.push(FilePlan { rel: e.path, status: FileStatus::Added, has_base: false })
+                        plans.push(FilePlan {
+                            rel: e.path,
+                            status: FileStatus::Added,
+                            has_base: false,
+                        })
                     }
                 }
                 _ => {}
@@ -269,37 +314,57 @@ impl SvnRepo {
         } else {
             None
         };
-        let new_bytes_raw = if over_cap { None } else { std::fs::read(&abs).ok() };
+        let new_bytes_raw = if over_cap {
+            None
+        } else {
+            std::fs::read(&abs).ok()
+        };
         let (old_bytes, new_bytes) = normalize_eol(old_bytes, new_bytes_raw);
 
-        let binary = old_bytes.as_deref().map(crate::git::diff::looks_binary).unwrap_or(false)
+        let binary = old_bytes
+            .as_deref()
+            .map(crate::git::diff::looks_binary)
+            .unwrap_or(false)
             || if over_cap {
                 peek_binary(&abs)
             } else {
-                new_bytes.as_deref().map(crate::git::diff::looks_binary).unwrap_or(false)
+                new_bytes
+                    .as_deref()
+                    .map(crate::git::diff::looks_binary)
+                    .unwrap_or(false)
             };
         let ignored = ignore.is_ignored(&plan.rel);
         let (additions, deletions) = if ignored || binary || over_cap {
             (0, 0)
         } else {
-            let old_text =
-                old_bytes.as_deref().map(|b| String::from_utf8_lossy(b).into_owned());
-            let new_text =
-                new_bytes.as_deref().map(|b| String::from_utf8_lossy(b).into_owned());
+            let old_text = old_bytes
+                .as_deref()
+                .map(|b| String::from_utf8_lossy(b).into_owned());
+            let new_text = new_bytes
+                .as_deref()
+                .map(|b| String::from_utf8_lossy(b).into_owned());
             line_stats_of(old_text.as_deref(), new_text.as_deref())
         };
 
-        let bytes = (old_bytes.as_ref().map(|b| b.len()).unwrap_or(0) as u64)
-            .max(new_len.unwrap_or(0));
-        let entry = file_entry(plan.rel.clone(), plan.status, additions, deletions, binary, bytes, ignored);
+        let bytes =
+            (old_bytes.as_ref().map(|b| b.len()).unwrap_or(0) as u64).max(new_len.unwrap_or(0));
+        let entry = file_entry(
+            plan.rel.clone(),
+            plan.status,
+            additions,
+            deletions,
+            binary,
+            bytes,
+            ignored,
+        );
 
         // Pin binary BASE sides (and mark over-cap ones unavailable) so a
         // served snapshot never re-reads a BASE that may have moved.
         let pinned = if plan.has_base && for_snapshot {
             if over_cap {
                 Some(PinnedBase::Unavailable)
-            } else if binary && old_bytes.as_ref().map(|b| b.len()).unwrap_or(0) as u64
-                <= MAX_CACHED_FILE_BYTES
+            } else if binary
+                && old_bytes.as_ref().map(|b| b.len()).unwrap_or(0) as u64 <= MAX_CACHED_FILE_BYTES
             {
                 Some(PinnedBase::Bytes(Arc::new(
                     old_bytes.clone().expect("binary under cap read its BASE"),
@@ -313,7 +378,11 @@ impl SvnRepo {
 
         let header = FileHeader::new(
             plan.status,
-            if plan.has_base { Some(plan.rel.clone()) } else { None },
+            if plan.has_base {
+                Some(plan.rel.clone())
+            } else {
+                None
+            },
             Some(plan.rel.clone()),
             binary,
         );
@@ -327,13 +396,23 @@ impl SvnRepo {
             + pinned_len;
         let sources = FileSources::new(
             if plan.has_base {
-                OldSide::SvnBase { root: self.root.clone(), rel: plan.rel.clone(), pinned }
+                OldSide::SvnBase {
+                    root: self.root.clone(),
+                    rel: plan.rel.clone(),
+                    pinned,
+                }
             } else {
                 OldSide::Absent
             },
             NewSide::WorkTree(abs),
         );
-        Ok(FileSlot { entry, file_diff, sources, header, extracted_bytes })
+        Ok(FileSlot {
+            entry,
+            file_diff,
+            sources,
+            header,
+            extracted_bytes,
+        })
     }
 }
 
@@ -456,13 +535,20 @@ pub(crate) fn debug_log_path() -> Option<PathBuf> {
 fn log_svn(line: &str) {
     use std::io::Write;
     let Some(path) = debug_log_path() else { return };
-    if std::fs::metadata(&path).map(|m| m.len() > 2 * 1024 * 1024).unwrap_or(false) {
+    if std::fs::metadata(&path)
+        .map(|m| m.len() > 2 * 1024 * 1024)
+        .unwrap_or(false)
+    {
         let _ = std::fs::remove_file(&path);
     }
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         let _ = writeln!(file, "[{ts}] {line}");
     }
@@ -480,7 +566,10 @@ fn run_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, VcsError> {
         missing_svn_error()
     })?;
     let mut command = std::process::Command::new(bin);
-    command.arg("--non-interactive").args(args).current_dir(root);
+    command
+        .arg("--non-interactive")
+        .args(args)
+        .current_dir(root);
     hide_console_window(&mut command);
     let output = command.output();
     match output {
@@ -547,7 +636,11 @@ fn info(root: &Path) -> Result<Arc<SvnInfo>, VcsError> {
     let stamp = std::fs::metadata(root.join(".svn/wc.db"))
         .and_then(|m| m.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH);
-    if let Some((t, cached)) = INFO_CACHE.read().unwrap_or_else(|e| e.into_inner()).get(root) {
+    if let Some((t, cached)) = INFO_CACHE
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(root)
+    {
         if *t == stamp {
             return Ok(cached.clone());
         }
@@ -789,7 +882,10 @@ pub(crate) fn normalizes_eol(old: Option<&[u8]>, new: Option<&[u8]>) -> bool {
     }
 }
 
-pub(crate) fn normalize_eol(old: Option<Vec<u8>>, new: Option<Vec<u8>>) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+pub(crate) fn normalize_eol(
+    old: Option<Vec<u8>>,
+    new: Option<Vec<u8>>,
+) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
     if !normalizes_eol(old.as_deref(), new.as_deref()) {
         return (old, new);
     }
@@ -821,7 +917,9 @@ fn walk_files(root: &Path, dir: &Path) -> Vec<String> {
 }
 
 fn walk_into(root: &Path, dir: &Path, out: &mut Vec<String>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name();
@@ -911,9 +1009,16 @@ mod tests {
     #[test]
     fn parses_info_url_and_kinds() {
         let (url, kinds) = parse_info(INFO_XML);
-        assert_eq!(url.as_deref(), Some("file:///tmp/re%20po/trunk"), "first entry's url only");
+        assert_eq!(
+            url.as_deref(),
+            Some("file:///tmp/re%20po/trunk"),
+            "first entry's url only"
+        );
         assert_eq!(kinds.get(".").map(String::as_str), Some("dir"));
-        assert_eq!(kinds.get("src/deep/one.txt").map(String::as_str), Some("file"));
+        assert_eq!(
+            kinds.get("src/deep/one.txt").map(String::as_str),
+            Some("file")
+        );
         assert_eq!(kinds.get("src/deep").map(String::as_str), Some("dir"));
     }
 
@@ -943,10 +1048,22 @@ mod tests {
 
     #[test]
     fn crlf_heuristic_requires_crlf_working_and_lf_or_crlf_base() {
-        assert!(normalizes_eol(Some(b"a\nb\n".as_slice()), Some(b"a\r\nb\r\n".as_slice())));
-        assert!(normalizes_eol(Some(b"a\r\n".as_slice()), Some(b"a\r\n".as_slice())));
-        assert!(!normalizes_eol(Some(b"a\rb".as_slice()), Some(b"a\r\n".as_slice())));
-        assert!(!normalizes_eol(Some(b"a\n".as_slice()), Some(b"b\n".as_slice())));
+        assert!(normalizes_eol(
+            Some(b"a\nb\n".as_slice()),
+            Some(b"a\r\nb\r\n".as_slice())
+        ));
+        assert!(normalizes_eol(
+            Some(b"a\r\n".as_slice()),
+            Some(b"a\r\n".as_slice())
+        ));
+        assert!(!normalizes_eol(
+            Some(b"a\rb".as_slice()),
+            Some(b"a\r\n".as_slice())
+        ));
+        assert!(!normalizes_eol(
+            Some(b"a\n".as_slice()),
+            Some(b"b\n".as_slice())
+        ));
         assert!(!normalizes_eol(None, Some(b"a\r\n".as_slice())));
     }
 
@@ -966,7 +1083,10 @@ mod tests {
         std::fs::write(dir.path().join("top.txt"), b"").unwrap();
         let mut files = walk_files(dir.path(), dir.path());
         files.sort();
-        assert_eq!(files, vec!["sub/keep.txt".to_string(), "top.txt".to_string()]);
+        assert_eq!(
+            files,
+            vec!["sub/keep.txt".to_string(), "top.txt".to_string()]
+        );
     }
 
     #[test]
@@ -989,7 +1109,10 @@ mod tests {
         let hit = tempfile::TempDir::new().unwrap();
         std::fs::write(hit.path().join(svn_names()[0]), b"").unwrap();
         let expect = hit.path().join(svn_names()[0]);
-        assert_eq!(find_svn(vec![empty.path().to_path_buf(), hit.path().to_path_buf()]), Some(expect));
+        assert_eq!(
+            find_svn(vec![empty.path().to_path_buf(), hit.path().to_path_buf()]),
+            Some(expect)
+        );
         // A completely empty candidate list resolves to nothing.
         assert_eq!(find_svn(Vec::<PathBuf>::new()), None);
         // The extra probe dirs are just dirs — the same scan applies to them.
@@ -1028,7 +1151,11 @@ mod tests {
             .arg(&wc)
             .output()
             .expect("svn checkout");
-        assert!(out.status.success(), "svn checkout: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "svn checkout: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         Some((dir, SvnRepo::new(wc)))
     }
 
@@ -1077,12 +1204,17 @@ mod tests {
 
     #[test]
     fn uncommitted_reports_all_local_states_with_content() {
-        let Some((dir, repo)) = scratch_wc() else { return };
+        let Some((dir, repo)) = scratch_wc() else {
+            return;
+        };
         let wc = dir.path().join("wc");
         write(&wc, "src/a.txt", b"line1\nline2\n");
         write(&wc, "gone.txt", b"gone\n");
         write(&wc, "file with spaces.txt", b"spaces\n");
-        svn(&wc, &["add", "-q", "src", "gone.txt", "file with spaces.txt"]);
+        svn(
+            &wc,
+            &["add", "-q", "src", "gone.txt", "file with spaces.txt"],
+        );
         svn(&wc, &["ci", "-q", "-m", "init"]);
         // Local states: M, A, D, !, ? — created with no commit in between.
         write(&wc, "src/a.txt", b"line1\nCHANGED\nline2\n");
@@ -1093,13 +1225,30 @@ mod tests {
         write(&wc, "src/untracked.txt", b"untracked\n");
 
         let full = repo.compute_diff_full(&target(&wc)).unwrap();
-        let by_path = |p: &str| full.summary.files.iter().find(|f| f.path == p).unwrap().clone();
+        let by_path = |p: &str| {
+            full.summary
+                .files
+                .iter()
+                .find(|f| f.path == p)
+                .unwrap()
+                .clone()
+        };
 
         let modified = by_path("src/a.txt");
         assert_eq!(modified.status, FileStatus::Modified);
-        assert_eq!((modified.additions, modified.deletions), (1, 0), "an inserted line; LCS keeps line1/line2");
-        assert_eq!(full.files["src/a.txt"].old_content.as_deref(), Some("line1\nline2\n"));
-        assert_eq!(full.files["src/a.txt"].new_content.as_deref(), Some("line1\nCHANGED\nline2\n"));
+        assert_eq!(
+            (modified.additions, modified.deletions),
+            (1, 0),
+            "an inserted line; LCS keeps line1/line2"
+        );
+        assert_eq!(
+            full.files["src/a.txt"].old_content.as_deref(),
+            Some("line1\nline2\n")
+        );
+        assert_eq!(
+            full.files["src/a.txt"].new_content.as_deref(),
+            Some("line1\nCHANGED\nline2\n")
+        );
 
         let added = by_path("src/added.txt");
         assert_eq!(added.status, FileStatus::Added);
@@ -1108,16 +1257,25 @@ mod tests {
 
         let deleted = by_path("file with spaces.txt");
         assert_eq!(deleted.status, FileStatus::Deleted);
-        assert_eq!(full.files["file with spaces.txt"].old_content.as_deref(), Some("spaces\n"));
+        assert_eq!(
+            full.files["file with spaces.txt"].old_content.as_deref(),
+            Some("spaces\n")
+        );
         assert_eq!(full.files["file with spaces.txt"].new_content, None);
 
         let missing = by_path("gone.txt");
         assert_eq!(missing.status, FileStatus::Deleted);
-        assert_eq!(full.files["gone.txt"].old_content.as_deref(), Some("gone\n"));
+        assert_eq!(
+            full.files["gone.txt"].old_content.as_deref(),
+            Some("gone\n")
+        );
 
         let untracked = by_path("src/untracked.txt");
         assert_eq!(untracked.status, FileStatus::Added);
-        assert_eq!(full.files["src/untracked.txt"].new_content.as_deref(), Some("untracked\n"));
+        assert_eq!(
+            full.files["src/untracked.txt"].new_content.as_deref(),
+            Some("untracked\n")
+        );
 
         // No property-only directory rows, and the labels describe the anchor.
         assert!(full.summary.files.iter().all(|f| f.path != "src"));
@@ -1127,7 +1285,9 @@ mod tests {
 
     #[test]
     fn deleted_directory_expands_to_its_files() {
-        let Some((dir, repo)) = scratch_wc() else { return };
+        let Some((dir, repo)) = scratch_wc() else {
+            return;
+        };
         let wc = dir.path().join("wc");
         write(&wc, "src/deep/one.txt", b"a\n");
         write(&wc, "src/deep/two.txt", b"b\n");
@@ -1139,20 +1299,39 @@ mod tests {
 
         let full = repo.compute_diff_full(&target(&wc)).unwrap();
         let paths: HashSet<&str> = full.summary.files.iter().map(|f| f.path.as_str()).collect();
-        assert!(!paths.contains("src/deep"), "the directory row must not be a file entry");
-        assert!(paths.contains("src/deep/one.txt"), "member files must appear; got {paths:?}");
+        assert!(
+            !paths.contains("src/deep"),
+            "the directory row must not be a file entry"
+        );
+        assert!(
+            paths.contains("src/deep/one.txt"),
+            "member files must appear; got {paths:?}"
+        );
         assert!(paths.contains("src/deep/two.txt"));
-        assert!(!paths.contains("src/top.txt"), "siblings outside the deleted dir stay clean");
-        let one = full.summary.files.iter().find(|f| f.path == "src/deep/one.txt").unwrap();
+        assert!(
+            !paths.contains("src/top.txt"),
+            "siblings outside the deleted dir stay clean"
+        );
+        let one = full
+            .summary
+            .files
+            .iter()
+            .find(|f| f.path == "src/deep/one.txt")
+            .unwrap();
         assert_eq!(one.status, FileStatus::Deleted);
         assert_eq!((one.additions, one.deletions), (0, 1));
-        assert_eq!(full.files["src/deep/one.txt"].old_content.as_deref(), Some("a\n"));
+        assert_eq!(
+            full.files["src/deep/one.txt"].old_content.as_deref(),
+            Some("a\n")
+        );
         assert_eq!(full.files["src/deep/one.txt"].new_content, None);
     }
 
     #[test]
     fn missing_directory_removed_behind_svns_back_also_expands() {
-        let Some((dir, repo)) = scratch_wc() else { return };
+        let Some((dir, repo)) = scratch_wc() else {
+            return;
+        };
         let wc = dir.path().join("wc");
         write(&wc, "pkg/lib/util.txt", b"u\n");
         svn(&wc, &["add", "-q", "pkg"]);
@@ -1167,12 +1346,17 @@ mod tests {
             .find(|f| f.path == "pkg/lib/util.txt")
             .expect("the missing dir's files must appear");
         assert_eq!(util.status, FileStatus::Deleted);
-        assert_eq!(full.files["pkg/lib/util.txt"].old_content.as_deref(), Some("u\n"));
+        assert_eq!(
+            full.files["pkg/lib/util.txt"].old_content.as_deref(),
+            Some("u\n")
+        );
     }
 
     #[test]
     fn replaced_file_reviews_as_added_in_v1() {
-        let Some((dir, repo)) = scratch_wc() else { return };
+        let Some((dir, repo)) = scratch_wc() else {
+            return;
+        };
         let wc = dir.path().join("wc");
         write(&wc, "replace.txt", b"orig\n");
         svn(&wc, &["add", "-q", "replace.txt"]);
@@ -1185,15 +1369,25 @@ mod tests {
         svn(&wc, &["add", "-q", "replace.txt"]);
 
         let full = repo.compute_diff_full(&target(&wc)).unwrap();
-        let entry = full.summary.files.iter().find(|f| f.path == "replace.txt").unwrap();
+        let entry = full
+            .summary
+            .files
+            .iter()
+            .find(|f| f.path == "replace.txt")
+            .unwrap();
         assert_eq!(entry.status, FileStatus::Added);
         assert_eq!(full.files["replace.txt"].old_content, None);
-        assert_eq!(full.files["replace.txt"].new_content.as_deref(), Some("replaced\n"));
+        assert_eq!(
+            full.files["replace.txt"].new_content.as_deref(),
+            Some("replaced\n")
+        );
     }
 
     #[test]
     fn unversioned_directories_descend_into_files() {
-        let Some((dir, repo)) = scratch_wc() else { return };
+        let Some((dir, repo)) = scratch_wc() else {
+            return;
+        };
         let wc = dir.path().join("wc");
         write(&wc, "keep.txt", b"committed\n");
         svn(&wc, &["add", "-q", "keep.txt"]);
@@ -1208,12 +1402,19 @@ mod tests {
             .find(|f| f.path == "unversioned_dir/nested/deep.txt")
             .expect("unversioned dir contents must be walked");
         assert_eq!(deep.status, FileStatus::Added);
-        assert_eq!(full.files["unversioned_dir/nested/deep.txt"].new_content.as_deref(), Some("deep\n"));
+        assert_eq!(
+            full.files["unversioned_dir/nested/deep.txt"]
+                .new_content
+                .as_deref(),
+            Some("deep\n")
+        );
     }
 
     #[test]
     fn single_file_fetch_resolves_nested_modified_and_unversioned_files() {
-        let Some((dir, repo)) = scratch_wc() else { return };
+        let Some((dir, repo)) = scratch_wc() else {
+            return;
+        };
         let wc = dir.path().join("wc");
         write(&wc, "src/deep/a.txt", b"one\n");
         svn(&wc, &["add", "-q", "src"]);
@@ -1224,19 +1425,29 @@ mod tests {
         let modified = repo.get_file_diff(&target(&wc), "src/deep/a.txt").unwrap();
         assert_eq!(modified.old_content.as_deref(), Some("one\n"));
         assert_eq!(modified.new_content.as_deref(), Some("one\ntwo\n"));
-        let unversioned = repo.get_file_diff(&target(&wc), "loose/nested/b.txt").unwrap();
+        let unversioned = repo
+            .get_file_diff(&target(&wc), "loose/nested/b.txt")
+            .unwrap();
         assert_eq!(unversioned.new_content.as_deref(), Some("loose\n"));
-        assert!(repo.get_file_diff(&target(&wc), "src/untouched.txt").is_err());
+        assert!(repo
+            .get_file_diff(&target(&wc), "src/untouched.txt")
+            .is_err());
     }
 
     fn changed_paths(repo: &SvnRepo, wc: &Path) -> Vec<(String, FileStatus)> {
         let full = repo.compute_diff_full(&target(wc)).unwrap();
-        full.summary.files.iter().map(|f| (f.path.clone(), f.status)).collect()
+        full.summary
+            .files
+            .iter()
+            .map(|f| (f.path.clone(), f.status))
+            .collect()
     }
 
     #[test]
     fn watched_changes_refresh_through_targeted_status_until_wc_db_moves() {
-        let Some((dir, repo)) = scratch_wc() else { return };
+        let Some((dir, repo)) = scratch_wc() else {
+            return;
+        };
         let wc = dir.path().join("wc");
         write(&wc, "keep.txt", b"committed\n");
         svn(&wc, &["add", "-q", "keep.txt"]);
@@ -1248,47 +1459,78 @@ mod tests {
 
         write(&wc, "keep.txt", b"changed\n");
         write(&wc, "fresh/nested/new.txt", b"new\n");
-        status::record_changes(&wc, ["keep.txt".to_string(), "fresh/nested/new.txt".to_string()], false);
+        status::record_changes(
+            &wc,
+            ["keep.txt".to_string(), "fresh/nested/new.txt".to_string()],
+            false,
+        );
         assert_eq!(
             changed_paths(&repo, &wc),
-            vec![("fresh/nested/new.txt".to_string(), FileStatus::Added), ("keep.txt".to_string(), FileStatus::Modified)],
+            vec![
+                ("fresh/nested/new.txt".to_string(), FileStatus::Added),
+                ("keep.txt".to_string(), FileStatus::Modified)
+            ],
         );
 
         write(&wc, "keep.txt", b"committed\n");
         std::fs::remove_dir_all(wc.join("fresh")).unwrap();
         status::record_changes(&wc, ["keep.txt".to_string(), "fresh".to_string()], false);
         assert!(changed_paths(&repo, &wc).is_empty());
-        assert_eq!(status::full_runs(&wc), 1, "watched edits never re-run the whole-copy status");
+        assert_eq!(
+            status::full_runs(&wc),
+            1,
+            "watched edits never re-run the whole-copy status"
+        );
 
         write(&wc, "added.txt", b"a\n");
         svn(&wc, &["add", "-q", "added.txt"]);
-        assert_eq!(changed_paths(&repo, &wc), vec![("added.txt".to_string(), FileStatus::Added)]);
-        assert_eq!(status::full_runs(&wc), 2, "an svn operation moves wc.db and forces a full status");
+        assert_eq!(
+            changed_paths(&repo, &wc),
+            vec![("added.txt".to_string(), FileStatus::Added)]
+        );
+        assert_eq!(
+            status::full_runs(&wc),
+            2,
+            "an svn operation moves wc.db and forces a full status"
+        );
         status::watch_stopped(&wc);
     }
 
     #[test]
     fn slow_copies_open_on_the_last_known_list_and_verify_in_the_background() {
-        let Some((dir, repo)) = scratch_wc() else { return };
+        let Some((dir, repo)) = scratch_wc() else {
+            return;
+        };
         let wc = dir.path().join("wc");
         status::seed_slow_baseline(&wc, Vec::new());
         status::watch_started(&wc);
         write(&wc, "late.txt", b"late\n");
 
-        assert!(changed_paths(&repo, &wc).is_empty(), "the last known list is served without waiting");
+        assert!(
+            changed_paths(&repo, &wc).is_empty(),
+            "the last known list is served without waiting"
+        );
         let deadline = Instant::now() + std::time::Duration::from_secs(20);
         while !status::is_verified_and_tracked(&wc) {
-            assert!(Instant::now() < deadline, "background verification never finished");
+            assert!(
+                Instant::now() < deadline,
+                "background verification never finished"
+            );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert_eq!(changed_paths(&repo, &wc), vec![("late.txt".to_string(), FileStatus::Added)]);
+        assert_eq!(
+            changed_paths(&repo, &wc),
+            vec![("late.txt".to_string(), FileStatus::Added)]
+        );
         assert_eq!(status::full_runs(&wc), 1);
         status::watch_stopped(&wc);
     }
 
     #[test]
     fn deltaignore_mutes_svn_files_like_git_ones() {
-        let Some((dir, repo)) = scratch_wc() else { return };
+        let Some((dir, repo)) = scratch_wc() else {
+            return;
+        };
         let wc = dir.path().join("wc");
         write(&wc, "src/a.txt", b"one\n");
         write(&wc, "gen/g.ts", b"generated\n");
@@ -1300,10 +1542,18 @@ mod tests {
         svn(&wc, &["add", "-q", "--no-ignore", ".deltaignore"]);
 
         let full = repo.compute_diff_full(&target(&wc)).unwrap();
-        let gen = full.summary.files.iter().find(|f| f.path == "gen/g.ts").unwrap();
+        let gen = full
+            .summary
+            .files
+            .iter()
+            .find(|f| f.path == "gen/g.ts")
+            .unwrap();
         assert!(gen.ignored);
         assert_eq!((gen.additions, gen.deletions), (0, 0));
-        assert!(!full.files.contains_key("gen/g.ts"), "ignored content must not be retained");
+        assert!(
+            !full.files.contains_key("gen/g.ts"),
+            "ignored content must not be retained"
+        );
         // …but still extractable on demand, like git.
         let fd = repo.get_file_diff(&target(&wc), "gen/g.ts").unwrap();
         assert_eq!(fd.new_content.as_deref(), Some("generated more\n"));
@@ -1311,7 +1561,9 @@ mod tests {
 
     #[test]
     fn local_deltaignore_for_svn_lives_outside_the_working_copy() {
-        let Some((dir, repo)) = scratch_wc() else { return };
+        let Some((dir, repo)) = scratch_wc() else {
+            return;
+        };
         let wc = dir.path().join("wc");
         let app_data = tempfile::TempDir::new().unwrap();
         crate::git::deltaignore::set_svn_local_dir(app_data.path().join("svn-local-deltaignore"));
@@ -1320,7 +1572,14 @@ mod tests {
 
         DeltaIgnore::write_svn_local_rules(&wc, "vendor/\n").unwrap();
         let full = repo.compute_diff_full(&target(&wc)).unwrap();
-        let ignored = |p: &str| full.summary.files.iter().find(|f| f.path == p).unwrap().ignored;
+        let ignored = |p: &str| {
+            full.summary
+                .files
+                .iter()
+                .find(|f| f.path == p)
+                .unwrap()
+                .ignored
+        };
         assert!(ignored("vendor/big.txt"));
         assert!(!ignored("src/a.txt"));
         assert_eq!(DeltaIgnore::svn_local_rules(&wc), "vendor/\n");
@@ -1330,11 +1589,16 @@ mod tests {
 
     #[test]
     fn crlf_working_copy_against_lf_base_is_normalized() {
-        let Some((dir, repo)) = scratch_wc() else { return };
+        let Some((dir, repo)) = scratch_wc() else {
+            return;
+        };
         let wc = dir.path().join("wc");
         write(&wc, "eol.txt", b"lf\nlf\n");
         svn(&wc, &["add", "-q", "eol.txt"]);
-        svn(&wc, &["propset", "-q", "svn:eol-style", "native", "eol.txt"]);
+        svn(
+            &wc,
+            &["propset", "-q", "svn:eol-style", "native", "eol.txt"],
+        );
         svn(&wc, &["ci", "-q", "-m", "eol"]);
         // The working copy carries CRLF; the repo (BASE) form is LF.
         std::fs::write(wc.join("eol.txt"), b"lf\r\nCHANGED\r\n").unwrap();
@@ -1343,13 +1607,24 @@ mod tests {
         let fd = &full.files["eol.txt"];
         assert_eq!(fd.old_content.as_deref(), Some("lf\nlf\n"));
         assert_eq!(fd.new_content.as_deref(), Some("lf\nCHANGED\n"));
-        let entry = full.summary.files.iter().find(|f| f.path == "eol.txt").unwrap();
-        assert_eq!((entry.additions, entry.deletions), (1, 1), "no spurious whole-file CRLF diff");
+        let entry = full
+            .summary
+            .files
+            .iter()
+            .find(|f| f.path == "eol.txt")
+            .unwrap();
+        assert_eq!(
+            (entry.additions, entry.deletions),
+            (1, 1),
+            "no spurious whole-file CRLF diff"
+        );
     }
 
     #[test]
     fn binary_files_are_flagged_content_dropped_and_old_side_pinned() {
-        let Some((dir, repo)) = scratch_wc() else { return };
+        let Some((dir, repo)) = scratch_wc() else {
+            return;
+        };
         let wc = dir.path().join("wc");
         let old_png = [0x89u8, b'O', b'L', b'D', 0x00, 0x01];
         write(&wc, "logo.png", &old_png);
@@ -1359,7 +1634,12 @@ mod tests {
         write(&wc, "logo.png", &new_png);
 
         let full = repo.compute_diff_full(&target(&wc)).unwrap();
-        let entry = full.summary.files.iter().find(|f| f.path == "logo.png").unwrap();
+        let entry = full
+            .summary
+            .files
+            .iter()
+            .find(|f| f.path == "logo.png")
+            .unwrap();
         assert!(entry.binary);
         assert!(full.files["logo.png"].old_content.is_none());
         assert!(full.files["logo.png"].new_content.is_none());
@@ -1372,7 +1652,10 @@ mod tests {
         assert_eq!(sizes.old_size, Some(old_png.len() as u64));
         assert_eq!(sizes.new_size, Some(new_png.len() as u64));
         assert_eq!(
-            vcs_repo.read_source(sources, crate::vcs::BlobSide::Old).unwrap().as_deref(),
+            vcs_repo
+                .read_source(sources, crate::vcs::BlobSide::Old)
+                .unwrap()
+                .as_deref(),
             Some(&old_png[..]),
             "the old side must answer from the pinned bytes"
         );
@@ -1380,7 +1663,10 @@ mod tests {
         // The BASE moves (commit) — the pinned old side must NOT follow it.
         svn(&wc, &["ci", "-q", "-m", "new logo"]);
         assert_eq!(
-            vcs_repo.read_source(sources, crate::vcs::BlobSide::Old).unwrap().as_deref(),
+            vcs_repo
+                .read_source(sources, crate::vcs::BlobSide::Old)
+                .unwrap()
+                .as_deref(),
             Some(&old_png[..]),
             "a served snapshot's old side is frozen at capture time"
         );
@@ -1389,8 +1675,12 @@ mod tests {
     #[test]
     fn comments_reanchor_and_viewed_reset_across_refresh_for_svn() {
         use crate::git::cache::DiffCache;
-        use crate::review::model::{Anchor, Comment, CommentScope, Review, Side, Snapshot, ViewedEntry};
-        let Some((dir, repo)) = scratch_wc() else { return };
+        use crate::review::model::{
+            Anchor, Comment, CommentScope, Review, Side, Snapshot, ViewedEntry,
+        };
+        let Some((dir, repo)) = scratch_wc() else {
+            return;
+        };
         let wc = dir.path().join("wc");
         write(&wc, "a.txt", b"line1\nline2\nline3\n");
         svn(&wc, &["add", "-q", "a.txt"]);
@@ -1400,7 +1690,12 @@ mod tests {
         let mut review = Review::new(
             "id".into(),
             target(&wc),
-            Snapshot { base_oid: String::new(), head_oid: None, head_commit: None, captured_at: String::new() },
+            Snapshot {
+                base_oid: String::new(),
+                head_oid: None,
+                head_commit: None,
+                captured_at: String::new(),
+            },
             "t".into(),
         );
         review.comments.push(Comment {
@@ -1422,7 +1717,10 @@ mod tests {
         });
         // A freshly-toggled viewed entry carries an empty hash (the FE never
         // computes one) — reconcile stamps the current diff and keeps it.
-        review.viewed.push(ViewedEntry { file: "a.txt".into(), diff_hash: String::new() });
+        review.viewed.push(ViewedEntry {
+            file: "a.txt".into(),
+            diff_hash: String::new(),
+        });
 
         let cache = DiffCache::default();
         let session = crate::review::reconcile::reconcile(&cache, review).unwrap();
@@ -1432,21 +1730,33 @@ mod tests {
         assert!(!c.stale, "the anchor matches the current content");
         assert_eq!(c.anchor.as_ref().unwrap().start_line, Some(2));
         assert_eq!(session.review.viewed.len(), 1);
-        assert!(!session.review.viewed[0].diff_hash.is_empty(), "the empty baseline is stamped");
+        assert!(
+            !session.review.viewed[0].diff_hash.is_empty(),
+            "the empty baseline is stamped"
+        );
 
         // …an edit that changes the file drops viewed and re-anchors the comment.
         write(&wc, "a.txt", b"header\nline1\nline2 CHANGED\nline3\n");
         cache.invalidate(&wc.display().to_string());
         let second = crate::review::reconcile::reconcile(&cache, session.review).unwrap();
-        assert!(second.review.viewed.is_empty(), "a changed diff resets viewed");
+        assert!(
+            second.review.viewed.is_empty(),
+            "a changed diff resets viewed"
+        );
         let c = &second.review.comments[0];
         assert!(!c.stale);
-        assert_eq!(c.anchor.as_ref().unwrap().start_line, Some(3), "the anchor followed the shift");
+        assert_eq!(
+            c.anchor.as_ref().unwrap().start_line,
+            Some(3),
+            "the anchor followed the shift"
+        );
     }
 
     #[test]
     fn worktree_label_is_the_url_tail() {
-        let Some((_dir, repo)) = scratch_wc() else { return };
+        let Some((_dir, repo)) = scratch_wc() else {
+            return;
+        };
         // The scratch WC is a checkout of .../repo, so the URL tail is "repo".
         assert_eq!(repo.worktree_label(), "repo");
     }

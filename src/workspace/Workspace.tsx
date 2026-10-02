@@ -6,6 +6,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Kbd } from "@/components/ui/kbd";
 import { DeltaMark } from "@/components/DeltaMark";
 import { CliInstallButton } from "./CliInstallButton";
+import { BasePicker } from "./BasePicker";
 import { NothingToReview } from "./NothingToReview";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -31,7 +32,7 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuCheck,
 } from "@/components/ui/dropdown-menu";
-import type { Anchor, Comment, CommitMeta, DiffMode, DiffSummary, Review, ReviewSession, Target, VcsKind } from "../types";
+import type { Anchor, BaseStrategy, Comment, CommitMeta, DiffMode, DiffSummary, Review, ReviewSession, Target, VcsKind } from "../types";
 
 const COMMIT_PAGE = 100;
 
@@ -48,6 +49,15 @@ function fileCountBucket(n: number): string {
 function syncModeParam(next: DiffMode) {
   const u = new URL(window.location.href);
   u.searchParams.set("mode", next);
+  window.history.replaceState(null, "", u);
+}
+
+// The `base` param mirrors this window's base override ("vs <branch>"), so a
+// reload or deep link restores exactly what the diff was compared against.
+function syncBaseParam(next: string | undefined) {
+  const u = new URL(window.location.href);
+  if (next) u.searchParams.set("base", next);
+  else u.searchParams.delete("base");
   window.history.replaceState(null, "", u);
 }
 
@@ -88,6 +98,17 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // diverges from diffMode — the stale-prop case this rule guards can't occur.
   // react-doctor-disable-next-line react-doctor/no-derived-useState
   const [diffMode, setDiffMode] = useState<DiffMode>(target.mode === "commit" ? "branch-vs-base" : target.mode);
+  // Per-window base override ("vs <branch>"), seeded once from the URL — same
+  // idiom as diffMode. Undefined = resolve by the repo's strategy backend-side
+  // (pinned branch, else the fork-point auto detect).
+  // react-doctor-disable-next-line react-doctor/no-derived-useState
+  const [baseOverride, setBaseOverride] = useState<string | undefined>(target.base);
+  // Repo-wide strategy, for the base chip's provenance badge: undefined =
+  // loading, null = auto (or non-git), { kind: "branch" } = pinned.
+  const [baseStrategy, setBaseStrategy] = useState<BaseStrategy | null | undefined>(undefined);
+  // A strategy change (pin/auto) may resolve to a different base WITHOUT
+  // `baseOverride` moving (both undefined) — this nonce forces the re-open.
+  const [baseEpoch, setBaseEpoch] = useState(0);
   // Commit mode overlay: `commitOid` pins a commit; the review stays on the canonical
   // `diffMode`. `commits` powers the submenu + stepper; `commitSummary` is the pinned diff.
   const [commitOid, setCommitOid] = useState<string | null>(target.commit ?? null);
@@ -170,13 +191,27 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     prefetchPicker();
   }, []);
 
+  // The chip needs to know whether an implicit base came from a repo-wide pin or
+  // the auto heuristic; best-effort — non-git repos just read as auto.
+  useEffect(() => {
+    let cancelled = false;
+    // Reset synchronously so a repo switch never shows the prior repo's badge.
+    // react-doctor-disable-next-line react-doctor/set-state-in-effect, react-hooks-js/set-state-in-effect, react-doctor/no-adjust-state-on-prop-change
+    setBaseStrategy(undefined);
+    api.getBaseStrategy(target.repoPath).then(
+      (s) => { if (!cancelled) setBaseStrategy(s ?? null); },
+      () => { if (!cancelled) setBaseStrategy(null); },
+    );
+    return () => { cancelled = true; };
+  }, [target.repoPath]);
+
   async function open() {
     const seq = ++openSeq.current;
     const isCurrent = () => seq === openSeq.current;
     setDiffLoading(true);
     try {
       setError(null);
-      const session = await api.openReview({ repoPath: target.repoPath, mode: diffMode, base: target.base });
+      const session = await api.openReview({ repoPath: target.repoPath, mode: diffMode, base: baseOverride });
       if (!isCurrent()) {
         return;
       }
@@ -223,7 +258,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     // react-doctor-disable-next-line react-hooks-js/set-state-in-effect
     void open();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target.repoPath, diffMode, target.base]);
+  }, [target.repoPath, diffMode, baseOverride, baseEpoch]);
 
   // Update window title dynamically
   useEffect(() => {
@@ -486,7 +521,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       unlisten?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target.repoPath, diffMode, target.base]);
+  }, [target.repoPath, diffMode, baseOverride, baseEpoch]);
 
   function flashCopy(state: "ok" | "err") {
     setCopyState(state);
@@ -594,6 +629,41 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     setDiffMode(mode);
     syncModeParam(mode);
   }, []);
+
+  // --- base picker (#base) ---
+  // Picking a branch is a per-window override (URL `?base=` + the review target);
+  // the two strategy actions are repo-wide and clear the override so the saved
+  // strategy — set on the backend FIRST, else the re-open races the stale one —
+  // decides what the diff resolves against.
+  const pickBase = useCallback((name: string) => {
+    setBaseOverride(name);
+    syncBaseParam(name);
+  }, []);
+  // Not a hook despite reading like one — named to match `pinBase` below.
+  const resetBaseToAuto = useCallback(async () => {
+    try {
+      await api.setBaseStrategy(target.repoPath, null);
+      setBaseStrategy(null);
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    setBaseOverride(undefined);
+    syncBaseParam(undefined);
+    setBaseEpoch((n) => n + 1);
+  }, [target.repoPath]);
+  const pinBase = useCallback(async (name: string) => {
+    try {
+      await api.setBaseStrategy(target.repoPath, { kind: "branch", name });
+      setBaseStrategy({ kind: "branch", name });
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    setBaseOverride(undefined);
+    syncBaseParam(undefined);
+    setBaseEpoch((n) => n + 1);
+  }, [target.repoPath]);
 
   // Stable across renders unless `viewed` actually changes — so toggling the
   // comments pane (or any unrelated Workspace state) doesn't hand DiffPane a new
@@ -796,6 +866,18 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
+            {profile.basePicker && (diffMode === "all-changes" || diffMode === "branch-vs-base") && (
+              <BasePicker
+                repoPath={target.repoPath}
+                headOid={review?.snapshot.headCommit ?? undefined}
+                override={baseOverride}
+                strategy={baseStrategy}
+                resolvedLabel={summary.baseLabel}
+                onPick={pickBase}
+                onAuto={() => void resetBaseToAuto()}
+                onPin={(name) => void pinBase(name)}
+              />
+            )}
             {stepperVisible && (
               <div className="ml-1 flex items-center" data-testid="commit-stepper">
                 <div className="inline-flex h-7 items-center rounded-md border border-input bg-muted/40">

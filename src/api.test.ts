@@ -67,4 +67,31 @@ describe("api", () => {
     await api.setLocalDeltaIgnore("/r", "gen/\n");
     expect(invokeMock).toHaveBeenCalledWith("set_local_delta_ignore", { repoPath: "/r", rules: "gen/\n" });
   });
+
+  it("base picker commands round-trip (#base)", async () => {
+    invokeMock.mockResolvedValue({ branches: [], suggested: null });
+    expect(await api.listBranches("/r")).toEqual({ branches: [], suggested: null });
+    expect(invokeMock).toHaveBeenCalledWith("list_branches", { repoPath: "/r" });
+
+    invokeMock.mockResolvedValue({ kind: "branch", name: "dev" });
+    expect(await api.getBaseStrategy("/r")).toEqual({ kind: "branch", name: "dev" });
+    expect(invokeMock).toHaveBeenCalledWith("get_base_strategy", { repoPath: "/r" });
+
+    invokeMock.mockResolvedValue(undefined);
+    await api.setBaseStrategy("/r", null);
+    expect(invokeMock).toHaveBeenCalledWith("set_base_strategy", { repoPath: "/r", strategy: null });
+  });
+
+  it("updater commands round-trip the backend-owned lifecycle", async () => {
+    const idle = { status: "idle", version: null, progress: null, lastCheckedAt: 123 };
+    invokeMock.mockResolvedValue(idle);
+    expect(await api.updaterStatus()).toEqual(idle);
+    expect(invokeMock).toHaveBeenCalledWith("updater_status");
+
+    await api.updaterCheck(true);
+    expect(invokeMock).toHaveBeenCalledWith("updater_check", { manual: true });
+
+    await api.updaterDownload();
+    expect(invokeMock).toHaveBeenCalledWith("updater_download");
+  });
 });

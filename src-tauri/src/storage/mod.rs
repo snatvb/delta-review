@@ -9,7 +9,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// commands became async and could run registry/review saves concurrently.
 fn tmp_suffix() -> String {
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    format!("{}.{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "{}.{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 pub trait Storage {
@@ -19,7 +23,10 @@ pub trait Storage {
 }
 
 fn is_valid_id(id: &str) -> bool {
-    id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    id.len() == 16
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 pub struct JsonStorage {
@@ -41,7 +48,9 @@ impl Storage for JsonStorage {
     fn load(&self, id: &str) -> Result<Option<Review>, String> {
         let path = self.path_for(id);
         match fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).map(Some).map_err(|e| format!("parse review {id}: {e}")),
+            Ok(text) => serde_json::from_str(&text)
+                .map(Some)
+                .map_err(|e| format!("parse review {id}: {e}")),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(format!("read review {id}: {e}")),
         }
@@ -52,9 +61,12 @@ impl Storage for JsonStorage {
             return Err(format!("invalid review id: {:?}", review.id));
         }
         fs::create_dir_all(&self.root).map_err(|e| format!("create reviews dir: {e}"))?;
-        let text = serde_json::to_string_pretty(review).map_err(|e| format!("serialize review: {e}"))?;
+        let text =
+            serde_json::to_string_pretty(review).map_err(|e| format!("serialize review: {e}"))?;
         let final_path = self.path_for(&review.id);
-        let tmp_path = self.root.join(format!("{}.json.tmp.{}", review.id, tmp_suffix()));
+        let tmp_path = self
+            .root
+            .join(format!("{}.json.tmp.{}", review.id, tmp_suffix()));
         fs::write(&tmp_path, text.as_bytes()).map_err(|e| format!("write tmp: {e}"))?;
         fs::rename(&tmp_path, &final_path).map_err(|e| format!("rename: {e}"))?;
         Ok(())
@@ -84,7 +96,10 @@ pub struct JsonRegistryStore {
 
 impl JsonRegistryStore {
     pub fn new(registry_path: PathBuf, reviews_dir: PathBuf) -> Self {
-        JsonRegistryStore { registry_path, reviews_dir }
+        JsonRegistryStore {
+            registry_path,
+            reviews_dir,
+        }
     }
 
     /// Best-effort rebuild from the reviews dir. file_count is unknown here (0).
@@ -139,8 +154,11 @@ impl RegistryStore for JsonRegistryStore {
         if let Some(parent) = self.registry_path.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("create app data dir: {e}"))?;
         }
-        let text = serde_json::to_string_pretty(reg).map_err(|e| format!("serialize registry: {e}"))?;
-        let tmp = self.registry_path.with_extension(format!("json.tmp.{}", tmp_suffix()));
+        let text =
+            serde_json::to_string_pretty(reg).map_err(|e| format!("serialize registry: {e}"))?;
+        let tmp = self
+            .registry_path
+            .with_extension(format!("json.tmp.{}", tmp_suffix()));
         fs::write(&tmp, text.as_bytes()).map_err(|e| format!("write tmp: {e}"))?;
         fs::rename(&tmp, &self.registry_path).map_err(|e| format!("rename: {e}"))?;
         Ok(())
@@ -156,8 +174,24 @@ mod tests {
     use tempfile::TempDir;
 
     fn sample() -> Review {
-        let target = Target { repo_path: "/r".into(), worktree: Some("main".into()), mode: DiffMode::AllChanges, base: None, commit: None };
-        Review::new("0123456789abcdef".into(), target, Snapshot { base_oid: "b".into(), head_oid: None, head_commit: None, captured_at: "t".into() }, "t".into())
+        let target = Target {
+            repo_path: "/r".into(),
+            worktree: Some("main".into()),
+            mode: DiffMode::AllChanges,
+            base: None,
+            commit: None,
+        };
+        Review::new(
+            "0123456789abcdef".into(),
+            target,
+            Snapshot {
+                base_oid: "b".into(),
+                head_oid: None,
+                head_commit: None,
+                captured_at: "t".into(),
+            },
+            "t".into(),
+        )
     }
 
     #[test]
@@ -184,10 +218,23 @@ mod tests {
         let root = dir.path().join("reviews");
         let s = JsonStorage::new(root.clone());
         s.save(&sample()).unwrap();
-        let entries: Vec<String> = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
-        assert_eq!(entries.len(), 1, "expected exactly one file, got {entries:?}");
-        assert!(!entries.iter().any(|n| n.ends_with(".tmp")), "no temp file should remain, got {entries:?}");
-        assert!(entries.iter().any(|n| n == "0123456789abcdef.json"), "expected 0123456789abcdef.json, got {entries:?}");
+        let entries: Vec<String> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "expected exactly one file, got {entries:?}"
+        );
+        assert!(
+            !entries.iter().any(|n| n.ends_with(".tmp")),
+            "no temp file should remain, got {entries:?}"
+        );
+        assert!(
+            entries.iter().any(|n| n == "0123456789abcdef.json"),
+            "expected 0123456789abcdef.json, got {entries:?}"
+        );
     }
 
     #[test]
@@ -204,7 +251,8 @@ mod tests {
     #[test]
     fn registry_save_then_load_roundtrips() {
         let dir = TempDir::new().unwrap();
-        let store = JsonRegistryStore::new(dir.path().join("registry.json"), dir.path().join("reviews"));
+        let store =
+            JsonRegistryStore::new(dir.path().join("registry.json"), dir.path().join("reviews"));
         let mut reg = Registry::empty();
         reg.upsert_repo(RepoEntry {
             id: "r1".into(),
@@ -214,6 +262,7 @@ mod tests {
             worktrees: vec![],
             vcs: Default::default(),
             vcs_override: None,
+            base_strategy: None,
         });
         store.save(&reg).unwrap();
         let loaded = store.load().unwrap();
@@ -224,11 +273,18 @@ mod tests {
     #[test]
     fn registry_save_leaves_no_tmp_file() {
         let dir = TempDir::new().unwrap();
-        let store = JsonRegistryStore::new(dir.path().join("registry.json"), dir.path().join("reviews"));
+        let store =
+            JsonRegistryStore::new(dir.path().join("registry.json"), dir.path().join("reviews"));
         store.save(&Registry::empty()).unwrap();
-        let names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
         assert!(names.iter().any(|n| n == "registry.json"));
-        assert!(!names.iter().any(|n| n.ends_with(".tmp")), "no tmp left, got {names:?}");
+        assert!(
+            !names.iter().any(|n| n.ends_with(".tmp")),
+            "no tmp left, got {names:?}"
+        );
     }
 
     #[test]
@@ -241,7 +297,10 @@ mod tests {
         let reg = store.load().unwrap(); // registry.json does not exist → rebuild
         assert_eq!(reg.reviews.len(), 1);
         assert_eq!(reg.reviews[0].id, "0123456789abcdef");
-        assert_eq!(reg.reviews[0].file_count, 0, "file_count unknown until reopened");
+        assert_eq!(
+            reg.reviews[0].file_count, 0,
+            "file_count unknown until reopened"
+        );
     }
 
     #[test]
@@ -249,7 +308,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::create_dir_all(dir.path()).unwrap();
         std::fs::write(dir.path().join("registry.json"), b"{ not json").unwrap();
-        let store = JsonRegistryStore::new(dir.path().join("registry.json"), dir.path().join("reviews"));
+        let store =
+            JsonRegistryStore::new(dir.path().join("registry.json"), dir.path().join("reviews"));
         let reg = store.load().unwrap(); // corrupt → rebuild → empty (no reviews dir)
         assert!(reg.reviews.is_empty());
     }

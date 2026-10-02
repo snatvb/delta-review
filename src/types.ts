@@ -143,9 +143,46 @@ export interface RepoEntry {
   root: string;
   name: string;
   defaultBranch?: string | null;
+  /** Repo-wide diff-base strategy (all worktrees). Absent = auto (fork detection). */
+  baseStrategy?: BaseStrategy | null;
   worktrees: WorktreeEntry[];
   /** Display-only VCS label; absent for registries written before SVN support. */
   vcs?: VcsKind | null;
+}
+
+/** How a repo picks its diff base when a window carries no explicit one.
+ *  "auto" = the branch HEAD was cut from (fork-point heuristic);
+ *  "branch" = always compare against this branch. */
+export type BaseStrategy = { kind: "auto" } | { kind: "branch"; name: string };
+
+/** One row of the base picker: a branch, local or remote. */
+export interface BranchInfo {
+  /** Display ref: "dev" for local, "origin/dev" for remote. */
+  name: string;
+  remote: boolean;
+  isCurrent: boolean;
+  isDefault: boolean;
+  shortOid: string;
+  /** Unix seconds of the branch tip's commit. */
+  lastCommitAt: number | null;
+  lastSubject: string | null;
+  /** Commits HEAD has that this branch doesn't — the work you'd review. */
+  ahead: number;
+  /** Commits this branch has that HEAD doesn't — the base moved on. */
+  behind: number;
+}
+
+/** The fork-point suggestion: where the current branch was cut from. */
+export interface SuggestedBase {
+  name: string;
+  mergeBaseShortOid: string;
+  /** Unix seconds of the fork commit. */
+  mergeBaseAt: number;
+}
+
+export interface BranchList {
+  branches: BranchInfo[];
+  suggested: SuggestedBase | null;
 }
 
 export interface ReviewEntry {
@@ -200,4 +237,18 @@ export interface CliStatus {
   supported: boolean;
   installed: boolean;
   path: string | null;
+}
+
+/** Self-update state. Owned by the backend (src-tauri/src/updater.rs) and
+ *  broadcast to every window via `updater:state`, so all windows agree and a
+ *  download survives any window closing. */
+export type UpdaterStatus = "idle" | "checking" | "available" | "downloading" | "ready" | "error";
+
+export interface UpdaterSnapshot {
+  status: UpdaterStatus;
+  version: string | null;
+  /** 0..1 while downloading; null when unknown (pre-start / indeterminate). */
+  progress: number | null;
+  /** Unix ms of the last completed check; null before the first one. */
+  lastCheckedAt: number | null;
 }

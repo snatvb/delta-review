@@ -1,3 +1,4 @@
+pub mod branches;
 pub mod cache;
 pub mod deltaignore;
 pub mod diff;
@@ -31,31 +32,66 @@ fn tree_of<'r>(repo: &'r Repository, oid: Oid) -> Result<Tree<'r>, GitError> {
         .map_err(|e| format!("tree: {e}"))
 }
 
-/// Resolve the base branch to (label, commit oid). Tries origin/HEAD, then main, then master.
-pub fn resolve_base(repo: &Repository, base: Option<&str>) -> Result<(String, Oid), GitError> {
-    let candidates: Vec<String> = match base {
-        Some(b) => vec![b.to_string()],
-        None => vec!["origin/HEAD".into(), "main".into(), "master".into()],
-    };
-    let explicit = base.is_some();
-    for name in candidates {
-        if let Ok(obj) = repo.revparse_single(&name) {
-            if let Ok(commit) = obj.peel_to_commit() {
-                let label = if !explicit && name == "origin/HEAD" {
-                    name.trim_start_matches("origin/").to_string()
-                } else {
-                    name.clone()
-                };
-                return Ok((label, commit.id()));
+/// The repo's canonical default branch as (label, commit): the branch
+/// `refs/remotes/origin/HEAD` points at (label resolved through the symref, so
+/// it shows as the real branch name like "main", never "HEAD"), else local
+/// `main`, else `master`.
+pub fn default_branch(repo: &Repository) -> Option<(String, Oid)> {
+    if let Ok(sym) = repo.find_reference("refs/remotes/origin/HEAD") {
+        if let Some(target) = sym.symbolic_target() {
+            if let Ok((_, oid)) = peel_branch_ref(repo, target) {
+                // "refs/remotes/origin/main" → "main"
+                let label = target
+                    .rsplit_once('/')
+                    .map_or_else(|| target.to_string(), |(_, tail)| tail.to_string());
+                return Some((label, oid));
             }
         }
     }
-    Err("could not resolve a base branch (tried origin/HEAD, main, master)".into())
+    ["main", "master"]
+        .iter()
+        .find_map(|name| peel_branch_ref(repo, name).ok())
+}
+
+/// Peel a branch-ish ref name to (label, commit).
+fn peel_branch_ref(repo: &Repository, name: &str) -> Result<(String, Oid), GitError> {
+    let obj = repo
+        .revparse_single(name)
+        .map_err(|e| format!("{name}: {e}"))?;
+    let commit = obj.peel_to_commit().map_err(|e| format!("{name}: {e}"))?;
+    Ok((name.to_string(), commit.id()))
+}
+
+/// Resolve the base branch to (label, commit oid).
+///
+/// Cascade: an explicit `base` wins; without one, the fork-point suggestion
+/// (the branch HEAD was cut from — see `branches::suggest_base`); failing that,
+/// the repo's default branch (`default_branch`).
+pub fn resolve_base(repo: &Repository, base: Option<&str>) -> Result<(String, Oid), GitError> {
+    if let Some(b) = base {
+        let obj = repo
+            .revparse_single(b)
+            .map_err(|_| format!("base branch '{b}' not found"))?;
+        let commit = obj
+            .peel_to_commit()
+            .map_err(|_| format!("base '{b}' does not point at a commit"))?;
+        return Ok((b.to_string(), commit.id()));
+    }
+    if let Some(s) = branches::suggest_base(repo) {
+        if let Ok((label, oid)) = peel_branch_ref(repo, &s.name) {
+            return Ok((label, oid));
+        }
+    }
+    default_branch(repo).ok_or_else(|| {
+        "could not resolve a base branch (fork point, origin/HEAD, main, master)".into()
+    })
 }
 
 pub fn resolve_endpoints(repo: &Repository, target: &Target) -> Result<Endpoints, GitError> {
     let head_ref = repo.head().map_err(|e| format!("head: {e}"))?;
-    let head_commit = head_ref.peel_to_commit().map_err(|e| format!("head commit: {e}"))?;
+    let head_commit = head_ref
+        .peel_to_commit()
+        .map_err(|e| format!("head commit: {e}"))?;
     let head_label = head_ref
         .shorthand()
         .map(|s| s.to_string())
@@ -113,7 +149,12 @@ pub fn resolve_endpoints(repo: &Repository, target: &Target) -> Result<Endpoints
                 DiffMode::AllChanges => RightSide::WorkTree,
                 _ => RightSide::Tree(tree_of(repo, head_commit.id())?.id()),
             };
-            Ok(Endpoints { from_tree, right, base_label, head_label })
+            Ok(Endpoints {
+                from_tree,
+                right,
+                base_label,
+                head_label,
+            })
         }
     }
 }
@@ -125,7 +166,10 @@ pub fn resolve_worktree(repo: &Repository) -> Result<String, GitError> {
             return Ok(name.to_string());
         }
     }
-    let oid = head.peel_to_commit().map_err(|e| format!("head commit: {e}"))?.id();
+    let oid = head
+        .peel_to_commit()
+        .map_err(|e| format!("head commit: {e}"))?
+        .id();
     Ok(short_oid(oid))
 }
 
@@ -135,7 +179,10 @@ pub fn resolve_worktree(repo: &Repository) -> Result<String, GitError> {
 /// (strip at the `worktrees` segment). Canonicalized so both forms match.
 pub fn common_git_dir(repo: &git2::Repository) -> std::path::PathBuf {
     let p = repo.path();
-    let base = match p.iter().position(|c| c == std::ffi::OsStr::new("worktrees")) {
+    let base = match p
+        .iter()
+        .position(|c| c == std::ffi::OsStr::new("worktrees"))
+    {
         Some(pos) => p.iter().take(pos).collect::<std::path::PathBuf>(),
         None => p.to_path_buf(),
     };
@@ -170,6 +217,27 @@ pub(crate) mod test_support {
         (dir, repo)
     }
 
+    /// A fork chain: main@1 → dev@2 (one commit ahead) → feature@3 cut from dev's
+    /// tip, HEAD on feature. The fork-point heuristic should suggest `dev`.
+    pub fn forked_repo() -> (TempDir, Repository) {
+        let (dir, repo) = repo_with_commit();
+        {
+            let initial = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.branch("dev", &initial, false).unwrap();
+        }
+        repo.set_head("refs/heads/dev").unwrap();
+        write(dir.path(), "dev.txt", "d\n");
+        let dev_tip = commit_all(&repo, "dev work");
+        {
+            let dev_commit = repo.find_commit(dev_tip).unwrap();
+            repo.branch("feature", &dev_commit, false).unwrap();
+        }
+        repo.set_head("refs/heads/feature").unwrap();
+        write(dir.path(), "feat.txt", "f\n");
+        commit_all(&repo, "feat work");
+        (dir, repo)
+    }
+
     pub fn write(root: &Path, rel: &str, content: &str) {
         let p = root.join(rel);
         if let Some(parent) = p.parent() {
@@ -194,14 +262,21 @@ pub(crate) mod test_support {
 
     /// Add a linked worktree checked out on a new branch `branch`, at a sibling dir.
     /// Returns the worktree's path.
-    pub fn add_worktree(repo: &Repository, root: &Path, name: &str, branch: &str) -> std::path::PathBuf {
+    pub fn add_worktree(
+        repo: &Repository,
+        root: &Path,
+        name: &str,
+        branch: &str,
+    ) -> std::path::PathBuf {
         let head = repo.head().unwrap().peel_to_commit().unwrap();
         repo.branch(branch, &head, false).unwrap();
         // Unique sibling path (keyed by the TempDir's random name) so parallel
         // tests and re-runs don't collide on a fixed path.
         let unique = format!("{}--{name}", root.file_name().unwrap().to_string_lossy());
         let wt_path = root.parent().unwrap().join(unique);
-        let reference = repo.find_reference(&format!("refs/heads/{branch}")).unwrap();
+        let reference = repo
+            .find_reference(&format!("refs/heads/{branch}"))
+            .unwrap();
         let mut opts = git2::WorktreeAddOptions::new();
         opts.reference(Some(&reference));
         repo.worktree(name, &wt_path, Some(&opts)).unwrap();
@@ -211,8 +286,8 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test_support::*;
+    use super::*;
 
     #[test]
     fn mode_serializes_kebab_case() {
@@ -225,6 +300,26 @@ mod tests {
         let (_dir, repo) = repo_with_commit();
         let (label, _oid) = resolve_base(&repo, None).unwrap();
         assert_eq!(label, "main");
+    }
+
+    #[test]
+    fn resolve_base_cascade_explicit_then_fork_then_default() {
+        let (_dir, repo) = forked_repo(); // feature ← dev ← main
+                                          // Explicit beats everything.
+        let (label, _oid) = resolve_base(&repo, Some("main")).unwrap();
+        assert_eq!(label, "main");
+        // No explicit base → the fork-point suggestion (dev), not the default (main).
+        let (label, oid) = resolve_base(&repo, None).unwrap();
+        assert_eq!(label, "dev");
+        // And the oid is dev's tip, not the merge-base — resolve_base returns the
+        // branch ref; endpoints compute the merge-base separately.
+        let dev_tip = repo
+            .find_reference("refs/heads/dev")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+        assert_eq!(oid, dev_tip);
     }
 
     #[test]
