@@ -34,9 +34,11 @@ describe("FilesPanel", () => {
       { path: "src/b.ts", status: "modified", additions: 2, deletions: 4, binary: false },
     ];
     render(<FilesPanel files={multi} selected={null} onSelect={() => {}} viewedFiles={new Set()} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
-    // Totals: +5 / −5 — values no individual row shows, so they're unique to the header.
-    expect(screen.getByText("+5")).toBeInTheDocument();
-    expect(screen.getByText("−5")).toBeInTheDocument();
+    // Totals: +5 / −5. Folder rollups can equal the header (a one-file folder's
+    // sum is its file's row), so assert on the counter button itself.
+    const counter = screen.getByRole("button", { name: "Toggle unviewed-only totals" });
+    expect(counter.textContent).toContain("+5");
+    expect(counter.textContent).toContain("−5");
   });
 
   describe("unviewed-only totals pref", () => {
@@ -50,8 +52,9 @@ describe("FilesPanel", () => {
         { path: "src/b.ts", status: "modified", additions: 2, deletions: 4, binary: false },
       ];
       render(<FilesPanel files={multi} selected={null} onSelect={() => {}} viewedFiles={new Set(["src/a.ts"])} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
-      expect(screen.getByText("+5")).toBeInTheDocument();
-      expect(screen.getByText("−5")).toBeInTheDocument();
+      const counter = screen.getByRole("button", { name: "Toggle unviewed-only totals" });
+      expect(counter.textContent).toContain("+5");
+      expect(counter.textContent).toContain("−5");
     });
 
     it("excludes viewed files from the totals when the pref is on", () => {
@@ -64,9 +67,10 @@ describe("FilesPanel", () => {
       ];
       render(<FilesPanel files={multi} selected={null} onSelect={() => {}} viewedFiles={new Set(["src/a.ts"])} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
       // Header = b + c only: +6 / −14 (rows are 2/5 and 4/9).
-      expect(screen.getByText("+6")).toBeInTheDocument();
-      expect(screen.getByText("−14")).toBeInTheDocument();
-      expect(screen.queryByText("+9")).not.toBeInTheDocument(); // the all-files total never shows
+      const counter = screen.getByRole("button", { name: "Toggle unviewed-only totals" });
+      expect(counter.textContent).toContain("+6");
+      expect(counter.textContent).toContain("−14");
+      expect(counter.textContent).not.toContain("+9"); // the all-files total never shows
       // The tooltip names what was excluded, so the shrunken number reads deliberate.
       expect(screen.getByTitle(/\+6 \/ −14 left to review — 1 viewed file excluded/)).toBeInTheDocument();
       // The progress chip still counts every file.
@@ -96,13 +100,13 @@ describe("FilesPanel", () => {
       render(<FilesPanel files={multi} selected={null} onSelect={() => {}} viewedFiles={new Set(["src/a.ts"])} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
       const counter = screen.getByRole("button", { name: "Toggle unviewed-only totals" });
       expect(counter).toHaveAttribute("aria-pressed", "false");
-      expect(screen.getByText("+10")).toBeInTheDocument(); // counts everything
+      expect(counter.textContent).toContain("+10"); // counts everything
       fireEvent.click(counter);
       expect(counter).toHaveAttribute("aria-pressed", "true");
-      expect(screen.getByText("+7")).toBeInTheDocument(); // only b+c are left
-      expect(screen.getByText("−14")).toBeInTheDocument();
+      expect(counter.textContent).toContain("+7"); // only b+c are left
+      expect(counter.textContent).toContain("−14");
       fireEvent.click(counter);
-      expect(screen.getByText("+10")).toBeInTheDocument(); // and back
+      expect(counter.textContent).toContain("+10"); // and back
     });
   });
 
@@ -257,6 +261,81 @@ describe("FilesPanel", () => {
       );
       fireEvent.click(screen.getByRole("radio", { name: /list/i }));
       expect(screen.queryByRole("button", { name: /viewed folder/ })).not.toBeInTheDocument();
+    });
+  });
+
+  describe("folder +/− rollup", () => {
+    const tree: FileEntry[] = [
+      { path: "lib/a.ts", status: "modified", additions: 3, deletions: 1, binary: false },
+      { path: "lib/sub/b.ts", status: "modified", additions: 9, deletions: 2, binary: false },
+      { path: "other/c.ts", status: "modified", additions: 7, deletions: 4, binary: false },
+    ];
+    afterEach(() => setViewedStatsExclude("off"));
+
+    it("sums descendant changes on folder rows (exact numbers in the tooltip)", () => {
+      render(<FilesPanel files={tree} selected={null} onSelect={() => {}} viewedFiles={new Set()} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
+      expect(screen.getByTitle("+12 / −3 under lib")).toBeInTheDocument();
+      expect(screen.getByTitle("+9 / −2 under lib/sub")).toBeInTheDocument();
+      expect(screen.getByTitle("+7 / −4 under other")).toBeInTheDocument();
+      // The compacted rollup renders on the row itself, not just the tooltip.
+      expect(screen.getByText("+12")).toBeInTheDocument();
+    });
+
+    it("skips viewed files in unviewed-only mode", () => {
+      setViewedStatsExclude("on");
+      render(<FilesPanel files={tree} selected={null} onSelect={() => {}} viewedFiles={new Set(["lib/a.ts"])} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
+      // lib lost a.ts (+3/−1); lib/sub keeps its sum (nothing viewed inside),
+      // but its tooltip still names the mode.
+      expect(screen.getByTitle("+9 / −2 left under lib (unviewed-only)")).toBeInTheDocument();
+      expect(screen.getByTitle("+9 / −2 left under lib/sub (unviewed-only)")).toBeInTheDocument();
+    });
+
+    it("renders no rollup on the Ignored group (ignored files never count)", () => {
+      const withIgnored: FileEntry[] = [...tree, { path: "gen/api.ts", status: "modified", additions: 5, deletions: 5, binary: false, ignored: true }];
+      render(<FilesPanel files={withIgnored} selected={null} onSelect={() => {}} viewedFiles={new Set()} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
+      expect(screen.queryByTitle(/under \/:ignored/)).not.toBeInTheDocument();
+    });
+  });
+
+  // fmtCount is module-private — exercised through the rendered rows, folder
+  // rollups, and the header counter. Rule: ≥10,000 compacts to "Nk" (floor);
+  // 9,999 and below stay exact. Tooltips keep full precision.
+  describe("large-number compaction", () => {
+    const big: FileEntry[] = [
+      { path: "src/huge.ts", status: "modified", additions: 156_048, deletions: 0, binary: false },
+      { path: "src/big.ts", status: "modified", additions: 17_280, deletions: 0, binary: false },
+      { path: "lib/near.ts", status: "modified", additions: 9_999, deletions: 0, binary: false },
+      { path: "lib/edge.ts", status: "modified", additions: 1, deletions: 10_000, binary: false },
+    ];
+    const counter = () => screen.getByRole("button", { name: "Toggle unviewed-only totals" });
+
+    it("compacts ≥10k everywhere it renders, keeps sub-10k exact", () => {
+      render(<FilesPanel files={big} selected={null} onSelect={() => {}} viewedFiles={new Set()} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
+      // Rows: 156048 → 156k, 17280 → 17k, 9999 stays exact.
+      expect(screen.getByText("+156k")).toBeInTheDocument();
+      expect(screen.getByText("+17k")).toBeInTheDocument();
+      expect(screen.getByText("+9999")).toBeInTheDocument();
+      // Header: 156048+17280+9999+1 = 183328 → 183k; −10000 → −10k.
+      expect(counter().textContent).toContain("+183k");
+      expect(counter().textContent).toContain("−10k");
+      // Folder lib crosses the threshold that its rows don't: 9999+1 = 10000.
+      expect(screen.getByTitle("+10000 / −10000 under lib")).toBeInTheDocument(); // exact in the tooltip
+      expect(screen.getByText("+10k")).toBeInTheDocument(); // compacted on the folder row
+    });
+
+    it("compacts the unviewed-only totals the same way", () => {
+      setViewedStatsExclude("on");
+      try {
+        // Viewing the two biggest files leaves 9999+1 additions and 10000 deletions.
+        render(<FilesPanel files={big} selected={null} onSelect={() => {}} viewedFiles={new Set(["src/huge.ts", "src/big.ts"])} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
+        expect(counter().textContent).toContain("+10k");
+        expect(counter().textContent).toContain("−10k");
+        expect(counter().textContent).not.toContain("+183k");
+        // src still renders a row-level rollup of zero → no stats span at all.
+        expect(screen.queryByTitle(/under src/)).not.toBeInTheDocument();
+      } finally {
+        setViewedStatsExclude("off");
+      }
     });
   });
 });

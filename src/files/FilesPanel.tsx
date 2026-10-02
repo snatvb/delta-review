@@ -31,9 +31,10 @@ const NO_COLLAPSE: Set<string> = new Set();
 // Stable empty map fallback when no comment counts are supplied. (#1)
 const EMPTY_COUNTS: Map<string, number> = new Map();
 
-// Compact large diff totals so the header stays on one line: over 100k → drop the
-// last three digits and append "k" (156048 → "156k"). Smaller counts stay exact.
-const fmtCount = (n: number) => (n > 100_000 ? `${Math.floor(n / 1000)}k` : String(n));
+// Compact large diff totals so rows stay on one line: ≥10k → drop the last three
+// digits and append "k" (17280 → "17k"). Smaller counts stay exact; tooltips
+// carry the full number.
+const fmtCount = (n: number) => (n > 9_999 ? `${Math.floor(n / 1000)}k` : String(n));
 
 // Git paths are repo-relative, so a leading "/" can never collide with a real file.
 const IGNORED_GROUP = "/:ignored";
@@ -58,6 +59,8 @@ interface RowHandlers {
   dirViewed: Map<string, DirViewed>;
   commentCounts: Map<string, number>;
   flat: boolean;
+  // Unviewed-only totals mode: folder rollups skip viewed files when on.
+  excluding: boolean;
   onToggleDir: (path: string) => void;
   onSelectFile: (path: string) => void;
   onToggleViewed: (file: string) => void;
@@ -70,9 +73,13 @@ interface RowHandlers {
 // Reviewable (checkbox-bearing) files under a folder: `total` sizes the set the
 // folder checkbox acts on, `viewed` picks the tri-state — all → check, some →
 // dash, none → empty (total 0, e.g. the Ignored group, renders no checkbox).
+// `adds`/`dels` are the folder's +/− rollup (viewed files skipped in
+// unviewed-only mode — same reading as the header counter).
 interface DirViewed {
   total: number;
   viewed: number;
+  adds: number;
+  dels: number;
 }
 
 // Reviewable file paths under a folder node, tree order — what the folder
@@ -147,6 +154,18 @@ function Row({ node, depth, top, h }: { node: TreeNode; depth: number; top: numb
       <span className={`flex-1 truncate text-[13px] ${isIgnoredGroup ? "font-medium text-muted-foreground" : isDir ? "font-medium text-foreground" : isIgnoredFile ? "text-muted-foreground" : "text-foreground"}`}>
         {node.name}
       </span>
+      {/* Folder +/− rollup (same reading as the header counter; in unviewed-only
+          mode it shows what's left under this folder). Exact numbers in the
+          tooltip, compacted in the row. */}
+      {isDir && dirAgg && (dirAgg.adds > 0 || dirAgg.dels > 0) && (
+        <span
+          className="flex shrink-0 items-center gap-1 text-[11px] tabular-nums"
+          title={`+${dirAgg.adds} / −${dirAgg.dels}${h.excluding ? " left" : ""} under ${node.path}${h.excluding ? " (unviewed-only)" : ""}`}
+        >
+          {dirAgg.adds > 0 && <span className="text-emerald-500">+{fmtCount(dirAgg.adds)}</span>}
+          {dirAgg.dels > 0 && <span className="text-rose-500">−{fmtCount(dirAgg.dels)}</span>}
+        </span>
+      )}
       {/* Folder checkbox marks/clears every reviewable descendant at once —
           standard tri-state cycle: empty marks all viewed, check/dash clears. */}
       {isDir && dirAgg && dirAgg.total > 0 && (
@@ -174,8 +193,8 @@ function Row({ node, depth, top, h }: { node: TreeNode; depth: number; top: numb
           )}
           <span className="flex shrink-0 items-center gap-1 text-[11px] tabular-nums" title={node.entry.status}>
             <span className={`font-semibold ${STATUS_COLOR[node.entry.status]}`}>{STATUS_LETTER[node.entry.status]}</span>
-            {node.entry.additions > 0 && <span className="text-emerald-500">+{node.entry.additions}</span>}
-            {node.entry.deletions > 0 && <span className="text-rose-500">−{node.entry.deletions}</span>}
+            {node.entry.additions > 0 && <span className="text-emerald-500">+{fmtCount(node.entry.additions)}</span>}
+            {node.entry.deletions > 0 && <span className="text-rose-500">−{fmtCount(node.entry.deletions)}</span>}
           </span>
           <button
             aria-label={`viewed ${node.entry.path}`}
@@ -267,6 +286,11 @@ export function FilesPanel({
 
   const q = query.trim().toLowerCase();
   const searching = q.length > 0;
+  // Unviewed-only totals pref (Settings → General, or click the header +/−
+  // counter): viewed files drop out of the header sum and the folder rollups.
+  // Declared before the memos that read `excluding`.
+  const [excludeViewed, setExcludeViewed] = useViewedStatsExclude();
+  const excluding = excludeViewed === "on";
   const filteredFiles = useMemo(
     () => (searching ? files.filter((f) => f.path.toLowerCase().includes(q)) : files),
     [files, q, searching],
@@ -284,30 +308,42 @@ export function FilesPanel({
     return nodes;
   }, [filteredFiles, mode]);
 
-  // Per-folder viewed rollup for the folder checkbox: {total, viewed} over the
-  // reviewable (non-ignored) file descendants of every dir, in one bottom-up tree
-  // walk. Ignored-only folders (the Ignored group and its subtree) end up with
-  // total 0 and render no checkbox. Empty in list mode (no dir nodes).
+  // Per-folder rollup for the folder checkbox and the folder's +/− stats:
+  // {total, viewed, adds, dels} over the reviewable (non-ignored) file
+  // descendants of every dir, in one bottom-up tree walk — the stats ride the
+  // same O(files) pass the checkbox already needed, so they're free. In
+  // unviewed-only mode viewed files drop out of adds/dels (the checkbox counts
+  // stay whole). Ignored-only folders (the Ignored group and its subtree) end
+  // up with total 0 and render no checkbox. Empty in list mode (no dir nodes).
   const dirViewed = useMemo(() => {
     const m = new Map<string, DirViewed>();
     (function walk(nodes: TreeNode[]): DirViewed {
       let total = 0;
       let viewed = 0;
+      let adds = 0;
+      let dels = 0;
       for (const n of nodes) {
         if (n.kind === "dir") {
           const a = walk(n.children);
           m.set(n.path, a);
           total += a.total;
           viewed += a.viewed;
+          adds += a.adds;
+          dels += a.dels;
         } else if (n.entry && !n.entry.ignored) {
           total++;
-          if (viewedFiles.has(n.entry.path)) viewed++;
+          const isViewed = viewedFiles.has(n.entry.path);
+          if (isViewed) viewed++;
+          if (!(excluding && isViewed)) {
+            adds += n.entry.additions;
+            dels += n.entry.deletions;
+          }
         }
       }
-      return { total, viewed };
+      return { total, viewed, adds, dels };
     })(roots);
     return m;
-  }, [roots, viewedFiles]);
+  }, [roots, viewedFiles, excluding]);
 
   // Flatten the currently-visible rows (with depth) for both keyboard nav and row
   // windowing. While searching, every dir is force-open so matches are never hidden
@@ -369,8 +405,6 @@ export function FilesPanel({
   // With the "unviewed-only totals" pref on, viewed files drop out of the top
   // +/− counter (per-file row numbers always stay).
   const reviewable = files.filter((f) => !f.ignored);
-  const [excludeViewed, setExcludeViewed] = useViewedStatsExclude();
-  const excluding = excludeViewed === "on";
   const { additions: totalAdds, deletions: totalDels } = sumChangeStats(files, viewedFiles, excluding);
   const viewedCount = reviewable.filter((f) => viewedFiles.has(f.path)).length;
   const allViewed = reviewable.length > 0 && viewedCount >= reviewable.length;
@@ -448,6 +482,7 @@ export function FilesPanel({
     dirViewed,
     commentCounts: commentCounts ?? EMPTY_COUNTS,
     flat: mode === "list",
+    excluding,
     onToggleDir: toggleDir,
     onSelectFile: selectFile,
     onToggleViewed,
@@ -470,7 +505,7 @@ export function FilesPanel({
     <div className="flex min-h-0 flex-1 flex-col pl-1.5 pt-3.5">
       <div className="flex h-7 shrink-0 items-center gap-2 px-2 text-[12px]">
         <span
-          className={`inline-block shrink-0 whitespace-nowrap select-none rounded-md px-2 py-0.5 text-[13px] tabular-nums ${allViewed ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground"}`}
+          className={`inline-block min-w-0 shrink truncate select-none rounded-md px-2 py-0.5 text-[13px] tabular-nums ${allViewed ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground"}`}
           title="Files viewed"
         >
           <span className={`font-medium ${allViewed ? "" : "text-foreground"}`}>{viewedCount}</span>
@@ -494,7 +529,7 @@ export function FilesPanel({
           className="ml-auto shrink-0 whitespace-nowrap rounded px-1 tabular-nums transition-colors hover:bg-foreground/[0.06]"
         >
           {excluding && (totalAdds > 0 || totalDels > 0) && (
-            <span className="mr-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80">left</span>
+            <span aria-hidden className="mr-1 inline-block size-1.5 shrink-0 rounded-full bg-primary" />
           )}
           {totalAdds > 0 && <span className="text-emerald-500">+{fmtCount(totalAdds)}</span>}{" "}
           {totalDels > 0 && <span className="text-rose-500">−{fmtCount(totalDels)}</span>}
