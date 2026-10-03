@@ -7,7 +7,7 @@ describe("App routing", () => {
   beforeEach(() => {
     __setInvokeForDev(async (cmd) => {
       if (cmd === "list_registry") return { version: 1, repos: [], reviews: [] } as never;
-      if (cmd === "list_picker") return { recents: [], worktrees: [] } as never;
+      if (cmd === "list_picker") return { worktrees: [] } as never;
       return undefined as never;
     });
     window.history.replaceState({}, "", "/");

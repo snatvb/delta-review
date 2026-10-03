@@ -20,7 +20,7 @@ export function usePickerData(): PickerData | null {
       void loadPicker()
         .then((d) => !cancelled && setData(d))
         // Never hang on the "Loading…" state if the first fetch errors with no cache.
-        .catch(() => !cancelled && setData((d) => d ?? { recents: [], worktrees: [] }))
+        .catch(() => !cancelled && setData((d) => d ?? { worktrees: [] }))
         .finally(() => (inFlight = false));
     };
     revalidate();

@@ -13,8 +13,11 @@ import { DeltaMark } from "@/components/DeltaMark";
 import { Settings } from "lucide-react";
 import type { PickerWorktree, ReviewEntry } from "./types";
 
-const openReview = (r: ReviewEntry) => void api.openTarget(r.target.repoPath, r.target.mode, r.target.base ?? undefined);
-const openWorktree = (w: PickerWorktree) => void openTarget(w.path, "uncommitted");
+// Open a folder: resume its joined review's mode/base when the current branch
+// has one, else the plain uncommitted diff. The branch is whatever git has
+// checked out — the picker never chooses branches.
+const openWorktree = (w: PickerWorktree) =>
+  void openTarget(w.path, w.review?.target.mode ?? "uncommitted", w.review?.target.base ?? undefined);
 
 async function deleteReview(r: ReviewEntry): Promise<boolean> {
   if (!confirm(`Delete this review of ${r.repoName} · ${r.target.worktree ?? ""}?`)) {
@@ -30,7 +33,7 @@ export function Home({ onOpenSettings }: { onOpenSettings?: () => void }) {
   // footer — with the FirstRun panel. Shares the picker's data source, so this
   // adds no extra wait and refreshes on focus alongside the list. (#refresh)
   const data = usePickerData();
-  const noRepos = data != null && data.recents.length === 0 && data.worktrees.length === 0;
+  const noRepos = data != null && data.worktrees.length === 0;
 
   return (
     <div data-testid="home-root" className="relative flex h-screen flex-col overflow-hidden bg-background text-foreground">
@@ -61,9 +64,9 @@ export function Home({ onOpenSettings }: { onOpenSettings?: () => void }) {
           <p className="mt-1 text-center text-[13px] text-muted-foreground">Review diffs. Leave structured comments for agents.</p>
 
           {/* Decide once data is known so neither view flashes the other on a cold
-              launch: empty → the FirstRun panel; otherwise the picker (recents +
-              known-repo worktrees + add-repo). While the first fetch is in flight
-              (data null, cold start) hold a quiet placeholder of the same size. */}
+              launch: empty → the FirstRun panel; otherwise the picker (known-repo
+              folders + their worktrees + add-repo). While the first fetch is in
+              flight (data null, cold start) hold a quiet placeholder of the same size. */}
           {data == null ? (
             <div className="mt-6 h-[54vh] w-full" aria-hidden />
           ) : noRepos ? (
@@ -75,7 +78,7 @@ export function Home({ onOpenSettings }: { onOpenSettings?: () => void }) {
             // the result count — the centered hero above it stays put while you
             // search. Sized to fit the min window (560px) without clipping. (#layout)
             <div className="mt-6 flex h-[54vh] w-full flex-col overflow-hidden rounded-xl border border-border bg-card text-[13px] shadow-sm">
-              <ReviewPicker onOpenReview={openReview} onOpenWorktree={openWorktree} onAddRepo={addRepo} onDeleteReview={deleteReview} />
+              <ReviewPicker onOpenWorktree={openWorktree} onAddRepo={addRepo} onDeleteReview={deleteReview} />
             </div>
           )}
         </div>

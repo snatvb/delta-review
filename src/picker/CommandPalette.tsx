@@ -39,12 +39,10 @@ async function openTargetFrom(repoPath: string, mode: DiffMode, base?: string): 
 }
 
 export function CommandPalette({ onClose, current }: { onClose: () => void; current?: Target }) {
-  const openReview = (r: ReviewEntry) => {
-    void openTargetFrom(r.target.repoPath, r.target.mode, r.target.base ?? undefined);
-    onClose();
-  };
   const openWorktree = (w: PickerWorktree) => {
-    void openTargetFrom(w.path, "uncommitted");
+    // Resume the joined review's mode/base when the folder's current branch has
+    // one; the branch itself is whatever git has checked out.
+    void openTargetFrom(w.path, w.review?.target.mode ?? "uncommitted", w.review?.target.base ?? undefined);
     onClose();
   };
   const onAddRepo = () => {
@@ -73,7 +71,6 @@ export function CommandPalette({ onClose, current }: { onClose: () => void; curr
       >
         <ReviewPicker
           current={current}
-          onOpenReview={openReview}
           onOpenWorktree={openWorktree}
           onAddRepo={onAddRepo}
           onDeleteReview={deleteReview}

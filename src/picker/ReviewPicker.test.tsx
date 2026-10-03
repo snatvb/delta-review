@@ -3,14 +3,26 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ReviewPicker } from "./ReviewPicker";
 import { __resetPickerCacheForTest } from "./pickerData";
 import { __setInvokeForDev } from "../api";
-import type { PickerData, PickerWorktree } from "../types";
+import type { PickerData, PickerWorktree, ReviewEntry } from "../types";
+
+// The demo repo: its main copy (branch "main", a review that matches that live
+// branch) plus one linked worktree with no matching review.
+const REVIEW: ReviewEntry = {
+  id: "rev1",
+  repoName: "demo",
+  target: { repoPath: "/r/demo", worktree: "main", mode: "all-changes" },
+  lastOpenedAt: "2026-06-26T10:00:00Z",
+  commentCount: 3,
+  staleCount: 1,
+  resolvedCount: 0,
+  viewedCount: 2,
+  fileCount: 7,
+};
 
 const DATA: PickerData = {
   home: "/Users/me",
-  recents: [
-    { id: "rev1", repoName: "demo", target: { repoPath: "/r/demo", worktree: "feat/auth", mode: "all-changes" }, lastOpenedAt: "2026-06-26T10:00:00Z", commentCount: 3, staleCount: 1, resolvedCount: 0, viewedCount: 2, fileCount: 7 },
-  ],
   worktrees: [
+    { path: "/r/demo", branch: "main", isMain: true, lastCommitAt: "2026-06-26T09:00:00Z", dirty: false, repoName: "demo", repoId: "r1", review: REVIEW },
     { path: "/r/demo-spike", branch: "spike/idea", isMain: false, lastCommitAt: "2026-06-26T15:45:00Z", dirty: false, repoName: "demo", repoId: "r1" },
   ],
 };
@@ -25,24 +37,28 @@ function mock(data: PickerData) {
 describe("ReviewPicker", () => {
   beforeEach(() => __resetPickerCacheForTest());
 
-  it("lists recents and other worktrees, opens a worktree on click", async () => {
+  it("lists repositories and worktrees as folders, opens one on click", async () => {
     mock(DATA);
     const opened: PickerWorktree[] = [];
     render(
-      <ReviewPicker onOpenReview={() => {}} onOpenWorktree={(w) => opened.push(w)} onAddRepo={() => {}} onDeleteReview={async () => false} />,
+      <ReviewPicker onOpenWorktree={(w) => opened.push(w)} onAddRepo={() => {}} onDeleteReview={async () => false} />,
     );
-    await waitFor(() => expect(screen.getByText("feat/auth")).toBeInTheDocument());
+    // Two groups: the repo's main copy, and its linked worktrees.
+    await waitFor(() => expect(screen.getByText("Repositories")).toBeInTheDocument());
+    expect(screen.getByText("Worktrees")).toBeInTheDocument();
+    expect(screen.getByText("main")).toBeInTheDocument();
     expect(screen.getByText("spike/idea")).toBeInTheDocument();
+    // The row carries the review that matches the folder's live branch.
+    expect(screen.getByText("3")).toBeInTheDocument();
     fireEvent.click(screen.getByText("spike/idea"));
-    expect(opened.map((w) => w.branch)).toEqual(["spike/idea"]);
+    expect(opened.map((w) => w.path)).toEqual(["/r/demo-spike"]);
   });
 
-  it("deletes a recent from its row button and drops it from the list", async () => {
+  it("deletes the joined review but keeps the folder row", async () => {
     mock(DATA);
     const deleted: string[] = [];
     render(
       <ReviewPicker
-        onOpenReview={() => {}}
         onOpenWorktree={() => {}}
         onAddRepo={() => {}}
         onDeleteReview={async (r) => {
@@ -51,27 +67,30 @@ describe("ReviewPicker", () => {
         }}
       />,
     );
-    await waitFor(() => expect(screen.getByText("feat/auth")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("main")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Delete review" }));
-    await waitFor(() => expect(screen.queryByText("feat/auth")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Delete review" })).not.toBeInTheDocument());
+    // The folder is a real place — the row stays; only its review falls off.
+    expect(screen.getByText("main")).toBeInTheDocument();
     expect(deleted).toEqual(["rev1"]);
   });
 
-  it("keeps a recent whose deletion was cancelled", async () => {
+  it("keeps the review when deletion was cancelled", async () => {
     mock(DATA);
-    render(<ReviewPicker onOpenReview={() => {}} onOpenWorktree={() => {}} onAddRepo={() => {}} onDeleteReview={async () => false} />);
-    await waitFor(() => expect(screen.getByText("feat/auth")).toBeInTheDocument());
+    render(<ReviewPicker onOpenWorktree={() => {}} onAddRepo={() => {}} onDeleteReview={async () => false} />);
+    await waitFor(() => expect(screen.getByText("main")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Delete review" }));
     await Promise.resolve();
-    expect(screen.getByText("feat/auth")).toBeInTheDocument();
+    expect(screen.getByText("main")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete review" })).toBeInTheDocument();
   });
 
   it("filters the list as you type", async () => {
     mock(DATA);
-    render(<ReviewPicker onOpenReview={() => {}} onOpenWorktree={() => {}} onAddRepo={() => {}} onDeleteReview={async () => false} />);
-    await waitFor(() => expect(screen.getByText("feat/auth")).toBeInTheDocument());
+    render(<ReviewPicker onOpenWorktree={() => {}} onAddRepo={() => {}} onDeleteReview={async () => false} />);
+    await waitFor(() => expect(screen.getByText("main")).toBeInTheDocument());
     fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: "spike" } });
-    await waitFor(() => expect(screen.queryByText("feat/auth")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("main")).not.toBeInTheDocument());
     expect(screen.getByText("spike/idea")).toBeInTheDocument();
   });
 
@@ -80,20 +99,19 @@ describe("ReviewPicker", () => {
     render(
       <ReviewPicker
         current={{ repoPath: "/r/demo", mode: "uncommitted" }}
-        onOpenReview={() => {}}
         onOpenWorktree={() => {}}
         onAddRepo={() => {}}
         onDeleteReview={async () => false}
       />,
     );
     await waitFor(() => expect(screen.getByText("spike/idea")).toBeInTheDocument());
-    // feat/auth is the worktree we're currently in (different mode) → not a switch target.
-    expect(screen.queryByText("feat/auth")).not.toBeInTheDocument();
+    // /r/demo is the worktree we're currently in (different mode) → not a switch target.
+    expect(screen.queryByText("main")).not.toBeInTheDocument();
   });
 
   it("shows an add-repo affordance and a hint when there are no known repos", async () => {
-    mock({ recents: [], worktrees: [] });
-    render(<ReviewPicker onOpenReview={() => {}} onOpenWorktree={() => {}} onAddRepo={() => {}} onDeleteReview={async () => false} />);
+    mock({ worktrees: [] });
+    render(<ReviewPicker onOpenWorktree={() => {}} onAddRepo={() => {}} onDeleteReview={async () => false} />);
     await waitFor(() => expect(screen.getByText(/no repos yet/i)).toBeInTheDocument());
     expect(screen.getByRole("button", { name: /add a repo/i })).toBeInTheDocument();
   });
@@ -114,7 +132,7 @@ describe("ReviewPicker", () => {
       calls += 1;
       return structuredClone(calls === 1 ? DATA : WITH_NEW) as never;
     });
-    render(<ReviewPicker onOpenReview={() => {}} onOpenWorktree={() => {}} onAddRepo={() => {}} onDeleteReview={async () => false} />);
+    render(<ReviewPicker onOpenWorktree={() => {}} onAddRepo={() => {}} onDeleteReview={async () => false} />);
     await waitFor(() => expect(screen.getByText("spike/idea")).toBeInTheDocument());
     expect(screen.queryByText("fresh/wt")).not.toBeInTheDocument();
 

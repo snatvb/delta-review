@@ -1,30 +1,34 @@
-// The shared "open a review" picker: one flat, searchable list of recent reviews +
-// the current worktrees of known repos, with an "Add a repo…" action at the right
-// of the search box. Mounted in two frames — the Home window and the ⌘K overlay —
-// which supply their own chrome.
+// The shared "open a review" picker: one flat, searchable list of folders —
+// known repositories (their main working copy) and their linked worktrees — with
+// an "Add a repo…" action at the right of the search box. A row's identity is
+// its FOLDER: the branch shown is the one checked out right now, and the row
+// carries the review that opening it would resume. There are deliberately no
+// "recent branches" here — picking a branch you can't check out from the picker
+// was a fiction (every row of one folder opens the same place), and remembered
+// branches outlive their merges. Mounted in two frames — the Home window and
+// the ⌘K overlay — which supply their own chrome.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { rankReviews, rankWorktrees } from "./fuzzy";
+import { rankWorktrees } from "./fuzzy";
 import { usePickerData } from "./usePickerData";
-import { relTime, worktreeIdentity, worktreeMeta } from "./pickerUi";
-import { MessageSquare, TriangleAlert, Check, FolderPlus, Trash2 } from "lucide-react";
+import { worktreeIdentity, worktreeMeta } from "./pickerUi";
+import { Trash2, FolderPlus } from "lucide-react";
 import { Kbd } from "@/components/ui/kbd";
 import type { PickerWorktree, ReviewEntry, Target } from "../types";
 
 export interface ReviewPickerProps {
-  /** Current review's target, excluded from the recents (⌘K frame). Omit on Home. */
+  /** Current review's target, excluded from the list (⌘K frame). Omit on Home. */
   current?: Target;
-  onOpenReview: (r: ReviewEntry) => void;
   onOpenWorktree: (w: PickerWorktree) => void;
   onAddRepo: () => void;
   onDeleteReview: (r: ReviewEntry) => Promise<boolean>;
 }
 
-type Group = "recent" | "worktree";
+type Group = "repo" | "worktree";
 type Row = { key: string; group: Group; node: ReactNode; onActivate: () => void; onDelete?: () => void };
 
-/** Section label shown on the first row of each "recent"/"worktree" run. */
+/** Section label shown on the first row of each "repo"/"worktree" run. */
 function groupLabel(g: Group): string {
-  return g === "recent" ? "Recent" : "Other worktrees";
+  return g === "repo" ? "Repositories" : "Worktrees";
 }
 
 // Virtualized list metrics (px). A repo can have dozens of worktrees, so mounting
@@ -40,26 +44,6 @@ type Cell = { top: number; height: number; key: string } & (
   | { kind: "row"; i: number }
 );
 
-function recentNode(r: ReviewEntry): ReactNode {
-  return (
-    <>
-      {worktreeIdentity(r.repoName, r.target.repoPath, r.target.worktree ?? "(detached)")}
-      <span className="ml-auto flex shrink-0 items-center gap-2.5 self-center whitespace-nowrap text-[11px] text-muted-foreground">
-        {r.commentCount > 0 && (
-          <span className="inline-flex items-center gap-1 tabular-nums"><MessageSquare className="size-3.5" />{r.commentCount}</span>
-        )}
-        {r.staleCount > 0 && (
-          <span className="inline-flex items-center gap-1 tabular-nums text-amber-500"><TriangleAlert className="size-3.5" />{r.staleCount}</span>
-        )}
-        {r.resolvedCount > 0 && (
-          <span className="inline-flex items-center gap-1 tabular-nums text-emerald-500"><Check className="size-3.5" />{r.resolvedCount}</span>
-        )}
-        <span>{relTime(r.lastOpenedAt)}</span>
-      </span>
-    </>
-  );
-}
-
 function worktreeNode(w: PickerWorktree): ReactNode {
   return (
     <>
@@ -69,7 +53,7 @@ function worktreeNode(w: PickerWorktree): ReactNode {
   );
 }
 
-export function ReviewPicker({ current, onOpenReview, onOpenWorktree, onAddRepo, onDeleteReview }: ReviewPickerProps) {
+export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteReview }: ReviewPickerProps) {
   // Seeds from the shared cache for an instant reopen, then revalidates on mount and
   // whenever the window regains focus, so freshly-created worktrees show up. (#refresh)
   const data = usePickerData();
@@ -82,9 +66,13 @@ export function ReviewPicker({ current, onOpenReview, onOpenWorktree, onAddRepo,
   // Last real pointer position — ignore scroll-induced mousemove (same coords) so
   // it can't hijack keyboard selection when a row scrolls under a still cursor.
   const lastPointer = useRef<{ x: number; y: number } | null>(null);
+  // Reviews deleted this session: the folder row stays (it's a real place), but
+  // its joined review — counts, delete button, resume-on-open — drops off.
   const [deletedIds, setDeletedIds] = useState<ReadonlySet<string>>(() => new Set());
 
-  async function deleteRecent(r: ReviewEntry) {
+  async function deleteReviewOf(w: PickerWorktree) {
+    const r = w.review;
+    if (!r) return;
     if (await onDeleteReview(r)) {
       setDeletedIds((prev) => new Set(prev).add(r.id));
     }
@@ -100,12 +88,16 @@ export function ReviewPicker({ current, onOpenReview, onOpenWorktree, onAddRepo,
   // make the current review reappear in the picker.
   const isCurrentWorktree = (path: string) => current != null && path === current.repoPath;
 
-  const recents = data ? rankReviews(data.recents.filter((r) => !isCurrentWorktree(r.target.repoPath) && !deletedIds.has(r.id)), query) : [];
-  const worktrees = data ? rankWorktrees(data.worktrees.filter((w) => !isCurrentWorktree(w.path)), query) : [];
+  const visible = (w: PickerWorktree): PickerWorktree =>
+    w.review && deletedIds.has(w.review.id) ? { ...w, review: null } : w;
 
+  const ranked = data
+    ? rankWorktrees(data.worktrees.filter((w) => !isCurrentWorktree(w.path)).map(visible), query)
+    : [];
+  // Repositories first, then linked worktrees — the two things the picker offers.
   const rows: Row[] = [
-    ...recents.map((r): Row => ({ key: `rev-${r.id}`, group: "recent", node: recentNode(r), onActivate: () => onOpenReview(r), onDelete: () => void deleteRecent(r) })),
-    ...worktrees.map((w): Row => ({ key: `wt-${w.path}`, group: "worktree", node: worktreeNode(w), onActivate: () => onOpenWorktree(w) })),
+    ...ranked.filter((w) => w.isMain).map((w): Row => ({ key: `wt-${w.path}`, group: "repo", node: worktreeNode(w), onActivate: () => onOpenWorktree(w), onDelete: w.review ? () => void deleteReviewOf(w) : undefined })),
+    ...ranked.filter((w) => !w.isMain).map((w): Row => ({ key: `wt-${w.path}`, group: "worktree", node: worktreeNode(w), onActivate: () => onOpenWorktree(w), onDelete: w.review ? () => void deleteReviewOf(w) : undefined })),
   ];
   const labels = rows.map((row, i) => (i === 0 || rows[i - 1].group !== row.group ? groupLabel(row.group) : null));
 
@@ -166,7 +158,7 @@ export function ReviewPicker({ current, onOpenReview, onOpenWorktree, onAddRepo,
     setSel(i);
   }
 
-  const noRepos = data != null && data.recents.length === 0 && data.worktrees.length === 0;
+  const noRepos = data != null && data.worktrees.length === 0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" onKeyDown={onKey}>
@@ -179,7 +171,7 @@ export function ReviewPicker({ current, onOpenReview, onOpenWorktree, onAddRepo,
           autoCapitalize="off"
           autoComplete="off"
           className="h-11 min-w-0 flex-1 bg-transparent px-4 text-[14px] outline-none placeholder:text-muted-foreground/70"
-          placeholder="Search reviews & worktrees…"
+          placeholder="Search repos & worktrees…"
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);

@@ -7,10 +7,26 @@ import type { PickerData } from "../types";
 
 const DATA: PickerData = {
   home: "/Users/me",
-  recents: [
-    { id: "abc", repoName: "demo", target: { repoPath: "/r/demo", worktree: "feat/auth", mode: "all-changes" }, lastOpenedAt: "2026-06-26T10:00:00Z", commentCount: 3, staleCount: 1, resolvedCount: 1, viewedCount: 0, fileCount: 7 },
-  ],
   worktrees: [
+    {
+      path: "/r/demo",
+      branch: "main",
+      isMain: true,
+      lastCommitAt: "2026-06-26T09:00:00Z",
+      repoName: "demo",
+      repoId: "r1",
+      review: {
+        id: "abc",
+        repoName: "demo",
+        target: { repoPath: "/r/demo", worktree: "main", mode: "all-changes", base: "dev" },
+        lastOpenedAt: "2026-06-26T10:00:00Z",
+        commentCount: 3,
+        staleCount: 1,
+        resolvedCount: 1,
+        viewedCount: 0,
+        fileCount: 7,
+      },
+    },
     { path: "/r/demo-spike", branch: "spike/idea", isMain: false, lastCommitAt: "2026-06-26T15:45:00Z", dirty: false, repoName: "demo", repoId: "r1" },
   ],
 };
@@ -27,17 +43,19 @@ describe("CommandPalette", () => {
     });
   });
 
-  it("opens a recent review on click and closes (no mode badge)", async () => {
+  it("opens a folder resuming its joined review's mode and base", async () => {
     let closed = false;
     render(<CommandPalette onClose={() => { closed = true; }} />);
-    await waitFor(() => expect(screen.getByText("feat/auth")).toBeInTheDocument());
-    expect(screen.queryByText("All changes")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText("feat/auth"));
-    await waitFor(() => expect(calls.some((c) => c.cmd === "open_target")).toBe(true));
+    await waitFor(() => expect(screen.getByText("main")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("main"));
+    await waitFor(() => {
+      const call = calls.find((c) => c.cmd === "open_target");
+      expect(call?.args).toMatchObject({ repoPath: "/r/demo", mode: "all-changes", base: "dev" });
+    });
     expect(closed).toBe(true);
   });
 
-  it("opens an other-worktree with its uncommitted changes", async () => {
+  it("opens a folder without a matching review on uncommitted", async () => {
     render(<CommandPalette onClose={() => {}} />);
     await waitFor(() => expect(screen.getByText("spike/idea")).toBeInTheDocument());
     fireEvent.click(screen.getByText("spike/idea"));
@@ -50,7 +68,7 @@ describe("CommandPalette", () => {
   it("escape closes", async () => {
     let closed = false;
     render(<CommandPalette onClose={() => { closed = true; }} />);
-    await waitFor(() => expect(screen.getByText("feat/auth")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("main")).toBeInTheDocument());
     fireEvent.keyDown(screen.getByPlaceholderText(/search/i), { key: "Escape" });
     expect(closed).toBe(true);
   });

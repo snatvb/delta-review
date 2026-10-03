@@ -1,9 +1,10 @@
 // Shared visual helpers for worktree/review rows, used by both the launcher's
 // ReviewPicker and the review window's "Nothing to review" empty state so the two
 // stay visually identical.
-import { Folder, GitBranch } from "lucide-react";
+import { Folder, GitBranch, MessageSquare, TriangleAlert, Check } from "lucide-react";
 import type { ReactNode } from "react";
 import { worktreeName } from "../lib/utils";
+import type { ReviewEntry } from "../types";
 
 /** Relative "time ago" label for an ISO timestamp — "just now", "5m ago", "3h ago",
  *  "2d ago". Empty string for an unparseable input. */
@@ -44,17 +45,35 @@ export function worktreeIdentity(repoName: string, path: string, branch: string)
   );
 }
 
-/** Trailing metadata for a worktree row: a dirty indicator + the relative last-commit
- *  time. Shared so the launcher and the empty-state rows render identical trailers. */
-export function worktreeMeta(w: { dirty?: boolean | null; lastCommitAt?: string | null }): ReactNode {
+/** Trailing metadata for a worktree row: the joined review's comment badges
+ *  (when the folder's current branch has one), a dirty indicator, and the
+ *  relative time — last opened when a review matches, else the branch's last
+ *  commit. Shared so the launcher and the empty-state rows render identical
+ *  trailers. */
+export function worktreeMeta(w: {
+  dirty?: boolean | null;
+  lastCommitAt?: string | null;
+  review?: ReviewEntry | null;
+}): ReactNode {
+  const r = w.review;
+  const at = r?.lastOpenedAt ?? w.lastCommitAt;
   return (
     <span className="ml-auto flex shrink-0 items-center gap-2.5 self-center whitespace-nowrap text-[11px] text-muted-foreground">
+      {r && r.commentCount > 0 && (
+        <span className="inline-flex items-center gap-1 tabular-nums"><MessageSquare className="size-3.5" />{r.commentCount}</span>
+      )}
+      {r && r.staleCount > 0 && (
+        <span className="inline-flex items-center gap-1 tabular-nums text-amber-500"><TriangleAlert className="size-3.5" />{r.staleCount}</span>
+      )}
+      {r && r.resolvedCount > 0 && (
+        <span className="inline-flex items-center gap-1 tabular-nums text-emerald-500"><Check className="size-3.5" />{r.resolvedCount}</span>
+      )}
       {w.dirty && (
         <span className="inline-flex items-center gap-1 text-amber-500" title="Uncommitted changes">
           <span className="size-1.5 rounded-full bg-amber-500" /> uncommitted
         </span>
       )}
-      {w.lastCommitAt && <span>{relTime(w.lastCommitAt)}</span>}
+      {at && <span>{relTime(at)}</span>}
     </span>
   );
 }

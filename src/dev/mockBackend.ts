@@ -729,16 +729,22 @@ export function installMockBackend(): void {
       case "list_registry":
         return structuredClone(REGISTRY) as T;
       case "list_picker": {
-        // `?empty=1` → no recents/worktrees, to exercise the first-launch empty state.
-        // Otherwise: feat/auth + main have reviews (see REGISTRY.reviews) → only the
-        // spike worktree shows under "other worktrees".
+        // `?empty=1` → no folders, to exercise the first-launch empty state.
+        // Otherwise: the demo repo's folders with live branches; the main copy's
+        // current branch ("main") joins its saved review, the linked worktrees
+        // list without one (their branches have no matching review).
+        const reviews = REGISTRY.reviews;
+        // Joined exactly like the backend: by (path, live branch).
+        const joined = (path: string, branch: string) =>
+          reviews.find((r) => r.target.repoPath === path && r.target.worktree === branch) ?? null;
         const data: PickerData = emptyParam
-          ? { home: REGISTRY.home, recents: [], worktrees: [] }
+          ? { home: REGISTRY.home, worktrees: [] }
           : {
               home: REGISTRY.home,
-              recents: REGISTRY.reviews,
               worktrees: [
-                { path: "/Users/me/projects/demo/.worktrees/spike", branch: "spike/new-idea", isMain: false, lastCommitAt: "2026-06-26T15:45:00Z", dirty: false, repoName: "demo", repoId: "r1" },
+                { path: "/Users/me/projects/demo", branch: "main", isMain: true, lastCommitAt: "2026-06-26T12:00:00Z", dirty: false, repoName: "demo", repoId: "r1", review: joined("/Users/me/projects/demo", "main") },
+                { path: "/Users/me/projects/demo/.worktrees/feat-auth-wt", branch: "feat/auth", isMain: false, lastCommitAt: "2026-06-26T10:00:00Z", dirty: false, repoName: "demo", repoId: "r1", review: joined("/Users/me/projects/demo/.worktrees/feat-auth-wt", "feat/auth") },
+                { path: "/Users/me/projects/demo/.worktrees/spike", branch: "spike/new-idea", isMain: false, lastCommitAt: "2026-06-26T15:45:00Z", dirty: false, repoName: "demo", repoId: "r1", review: null },
               ],
             };
         return structuredClone(data) as T;

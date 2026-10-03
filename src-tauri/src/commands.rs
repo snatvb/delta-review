@@ -200,16 +200,6 @@ fn reg_store(app: &tauri::AppHandle) -> Result<JsonRegistryStore, String> {
     ))
 }
 
-/// True when a recent review already covers this worktree (so the picker lists it
-/// under "recent", not "other worktrees"). Matches by worktree path, or by repo
-/// name + branch (a linked worktree resolves to a different path than the review's).
-pub fn worktree_has_review(w: &WorktreeEntry, repo_name: &str, recents: &[ReviewEntry]) -> bool {
-    recents.iter().any(|r| {
-        r.target.repo_path == w.path
-            || (r.repo_name == repo_name && r.target.worktree.as_deref() == Some(w.branch.as_str()))
-    })
-}
-
 /// Upsert repo + review entry with a fresh file_count (open/refresh path). Non-fatal.
 fn sync_registry_after_open(reg_store: &dyn RegistryStore, review: &Review, file_count: u32) {
     let result = (|| -> Result<(), String> {
@@ -510,25 +500,36 @@ pub struct PickerWorktree {
     pub worktree: WorktreeEntry,
     pub repo_name: String,
     pub repo_id: String,
+    /// The stored review that opening this folder resumes — joined by
+    /// (path, live branch), so it is exactly the review the user will land in.
+    /// Absent when none exists for the currently checked-out branch; reviews
+    /// left on branches that have since been switched away from are never
+    /// listed (the picker offers folders, not remembered branches).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review: Option<ReviewEntry>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PickerData {
-    pub recents: Vec<ReviewEntry>,
+    /// Every live worktree of every known repo — the main copy (`is_main`)
+    /// plus linked worktrees. The frontend splits them into its two groups.
     pub worktrees: Vec<PickerWorktree>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub home: Option<String>,
 }
 
-/// Recents + the live, currently-checked-out worktrees of every known repo, with
-/// worktrees already covered by a review removed (they show under recents).
+/// The live, currently-checked-out worktrees of every known repo, each joined
+/// with the review that opening it would resume. A review only matches when its
+/// stored branch label equals the worktree's branch *right now* — the review id
+/// is (path, branch), so a folder on a different branch opens a different
+/// review and the joined one would be a lie. Folders that no longer exist (or
+/// whose repo moved) drop out naturally via the live enumeration.
 pub fn list_picker_impl(
     reg_store: &dyn RegistryStore,
     home: Option<String>,
 ) -> Result<PickerData, String> {
     let reg = reg_store.load()?;
-    let recents = reg.reviews.clone();
     let mut worktrees = Vec::new();
     for repo in &reg.repos {
         // Best-effort: a repo whose worktrees can't be listed (moved/deleted) is skipped.
@@ -536,21 +537,23 @@ pub fn list_picker_impl(
             .and_then(|r| r.list_worktrees())
             .unwrap_or_default();
         for w in wts {
-            if worktree_has_review(&w, &repo.name, &recents) {
-                continue;
-            }
+            let review = reg
+                .reviews
+                .iter()
+                .find(|r| {
+                    r.target.repo_path == w.path
+                        && r.target.worktree.as_deref() == Some(w.branch.as_str())
+                })
+                .cloned();
             worktrees.push(PickerWorktree {
                 worktree: w,
                 repo_name: repo.name.clone(),
                 repo_id: repo.id.clone(),
+                review,
             });
         }
     }
-    Ok(PickerData {
-        recents,
-        worktrees,
-        home,
-    })
+    Ok(PickerData { worktrees, home })
 }
 
 // Async so Tauri runs the git enumeration OFF the main thread. A synchronous command
@@ -901,59 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn worktree_has_review_matches_by_path_or_repo_and_branch() {
-        let recents = vec![ReviewEntry {
-            id: "x".into(),
-            repo_name: "demo".into(),
-            target: Target {
-                repo_path: "/r/demo".into(),
-                worktree: Some("feat/a".into()),
-                mode: DiffMode::AllChanges,
-                base: None,
-                commit: None,
-            },
-            last_opened_at: "t".into(),
-            comment_count: 0,
-            stale_count: 0,
-            resolved_count: 0,
-            viewed_count: 0,
-            file_count: 1,
-        }];
-        let wt = |path: &str, branch: &str| WorktreeEntry {
-            path: path.into(),
-            branch: branch.into(),
-            is_main: false,
-            last_commit_at: None,
-            dirty: false,
-        };
-        // same path → covered
-        assert!(worktree_has_review(
-            &wt("/r/demo", "feat/a"),
-            "demo",
-            &recents
-        ));
-        // same repo + branch, different path (linked worktree) → covered
-        assert!(worktree_has_review(
-            &wt("/r/demo-a", "feat/a"),
-            "demo",
-            &recents
-        ));
-        // different branch → not covered
-        assert!(!worktree_has_review(
-            &wt("/r/demo-b", "feat/b"),
-            "demo",
-            &recents
-        ));
-        // different repo (different path + name) → not covered, even on a same-named branch
-        assert!(!worktree_has_review(
-            &wt("/r/other", "feat/a"),
-            "other",
-            &recents
-        ));
-    }
-
-    #[test]
-    fn list_picker_returns_recents_and_unreviewed_worktrees() {
+    fn list_picker_lists_folders_once_with_the_review_that_would_open() {
         let (dir, repo) = repo_with_commit(); // main worktree on "main"
         add_worktree(&repo, dir.path(), "demo-feat", "feat/a"); // linked worktree "feat/a"
         let root = dir.path().to_str().unwrap().to_string();
@@ -962,15 +913,86 @@ mod tests {
         let (_storage, reg_store) = stores(store_dir.path());
         let entry = Repo::open(&root).unwrap().repo_entry().unwrap();
         let repo_name = entry.name.clone();
+        // The path as the app itself would persist it (canonical, from open_target_window).
+        let main_path = entry
+            .worktrees
+            .iter()
+            .find(|w| w.is_main)
+            .unwrap()
+            .path
+            .clone();
+        let mut reg = reg_store.load().unwrap();
+        reg.upsert_repo(entry);
+        let review = |id: &str, path: String, branch: &str| ReviewEntry {
+            id: id.into(),
+            repo_name: repo_name.clone(),
+            target: Target {
+                repo_path: path,
+                worktree: Some(branch.into()),
+                mode: DiffMode::AllChanges,
+                base: None,
+                commit: None,
+            },
+            last_opened_at: "t".into(),
+            comment_count: 1,
+            stale_count: 0,
+            resolved_count: 0,
+            viewed_count: 0,
+            file_count: 1,
+        };
+        // The review that matches the folder's CURRENT branch — this one opens.
+        reg.upsert_review(review("rev1", main_path.clone(), "main"));
+        // Reviews left on branches this folder has since switched away from —
+        // stale memory, must not surface as separate picker rows.
+        reg.upsert_review(review("rev2", main_path, "feat/merged-long-ago"));
+        reg_store.save(&reg).unwrap();
+
+        let data = list_picker_impl(&reg_store, Some("/Users/me".into())).unwrap();
+        // One row per folder — the main copy and the linked worktree — never one
+        // per remembered branch.
+        assert_eq!(data.worktrees.len(), 2);
+        let main = data.worktrees.iter().find(|w| w.worktree.is_main).unwrap();
+        assert_eq!(main.worktree.branch, "main");
+        assert_eq!(main.review.as_ref().unwrap().id, "rev1");
+        let linked = data.worktrees.iter().find(|w| !w.worktree.is_main).unwrap();
+        assert_eq!(linked.worktree.branch, "feat/a");
+        assert!(
+            linked.review.is_none(),
+            "no review exists for the linked worktree's current branch"
+        );
+        assert_eq!(data.worktrees[0].repo_name, repo_name);
+        assert_eq!(data.home.as_deref(), Some("/Users/me"));
+    }
+
+    #[test]
+    fn list_picker_joins_reviews_by_branch_across_worktrees() {
+        // A review opened in a linked worktree joins that worktree's row, keyed by
+        // (path, branch) — not by repo + branch, which would swallow unrelated rows.
+        let (dir, repo) = repo_with_commit(); // main on "main"
+        add_worktree(&repo, dir.path(), "demo-feat", "feat/a");
+        let root = dir.path().to_str().unwrap().to_string();
+
+        let store_dir = tempfile::TempDir::new().unwrap();
+        let (_storage, reg_store) = stores(store_dir.path());
+        let entry = Repo::open(&root).unwrap().repo_entry().unwrap();
+        let repo_name = entry.name.clone();
+        // The live worktree path as enumeration will report it.
+        let wt_path = entry
+            .worktrees
+            .iter()
+            .find(|w| !w.is_main)
+            .unwrap()
+            .path
+            .clone();
         let mut reg = reg_store.load().unwrap();
         reg.upsert_repo(entry);
         reg.upsert_review(ReviewEntry {
-            id: "rev1".into(),
-            repo_name: repo_name.clone(),
+            id: "rev-wt".into(),
+            repo_name,
             target: Target {
-                repo_path: root.clone(),
-                worktree: Some("main".into()),
-                mode: DiffMode::AllChanges,
+                repo_path: wt_path,
+                worktree: Some("feat/a".into()),
+                mode: DiffMode::Uncommitted,
                 base: None,
                 commit: None,
             },
@@ -983,17 +1005,15 @@ mod tests {
         });
         reg_store.save(&reg).unwrap();
 
-        let data = list_picker_impl(&reg_store, Some("/Users/me".into())).unwrap();
-        assert_eq!(data.recents.len(), 1);
-        // "main" is covered by a review → only "feat/a" appears under other worktrees.
-        let branches: Vec<&str> = data
-            .worktrees
-            .iter()
-            .map(|w| w.worktree.branch.as_str())
-            .collect();
-        assert_eq!(branches, vec!["feat/a"]);
-        assert_eq!(data.worktrees[0].repo_name, repo_name);
-        assert_eq!(data.home.as_deref(), Some("/Users/me"));
+        let data = list_picker_impl(&reg_store, None).unwrap();
+        assert_eq!(data.worktrees.len(), 2);
+        let linked = data.worktrees.iter().find(|w| !w.worktree.is_main).unwrap();
+        assert_eq!(linked.review.as_ref().unwrap().id, "rev-wt");
+        let main = data.worktrees.iter().find(|w| w.worktree.is_main).unwrap();
+        assert!(
+            main.review.is_none(),
+            "the linked worktree's review must not join the main row"
+        );
     }
 
     #[test]

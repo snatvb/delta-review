@@ -1,5 +1,5 @@
 import { worktreeName } from "../lib/utils";
-import type { PickerWorktree, ReviewEntry } from "../types";
+import type { PickerWorktree } from "../types";
 
 /** Subsequence fuzzy match. Returns a score (higher is better), or null if no match. */
 export function fuzzyMatch(query: string, text: string): number | null {
@@ -21,25 +21,19 @@ export function fuzzyMatch(query: string, text: string): number | null {
   return qi === q.length ? score : null;
 }
 
-/** Filter + rank reviews against a query (branch + repo name haystack). */
-export function rankReviews(reviews: ReviewEntry[], query: string): ReviewEntry[] {
-  const scored: { r: ReviewEntry; score: number }[] = [];
-  for (const r of reviews) {
-    const hay = `${worktreeName(r.target.repoPath)} ${r.target.worktree ?? ""} ${r.repoName}`;
-    const score = fuzzyMatch(query, hay);
-    if (score !== null) scored.push({ r, score });
-  }
-  scored.sort((a, b) => b.score - a.score || b.r.lastOpenedAt.localeCompare(a.r.lastOpenedAt));
-  return scored.map((x) => x.r);
+/** When this folder was last touched: the review you'd resume if one matches
+ *  the live branch, else the branch's last commit. */
+export function worktreeActivity(w: PickerWorktree): string {
+  return w.review?.lastOpenedAt ?? w.lastCommitAt ?? "";
 }
 
-/** Filter + rank worktrees against a query (branch + repo name haystack). */
+/** Filter + rank worktree folders against a query (branch + repo name haystack). */
 export function rankWorktrees(worktrees: PickerWorktree[], query: string): PickerWorktree[] {
   const scored: { w: PickerWorktree; score: number }[] = [];
   for (const w of worktrees) {
     const score = fuzzyMatch(query, `${worktreeName(w.path)} ${w.branch} ${w.repoName}`);
     if (score !== null) scored.push({ w, score });
   }
-  scored.sort((a, b) => b.score - a.score || (b.w.lastCommitAt ?? "").localeCompare(a.w.lastCommitAt ?? ""));
+  scored.sort((a, b) => b.score - a.score || worktreeActivity(b.w).localeCompare(worktreeActivity(a.w)));
   return scored.map((x) => x.w);
 }

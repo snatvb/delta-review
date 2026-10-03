@@ -7,13 +7,12 @@ import type { PickerData } from "./types";
 
 const WITH_REPOS: PickerData = {
   home: "/Users/me",
-  recents: [
-    { id: "rev1", repoName: "demo", target: { repoPath: "/r/demo", worktree: "feat/auth", mode: "all-changes" }, lastOpenedAt: "2026-06-26T10:00:00Z", commentCount: 0, staleCount: 0, resolvedCount: 0, viewedCount: 0, fileCount: 3 },
+  worktrees: [
+    { path: "/r/demo", branch: "main", isMain: true, repoName: "demo", repoId: "r1" },
   ],
-  worktrees: [],
 };
 
-const EMPTY: PickerData = { home: "/Users/me", recents: [], worktrees: [] };
+const EMPTY: PickerData = { home: "/Users/me", worktrees: [] };
 
 function mock(picker: PickerData) {
   __setInvokeForDev(async (cmd: string) => {
@@ -34,13 +33,13 @@ describe("Home", () => {
     render(<Home />);
     expect(await screen.findByText("Open a repository")).toBeInTheDocument();
     // The picker (with its search box) should not be mounted.
-    expect(screen.queryByPlaceholderText(/search reviews/i)).toBeNull();
+    expect(screen.queryByPlaceholderText(/search repos/i)).toBeNull();
   });
 
   it("shows the picker when there are repos to list", async () => {
     mock(WITH_REPOS);
     render(<Home />);
-    expect(await screen.findByPlaceholderText(/search reviews/i)).toBeInTheDocument();
+    expect(await screen.findByPlaceholderText(/search repos/i)).toBeInTheDocument();
     expect(screen.queryByText("Open a repository")).toBeNull();
   });
 });

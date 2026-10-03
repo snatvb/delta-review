@@ -208,16 +208,22 @@ export interface Registry {
 
 export interface PickerWorktree {
   path: string;
+  /** The branch checked out RIGHT NOW — live from git, never a remembered one. */
   branch: string;
   isMain: boolean;
   lastCommitAt?: string | null;
   dirty?: boolean;
   repoName: string;
   repoId: string;
+  /** The stored review opening this folder resumes, joined by (path, live
+   *  branch) — exactly what a click will land in. Absent when none exists for
+   *  the currently checked-out branch. */
+  review?: ReviewEntry | null;
 }
 
+/** The picker's two kinds of rows — folders, not remembered branches:
+ *  repositories (main working copies, `isMain`) and their linked worktrees. */
 export interface PickerData {
-  recents: ReviewEntry[];
   worktrees: PickerWorktree[];
   home?: string | null;
 }
