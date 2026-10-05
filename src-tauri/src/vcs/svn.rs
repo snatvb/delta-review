@@ -1707,6 +1707,8 @@ mod tests {
                 start_line: Some(2),
                 end_line: None,
                 snippet: Some("line2 CHANGED".into()),
+                x: None,
+                y: None,
             }),
             body: "b".into(),
             stale: false,

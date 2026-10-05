@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Check, Copy, MessageSquareDashed, Pencil, RotateCcw, Trash2, X } from "lucide-react";
 import { useResizableWidth, usePaneResize, PaneResizer, COMMENTS_PANE } from "../lib/resizablePane";
+import { pointSuffix } from "../diff/imagePoints";
 import { CommentEditor } from "./CommentEditor";
 import { useCopyCommentForAgent } from "./commentForAgent";
 import type { Comment } from "../types";
@@ -15,9 +16,12 @@ function locationParts(c: Comment): { dir: string; name: string; suffix: string 
   const slash = a.file.lastIndexOf("/");
   const dir = slash >= 0 ? a.file.slice(0, slash + 1) : "";
   const name = slash >= 0 ? a.file.slice(slash + 1) : a.file;
-  const suffix = a.startLine == null
-    ? "file"
-    : a.endLine && a.endLine !== a.startLine ? `L${a.startLine}–${a.endLine}` : `L${a.startLine}`;
+  // Image point comments locate by their pin ("x30% y62%"), like a line number.
+  const suffix = a.x != null && a.y != null
+    ? pointSuffix(a.x, a.y)
+    : a.startLine == null
+      ? "file"
+      : a.endLine && a.endLine !== a.startLine ? `L${a.startLine}–${a.endLine}` : `L${a.startLine}`;
   return { dir, name, suffix };
 }
 
@@ -99,7 +103,14 @@ export function CommentIndex({
     .filter((c) => c.scope !== "general")
     .sort((a, b) => {
       const fa = a.anchor?.file ?? "", fb = b.anchor?.file ?? "";
-      return fa === fb ? (a.anchor?.startLine ?? 0) - (b.anchor?.startLine ?? 0) : fa.localeCompare(fb);
+      // Same file: by line, with image points ordered by their y fraction (the
+      // top-to-bottom order their pins render in), like the diff pane sorts them.
+      if (fa === fb) {
+        const la = a.anchor?.startLine ?? 0, lb = b.anchor?.startLine ?? 0;
+        if (la !== lb) return la - lb;
+        return (a.anchor?.y ?? 0) - (b.anchor?.y ?? 0);
+      }
+      return fa.localeCompare(fb);
     });
   // A resolved comment is no longer "stale" — resolving is the acknowledgement,
   // so it drops out of both the count and its per-entry badge below.

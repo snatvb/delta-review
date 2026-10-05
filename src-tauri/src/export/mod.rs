@@ -47,7 +47,18 @@ pub fn export_markdown(review: &Review) -> String {
         }
     }
     for (file, mut comments) in by_file {
-        comments.sort_by_key(|c| c.anchor.as_ref().and_then(|a| a.start_line).unwrap_or(0));
+        // Point comments carry no line, so they'd all sit at key 0 — order them
+        // by their y fraction as a tiebreak so the list reads top-to-bottom
+        // like the image it annotates.
+        comments.sort_by(|a, b| {
+            let key = |c: &Comment| {
+                let a = c.anchor.as_ref();
+                let line = a.and_then(|a| a.start_line).unwrap_or(0);
+                let y = (a.and_then(|a| a.y).unwrap_or(0.0) * 1000.0) as u32;
+                (line, y)
+            };
+            key(a).cmp(&key(b))
+        });
         out.push_str(&format!("## {file}\n\n"));
         let lang = match file.rsplit_once('.') {
             Some((_, ext)) if !ext.contains('/') => ext,
@@ -57,6 +68,14 @@ pub fn export_markdown(review: &Review) -> String {
             let a = c.anchor.as_ref().unwrap();
             let header = match c.scope {
                 CommentScope::File => "#### File-level".to_string(),
+                CommentScope::Point => match (a.x, a.y) {
+                    (Some(x), Some(y)) => format!(
+                        "#### Image point (x {}% · y {}%)",
+                        (x * 100.0).round() as u32,
+                        (y * 100.0).round() as u32
+                    ),
+                    _ => "#### Image point".to_string(),
+                },
                 CommentScope::Range => match (a.start_line, a.end_line) {
                     (Some(s), Some(e)) => format!("#### L{s}–{e}"),
                     (Some(s), _) => format!("#### L{s}"),
@@ -166,6 +185,8 @@ mod tests {
                     start_line: Some(40),
                     end_line: None,
                     snippet: Some("export const TTL = 3600".into()),
+                    x: None,
+                    y: None,
                 }),
                 "make configurable",
                 false,
@@ -195,6 +216,8 @@ mod tests {
                 start_line: Some(40),
                 end_line: None,
                 snippet: Some("export const TTL = 3600".into()),
+                x: None,
+                y: None,
             }),
             "make configurable",
             false,
@@ -207,6 +230,34 @@ mod tests {
     }
 
     #[test]
+    fn point_comment_renders_image_position_and_orders_top_to_bottom() {
+        let at = |x: f64, y: f64| {
+            cmt(
+                CommentScope::Point,
+                Some(Anchor {
+                    file: "assets/logo.png".into(),
+                    side: Side::New,
+                    start_line: None,
+                    end_line: None,
+                    snippet: None,
+                    x: Some(x),
+                    y: Some(y),
+                }),
+                &format!("note at y{y}"),
+                false,
+                false,
+            )
+        };
+        let md = export_markdown(&review_with(vec![at(0.2, 0.8), at(0.3, 0.62)]));
+        assert!(md.contains("#### Image point (x 30% · y 62%)"));
+        assert!(md.contains("note at y0.62"));
+        // Top-to-bottom: the y=0.62 note renders before the y=0.8 one.
+        let a = md.find("note at y0.62").unwrap();
+        let b = md.find("note at y0.8").unwrap();
+        assert!(a < b);
+    }
+
+    #[test]
     fn stale_is_marked_not_dropped() {
         let md = export_markdown(&review_with(vec![cmt(
             CommentScope::Line,
@@ -216,6 +267,8 @@ mod tests {
                 start_line: Some(8),
                 end_line: None,
                 snippet: Some("if (!token) return null".into()),
+                x: None,
+                y: None,
             }),
             "redundant guard",
             true,
@@ -237,6 +290,8 @@ mod tests {
                     start_line: Some(40),
                     end_line: None,
                     snippet: Some("keep".into()),
+                    x: None,
+                    y: None,
                 }),
                 "keep me",
                 false,
@@ -250,6 +305,8 @@ mod tests {
                     start_line: Some(41),
                     end_line: None,
                     snippet: Some("gone".into()),
+                    x: None,
+                    y: None,
                 }),
                 "resolved away",
                 false,
@@ -270,6 +327,8 @@ mod tests {
                 start_line: Some(40),
                 end_line: None,
                 snippet: Some("export const TTL = 3600".into()),
+                x: None,
+                y: None,
             }),
             "make configurable",
             false,

@@ -8,6 +8,8 @@ pub enum CommentScope {
     Line,
     Range,
     File,
+    /// A point on a binary image, anchored by fractions in `Anchor::x`/`y`.
+    Point,
     General,
 }
 
@@ -29,6 +31,12 @@ pub struct Anchor {
     pub end_line: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
+    /// Image point anchor (scope `point`): position as fractions 0..1 of that
+    /// side's natural dimensions — stable across preview scaling and zoom.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,5 +153,23 @@ mod tests {
         // And it is always written back out.
         let out = serde_json::to_string(&c).unwrap();
         assert!(out.contains("\"resolved\":false"));
+    }
+
+    #[test]
+    fn point_anchor_round_trips_and_legacy_json_lacks_xy() {
+        let json = r#"{"id":"c","scope":"point","anchor":{"file":"a.png","side":"new","x":0.25,"y":0.75},"body":"b","stale":false,"resolved":false,"createdAt":"t","updatedAt":"t"}"#;
+        let c: Comment = serde_json::from_str(json).unwrap();
+        assert_eq!(c.scope, CommentScope::Point);
+        let a = c.anchor.unwrap();
+        assert_eq!(a.x, Some(0.25));
+        assert_eq!(a.y, Some(0.75));
+        // Legacy anchors without x/y still deserialize (→ None) and don't grow
+        // the fields back on save (skip_serializing_if).
+        let legacy: Comment = serde_json::from_str(
+            r#"{"id":"c","scope":"line","anchor":{"file":"a.ts","side":"new","startLine":3},"body":"b","stale":false,"resolved":false,"createdAt":"t","updatedAt":"t"}"#,
+        )
+        .unwrap();
+        assert!(legacy.anchor.as_ref().unwrap().x.is_none());
+        assert!(!serde_json::to_string(&legacy).unwrap().contains("\"x\""));
     }
 }

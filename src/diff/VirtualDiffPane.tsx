@@ -16,9 +16,9 @@
 //
 // Supports unified + split, line/range/file comments, word-level intra-line diff,
 // jump-to-comment, and the viewed toggle.
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { track } from "@/analytics";
-import { ArrowLeftRight, BookOpen, Check, ChevronDown, ChevronRight, ChevronUp, Code as CodeIcon, Copy, ExternalLink, Eye, EyeOff, FileQuestion, FileText, FileX, MessageSquarePlus, Pencil, Plus, WrapText } from "lucide-react";
+import { ArrowLeftRight, BookOpen, Check, ChevronDown, ChevronRight, ChevronUp, Code as CodeIcon, Copy, ExternalLink, Eye, EyeOff, FileQuestion, FileText, FileX, Maximize2, MessageSquarePlus, Pencil, Plus, WrapText } from "lucide-react";
 import { getSyntaxLineTemplate } from "@git-diff-view/file";
 import { SplitSide } from "@git-diff-view/react";
 import { Button } from "@/components/ui/button";
@@ -37,10 +37,11 @@ import { findPrefillFromSelection } from "./findSelection";
 import { occurrenceQueryFromSelection } from "./occurrenceSelection";
 import { isWorkingTreeTarget, unifiedRowEdit, splitRowEdit } from "./lineEdit";
 import { FileEditorOverlay } from "./FileEditorOverlay";
-import { BinaryImageDiff } from "./BinaryImageDiff";
+import { BinaryImageDiff, type ImagePin } from "./BinaryImageDiff";
 import { ImageLightbox, type ImageLightboxSide } from "./ImageLightbox";
 import { binarySidesFor, formatBytes, imageMimeFor, isImagePath, previewableImageSide } from "./binaryFile";
 import { useBinaryFile } from "./useBinaryFile";
+import { numberPointComments, PIN_TONE_CLASS, pinToneFor, pointKey, pointOf, pointSuffix } from "./imagePoints";
 import type { Anchor, BinaryFileDiff, Comment, DiffMode, FileDiff, FileEntry, FileStatus, Side, Target } from "../types";
 import type { DiffLayout } from "./useDiffLayout";
 import { useFileDiffCache } from "./useFileDiffCache";
@@ -446,7 +447,7 @@ function FoldRow({ top, count, showDown, showUp, onDown, onUp, onExpand, onAll }
 }
 
 // An inline comment thread anchored under a row. Measures its own (variable) height.
-function CommentBlock({ id, top, comments, onEdit, onDelete, onToggleResolved, onHeight }: { id: string; top: number; comments: Comment[]; onEdit: (id: string, body: string) => void; onDelete: (id: string) => void; onToggleResolved: (id: string) => void; onHeight: (id: string, h: number) => void }) {
+function CommentBlock({ id, top, comments, header, onEdit, onDelete, onToggleResolved, onHeight }: { id: string; top: number; comments: Comment[]; header?: ReactNode; onEdit: (id: string, body: string) => void; onDelete: (id: string) => void; onToggleResolved: (id: string) => void; onHeight: (id: string, h: number) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = ref.current;
@@ -461,6 +462,7 @@ function CommentBlock({ id, top, comments, onEdit, onDelete, onToggleResolved, o
     // `delta-comment-ui` flips the comment UI back to the sans font (the diff
     // wrapper forces mono on everything inside it) and restores app colors. (#3)
     <div ref={ref} className="delta-comment-ui absolute inset-x-0 px-3 pb-3 pt-1.5" style={{ top }}>
+      {header}
       <CommentThread comments={comments} onEdit={onEdit} onDelete={onDelete} onToggleResolved={onToggleResolved} />
     </div>
   );
@@ -491,7 +493,7 @@ function PreviewBody({ content, onHeight }: { content: string; onHeight: (h: num
   );
 }
 
-interface Block { id: string; index: number; comments: Comment[] }
+interface Block { id: string; index: number; comments: Comment[]; point?: { side: Side; x: number; y: number } }
 
 const VFileSection = memo(function VFileSection({
   entry, theme, layout, cache, collapsed, viewed, previewing, onSetPreview, headerSolo, target, repoPath, mode, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onOpenFileEditor, onOpenImage, onToggleCollapse, onToggleViewed, wrap, onToggleWrap, view, imageNear, paneW, rowH, chPx, query, caseSensitive, wholeWord, activeMatch, onMatches, forceModel, occ, comments, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, reportBodyHeight,
@@ -512,7 +514,8 @@ const VFileSection = memo(function VFileSection({
   onOpenFileEditor: (file: string, line: number | null) => void;
   // Opens the full-window image viewer (#lightbox) with the card's sides —
   // srcs are blob URLs built here so the viewer reuses the card's cached bytes.
-  onOpenImage: (req: { path: string; sides: ImageLightboxSide[] }) => void;
+  // focusCommentId opens a point comment's bubble in the viewer (#point).
+  onOpenImage: (req: { path: string; sides: ImageLightboxSide[]; focusCommentId?: string }) => void;
   previewing: boolean; // rendered markdown preview instead of the diff (state lifted to the pane so it survives scroll-unmount) (#preview)
   onSetPreview: (path: string, on: boolean) => void;
   onToggleCollapse: (path: string) => void;
@@ -569,15 +572,16 @@ const VFileSection = memo(function VFileSection({
   const [revealed, setRevealed] = useState(false);
   const ignoredHidden = isIgnored && !revealed;
   const binary = useBinaryFile(target, cache, entry.path, !collapsed && !previewing && !ignoredHidden && isBinary && (isImageCard ? imageNear : view != null));
-  // Full-window viewer (#lightbox): the sides are resolved HERE, at open time,
-  // so the viewer gets the exact blob URLs the card already rendered — the
-  // webview serves them from cache, no second fetch over IPC.
-  const openImageLightbox = useCallback(() => {
+  // Opens the full-window image viewer (#lightbox) with the card's sides —
+  // srcs are blob URLs built here so the viewer reuses the card's cached bytes.
+  // `focusCommentId` opens a specific pin's bubble there (a pin click here).
+  const openImageLightbox = useCallback((focusCommentId?: string) => {
     if (!binary || !isImageCard) return;
     const mime = imageMimeFor(entry.path);
     const oldMime = entry.oldPath ? imageMimeFor(entry.oldPath) : null;
     onOpenImage({
       path: entry.path,
+      focusCommentId,
       sides: binarySidesFor(entry.status).map((side) => {
         const sideMime = side === "old" ? oldMime ?? mime : mime;
         const size = side === "old" ? binary.oldSize : binary.newSize;
@@ -671,6 +675,54 @@ const VFileSection = memo(function VFileSection({
     out.push(...byKey.values());
     return out.sort((x, y) => x.index - y.index);
   }, [model, comments, layout]);
+
+  // Binary cards have no model, so their threads (#point + the fix that made
+  // binary files commentable at all) are built from scope alone: file-scope →
+  // one block under the placeholder; image points → one block per pin, ordered
+  // top-to-bottom like the rows they replace. Pin numbering matches the pins on
+  // the card and in the lightbox (imagePoints.numberPointComments).
+  const binaryBlocks = useMemo<Block[]>(() => {
+    if (!isBinary) return [];
+    const out: Block[] = [];
+    const fileScoped = comments.filter((c) => c.scope === "file");
+    if (fileScoped.length) out.push({ id: "__file__", index: -1, comments: fileScoped });
+    const byPoint = new Map<string, Block>();
+    for (const c of comments) {
+      const p = pointOf(c);
+      if (!p) continue;
+      const key = pointKey(p.side, p.x, p.y);
+      let b = byPoint.get(key);
+      if (!b) {
+        b = { id: key, index: -1, comments: [], point: p };
+        byPoint.set(key, b);
+      }
+      b.comments.push(c);
+    }
+    out.push(...[...byPoint.values()].sort((a, b) => (a.point!.y - b.point!.y) || (a.point!.x - b.point!.x)));
+    return out;
+  }, [isBinary, comments]);
+
+  // Pins for the image card preview: the FIRST comment of each point block (the
+  // focus target on click), numbered by the shared top-to-bottom order.
+  const imagePins = useMemo<ImagePin[]>(() => {
+    if (!isImageCard) return [];
+    const numbers = numberPointComments(comments);
+    const pins: ImagePin[] = [];
+    for (const b of binaryBlocks) {
+      if (!b.point) continue;
+      const first = b.comments[0];
+      pins.push({
+        commentId: first.id,
+        n: numbers.get(first.id) ?? 0,
+        side: b.point.side,
+        x: b.point.x,
+        y: b.point.y,
+        tone: pinToneFor(first),
+        title: first.body.trim() === "" ? "Empty note" : first.body,
+      });
+    }
+    return pins;
+  }, [isImageCard, binaryBlocks, comments]);
 
   // Lines that carry a comment must always stay visible (never folded). (#10)
   const commentedRows = useMemo(() => {
@@ -824,12 +876,16 @@ const VFileSection = memo(function VFileSection({
   const commentAbove = (v: number) => { let s = 0; for (const b of blocks) { if (blockVa(b) < v) s += heightOf(b); else break; } return s; };
   const visualRowTop = (v: number) => rowTops[v] + commentAbove(v);
   const totalCommentH = blocks.reduce((s, b) => s + heightOf(b), 0);
+  // A binary card's body = its fixed image/placeholder area + the measured
+  // threads below it (#point + binary file comments).
+  const binaryCommentsH = binaryBlocks.reduce((s, b) => s + heightOf(b), 0);
+  const fixedBodyH = isImageCard ? IMAGE_BODY_H : PLACEHOLDER_BODY_H;
   const bodyH = collapsed
     ? 0
     : previewing
       ? (previewH || EST_PREVIEW_H)
       : showPlaceholder
-        ? isImageCard ? IMAGE_BODY_H : PLACEHOLDER_BODY_H
+        ? isBinary ? fixedBodyH + binaryCommentsH : PLACEHOLDER_BODY_H
         : rowTops[visualCount] + totalCommentH;
   // Report a definite height once it's known — model built, or a fixed-height
   // placeholder shown — so the parent's offsets are exact. (#10/#11)
@@ -1172,24 +1228,72 @@ const VFileSection = memo(function VFileSection({
               </button>
             </div>
           ) : isBinary ? (
-            isImageCard ? (
-              <BinaryImageDiff
-                binary={binary}
-                status={entry.status}
-                mime={imageMimeFor(entry.path)}
-                oldMime={entry.oldPath ? imageMimeFor(entry.oldPath) : null}
-                load={imageNear}
-                srcOf={(side, mime) => api.binaryBlobUrl(target, entry.path, side, mime, binary?.rev ?? 0)}
-                onExpand={openImageLightbox}
-              />
-            ) : (
-              // Terminal placeholder (no reveal action like deleted/giant): centered,
-              // with the exact byte size(s) once the binary fetch lands. (#binary)
-              <div className="delta-ui-font flex h-full items-center justify-center gap-3 px-3 text-[13px] text-muted-foreground">
-                <FileQuestion className="size-4 shrink-0 opacity-70" />
-                <span>{binarySizeNote(binary, entry.status)}</span>
+            <>
+              {/* The fixed-height image/placeholder area, then the card's comment
+                  threads below it — file-scope and per-pin point blocks. This is
+                  what makes binary files commentable at all: the threads used to
+                  need a diff model the file never has. (#point) */}
+              <div style={{ height: fixedBodyH }}>
+                {isImageCard ? (
+                  <BinaryImageDiff
+                    binary={binary}
+                    status={entry.status}
+                    mime={imageMimeFor(entry.path)}
+                    oldMime={entry.oldPath ? imageMimeFor(entry.oldPath) : null}
+                    load={imageNear}
+                    srcOf={(side, mime) => api.binaryBlobUrl(target, entry.path, side, mime, binary?.rev ?? 0)}
+                    pins={imagePins}
+                    onOpenPin={(id) => openImageLightbox(id)}
+                    onExpand={() => openImageLightbox()}
+                  />
+                ) : (
+                  // Terminal placeholder (no reveal action like deleted/giant): centered,
+                  // with the exact byte size(s) once the binary fetch lands. (#binary)
+                  <div className="delta-ui-font flex h-full items-center justify-center gap-3 px-3 text-[13px] text-muted-foreground">
+                    <FileQuestion className="size-4 shrink-0 opacity-70" />
+                    <span>{binarySizeNote(binary, entry.status)}</span>
+                  </div>
+                )}
               </div>
-            )
+              {binaryBlocks.map((b, i) => {
+                const top = fixedBodyH + binaryBlocks.slice(0, i).reduce((s, x) => s + heightOf(x), 0);
+                const first = b.comments[0];
+                const header = b.point ? (
+                  <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                    <span className={`flex size-[18px] shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold leading-none tabular-nums ${PIN_TONE_CLASS[pinToneFor(first)]}`}>
+                      {imagePins.find((p) => p.commentId === first.id)?.n ?? 0}
+                    </span>
+                    <span className="font-mono tabular-nums">{pointSuffix(b.point.x, b.point.y)}</span>
+                    {b.point.side === "old" && (
+                      <span className="rounded bg-muted px-1 py-px text-[10px]">old side</span>
+                    )}
+                    {isImageCard && (
+                      <button
+                        type="button"
+                        onClick={() => openImageLightbox(first.id)}
+                        className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+                        title="Show on the image"
+                      >
+                        <Maximize2 className="size-3" /> Show
+                      </button>
+                    )}
+                  </div>
+                ) : undefined;
+                return (
+                  <CommentBlock
+                    key={b.id}
+                    id={b.id}
+                    top={top}
+                    comments={b.comments}
+                    header={header}
+                    onEdit={onEditComment}
+                    onDelete={onDeleteComment}
+                    onToggleResolved={onToggleResolvedComment}
+                    onHeight={onHeight}
+                  />
+                );
+              })}
+            </>
           ) : isDeleted && !revealed ? (
             <div className="delta-ui-font flex h-full items-center gap-3 pl-5 pr-3 text-[13px] text-muted-foreground">
               <FileX className="size-4 shrink-0 text-rose-500/80" />
@@ -1574,8 +1678,8 @@ export function VirtualDiffPane({
 
   // Full-window image viewer (#lightbox). Like the file editor, the request is
   // held by the pane (not the card) so the viewer survives its card unmounting
-  // on scroll while it's open.
-  const [imageViewer, setImageViewer] = useState<{ path: string; sides: ImageLightboxSide[] } | null>(null);
+  // on scroll while it's open. focusCommentId opens a point pin's bubble (#point).
+  const [imageViewer, setImageViewer] = useState<{ path: string; sides: ImageLightboxSide[]; focusCommentId?: string } | null>(null);
   const openImageViewer = useCallback((req: { path: string; sides: ImageLightboxSide[] }) => setImageViewer(req), []);
   const closeImageViewer = useCallback(() => setImageViewer(null), []);
 
@@ -1938,6 +2042,12 @@ export function VirtualDiffPane({
           path={imageViewer.path}
           sides={imageViewer.sides}
           onClose={closeImageViewer}
+          comments={commentsByFile.get(imageViewer.path) ?? noComments}
+          onAddComment={onAddComment}
+          onEditComment={onEditComment}
+          onDeleteComment={onDeleteComment}
+          onToggleResolvedComment={onToggleResolvedComment}
+          focusCommentId={imageViewer.focusCommentId ?? null}
         />
       )}
     </div>

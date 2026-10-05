@@ -560,7 +560,10 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // Folder checkbox in the tree: one bulk update (and one save) for all files under a dir.
   const onSetViewedBulk = useCallback((files: string[], viewed: boolean) => setViewedBulk(files, viewed), [setViewedBulk]);
   const onAddComment = useCallback(
-    (anchor: Anchor, body: string) => addComment(anchor.endLine != null ? "range" : "line", anchor, body, commitOid),
+    // Scope from the anchor's shape: an image point (x/y) is a point comment, a
+    // multi-line span a range, anything else a single line.
+    (anchor: Anchor, body: string) =>
+      addComment(anchor.x != null ? "point" : anchor.endLine != null ? "range" : "line", anchor, body, commitOid),
     [addComment, commitOid],
   );
   const onAddFileComment = useCallback(

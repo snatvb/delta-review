@@ -3,11 +3,16 @@
 // viewport has zero height, so no section auto-mounts — the ONLY way the fetch fires
 // is the jump preload, which isolates the behavior under test.
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
-import { render, waitFor, fireEvent, act } from "@testing-library/react";
+import { render, waitFor, fireEvent, act, screen } from "@testing-library/react";
 
 const getFileDiff = vi.fn();
+const getBinaryFileDiff = vi.fn();
 vi.mock("../api", () => ({
-  api: { getFileDiff: (...a: unknown[]) => getFileDiff(...a) },
+  api: {
+    getFileDiff: (...a: unknown[]) => getFileDiff(...a),
+    getBinaryFileDiff: (...a: unknown[]) => getBinaryFileDiff(...a),
+    binaryBlobUrl: (_t: unknown, path: string, side: string, mime: string) => `blob://${side}/${path}?${mime}`,
+  },
   __setInvokeForDev: vi.fn(),
 }));
 
@@ -256,5 +261,74 @@ describe("VirtualDiffPane selection occurrences", () => {
     document.getSelection()!.removeAllRanges();
     act(() => { document.dispatchEvent(new Event("selectionchange")); });
     await waitFor(() => expect(occMarks(c, 1)).toHaveLength(0));
+  });
+});
+
+// Binary cards are commentable (#point): file-scope notes and image point
+// threads render under the fixed-height placeholder/compare area — the threads
+// used to need a diff model a binary file never has, which made the header's
+// "comment on file" button create comments no one ever saw. Same fake-viewport
+// harness as above; useBinaryFile's fetch resolves through the mocked api.
+describe("VirtualDiffPane binary card comments", () => {
+  let clientHeightDesc: PropertyDescriptor | undefined;
+
+  beforeAll(() => {
+    clientHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 900 });
+  });
+  afterAll(() => {
+    if (clientHeightDesc) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDesc);
+  });
+  beforeEach(() => {
+    getFileDiff.mockReset();
+    getBinaryFileDiff.mockReset();
+    getBinaryFileDiff.mockResolvedValue({ oldSize: 45, newSize: 1536 });
+  });
+
+  const imgFile: FileEntry = { path: "logo.png", status: "modified", additions: 0, deletions: 0, binary: true };
+  const binFile: FileEntry = { path: "model.bin", status: "modified", additions: 0, deletions: 0, binary: true };
+
+  function pane(files: FileEntry[], comments: Comment[]) {
+    return (
+      <VirtualDiffPane
+        target={target}
+        files={files}
+        theme="light"
+        layout="unified"
+        viewedFiles={new Set()}
+        comments={comments}
+        onToggleViewed={noop}
+        onAddComment={noop}
+        onAddFileComment={noop}
+        onEditComment={noop}
+        onDeleteComment={noop}
+        onToggleResolvedComment={noop}
+      />
+    );
+  }
+
+  it("renders a file-scope comment thread under a non-image binary placeholder", async () => {
+    const note: Comment = {
+      id: "b1", scope: "file",
+      anchor: { file: "model.bin", side: "new", startLine: null, endLine: null, snippet: null },
+      body: "Where does this blob come from?", stale: false, resolved: false,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    const c = render(pane([binFile], [note]));
+    await waitFor(() => expect(c.container.querySelector('[data-file="model.bin"]')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Where does this blob come from?")).toBeInTheDocument());
+  });
+
+  it("renders point-comment threads with pin headers under an image card", async () => {
+    const pin: Comment = {
+      id: "p1", scope: "point",
+      anchor: { file: "logo.png", side: "new", startLine: null, endLine: null, snippet: null, x: 0.42, y: 0.36 },
+      body: "The wordmark is blurry here.", stale: false, resolved: false,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    const c = render(pane([imgFile], [pin]));
+    await waitFor(() => expect(c.container.querySelector('[data-file="logo.png"]')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("The wordmark is blurry here.")).toBeInTheDocument());
+    expect(screen.getByText("x42% y36%")).toBeInTheDocument();
   });
 });

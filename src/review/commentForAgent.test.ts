@@ -79,4 +79,20 @@ describe("commentForAgent", () => {
     ));
     expect(md).toContain("```\nset -e\n```");
   });
+
+  it("image point comment locates by its pin fractions, with no snippet fence", () => {
+    const md = commentForAgent({
+      ...c({ file: "assets/logo.png", side: "new", startLine: null, endLine: null, snippet: null, x: 0.3, y: 0.62 }, "logo is blurry here", { scope: "point" }),
+    });
+    expect(md).toBe("assets/logo.png (image x 30% y 62%)\nlogo is blurry here");
+  });
+
+  it("image point comment on the old side notes it", () => {
+    const md = commentForAgent(c(
+      { file: "assets/logo.png", side: "old", startLine: null, endLine: null, snippet: null, x: 0.72, y: 0.4 },
+      "tagline gone",
+      { scope: "point" },
+    ));
+    expect(md.startsWith("assets/logo.png (image x 72% y 40% · old side)\n")).toBe(true);
+  });
 });

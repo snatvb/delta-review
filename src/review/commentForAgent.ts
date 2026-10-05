@@ -18,8 +18,10 @@ export function commentForAgent(c: Comment): string {
   }
   // Old-side line numbers refer to the pre-change content, and a stale anchor
   // no longer resolves in the current diff — both change how the agent should
-  // read the location, so they ride along on the same line.
+  // read the location, so they ride along on the same line. So does an image
+  // point: fractions of the picture's natural size, the spot the pin marks.
   const notes: string[] = [];
+  if (a.x != null && a.y != null) notes.push(`image x ${Math.round(a.x * 100)}% y ${Math.round(a.y * 100)}%`);
   if (a.side === "old") notes.push("old side");
   if (c.stale && !c.resolved) notes.push("⚠ stale");
   if (c.commit) notes.push(`commit ${c.commit.slice(0, 7)}`);

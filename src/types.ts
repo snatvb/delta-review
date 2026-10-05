@@ -70,7 +70,7 @@ export interface DiffSummary {
   headLabel: string;
 }
 
-export type CommentScope = "line" | "range" | "file" | "general";
+export type CommentScope = "line" | "range" | "file" | "point" | "general";
 export type Side = "new" | "old";
 
 export interface Anchor {
@@ -79,6 +79,10 @@ export interface Anchor {
   startLine?: number | null;
   endLine?: number | null;
   snippet?: string | null;
+  /** Image point anchor (scope "point"): position as fractions (0..1) of that
+   *  side's natural dimensions — stable across preview scaling and zoom. */
+  x?: number | null;
+  y?: number | null;
 }
 
 export interface Comment {

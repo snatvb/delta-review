@@ -10,12 +10,14 @@
 // and images that never load — falling back to scale 1 instead of dividing by it.
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type SyntheticEvent } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, ChevronsLeftRight, ImageOff, ZoomIn, ZoomOut } from "lucide-react";
+import { ArrowLeft, ChevronsLeftRight, ImageOff, MessageSquarePlus, ZoomIn, ZoomOut } from "lucide-react";
 import { Kbd } from "@/components/ui/kbd";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { isMac } from "../lib/platform";
 import { formatBytes } from "./binaryFile";
-import type { BlobSide } from "../types";
+import { PIN_TONE_CLASS, numberPointComments, pinToneFor, pointOf, pointSuffix } from "./imagePoints";
+import { CommentThread } from "../review/CommentThread";
+import type { Anchor, BlobSide, Comment } from "../types";
 
 export type ImageCompareMode = "2-up" | "swipe" | "onion" | "difference";
 
@@ -103,11 +105,31 @@ function SideNote({ text }: { text: string }) {
   );
 }
 
-export function ImageLightbox({ path, sides, onClose }: {
+export function ImageLightbox({
+  path,
+  sides,
+  onClose,
+  comments = [],
+  onAddComment,
+  onEditComment,
+  onDeleteComment,
+  onToggleResolvedComment,
+  focusCommentId = null,
+}: {
   path: string;
   /** 1 or 2 entries, order [old?, new] — used as given. */
   sides: ImageLightboxSide[];
   onClose: () => void;
+  /** This file's comments — the scope "point" ones render as pins. (#point) */
+  comments?: Comment[];
+  /** Places a point comment at a clicked spot; returns the new comment's id
+   *  (the bubble opens on it) when the host cares to report it. */
+  onAddComment?: (anchor: Anchor, body: string) => string | void;
+  onEditComment?: (id: string, body: string) => void;
+  onDeleteComment?: (id: string) => void;
+  onToggleResolvedComment?: (id: string) => void;
+  /** Open with this comment's bubble showing (a pin click on the card). */
+  focusCommentId?: string | null;
 }): ReactNode {
   const [mode, setMode] = useState<ImageCompareMode>("2-up");
   const [backdrop, setBackdrop] = useState<Backdrop>("checker");
@@ -120,6 +142,11 @@ export function ImageLightbox({ path, sides, onClose }: {
   const [failed, setFailed] = useState<Partial<Record<BlobSide, boolean>>>({});
   const [stageSize, setStageSize] = useState<Point>({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
+  // Point-comment mode (#point): on, a click on an image places a pin there.
+  // Exits itself after placing one (and Esc clears it before closing).
+  const [commentMode, setCommentMode] = useState(false);
+  // The comment whose speech-bubble thread is open (one at a time).
+  const [openBubbleId, setOpenBubbleId] = useState<string | null>(focusCommentId);
 
   const stageRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; startPan: Point } | null>(null);
@@ -219,7 +246,9 @@ export function ImageLightbox({ path, sides, onClose }: {
       switch (e.key) {
         case "Escape":
           e.preventDefault();
-          onClose();
+          // Comment mode peels off first — Esc means "leave this mode", not "close".
+          if (commentMode) setCommentMode(false);
+          else onClose();
           break;
         case "+":
         case "=":
@@ -260,7 +289,7 @@ export function ImageLightbox({ path, sides, onClose }: {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [mode, anyUsable, fitScale, onClose, boxW, boxH, stageSize.x, stageSize.y]);
+  }, [mode, commentMode, anyUsable, fitScale, onClose, boxW, boxH, stageSize.x, stageSize.y]);
 
   const onStagePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -292,11 +321,36 @@ export function ImageLightbox({ path, sides, onClose }: {
     downRef.current = null;
     if (drag?.pointerId !== e.pointerId) return;
     setDragging(false);
+    // Comment mode (#point): a no-drag click that landed on an image places a
+    // pin at that spot — fractions of the img's displayed rect (getBoundingClientRect
+    // reads through the pan/zoom transform), anchored to the side that img renders.
+    // Clipped-away regions (swipe) pass the click to the img below, so the pin
+    // lands on the side the user actually saw. Mode exits after one placement.
+    if (
+      onAddComment && commentMode &&
+      e.type === "pointerup" && down && !down.moved &&
+      down.target instanceof HTMLImageElement
+    ) {
+      const r = down.target.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) {
+        const fx = (e.clientX - r.left) / r.width;
+        const fy = (e.clientY - r.top) / r.height;
+        if (fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1) {
+          const side = (down.target.getAttribute("data-side") as BlobSide | null) ?? "new";
+          const id = onAddComment({ file: path, side, startLine: null, endLine: null, snippet: null, x: fx, y: fy }, "");
+          setCommentMode(false);
+          setOpenBubbleId(typeof id === "string" ? id : null);
+          return;
+        }
+      }
+    }
     // Bare-stage click (no drag, down landed on the stage itself) closes —
     // clicks that landed on the image or a control never do. Cancel events
-    // (e.g. an interrupted gesture) must not close.
+    // (e.g. an interrupted gesture) must not close, and neither does a click
+    // while comment mode arms the stage (missed the image → try again, not close).
     if (
       e.type === "pointerup" &&
+      !commentMode &&
       down &&
       !down.moved &&
       Math.hypot(e.clientX - down.x, e.clientY - down.y) < 4 &&
@@ -343,6 +397,51 @@ export function ImageLightbox({ path, sides, onClose }: {
 
   // In stacked modes the second entry is the side that sits on top.
   const topSide = sides.length === 2 ? sides[1].side : null;
+
+  // Point-comment pins (#point) live in STAGE space — unscaled, always legible —
+  // rederived each render from the transform state, so they track pan/zoom with
+  // the pixels underneath. 2-up centers each side on its own half-pane at
+  // natural size × zoom; stacked modes object-contain each side inside the
+  // shared box (max dims), which letterboxes differently-sized sides.
+  const sideStageRect = (s: ImageLightboxSide): { l: number; t: number; w: number; h: number } | null => {
+    const d = dims[s.side];
+    if (!d || d.w <= 0 || d.h <= 0 || stageSize.x <= 0 || stageSize.y <= 0) return null;
+    if (twoUp) {
+      const half = sides.length === 2 && sides[0].side === s.side ? 0 : 1;
+      const cx = (sides.length === 2 ? stageSize.x * (half === 0 ? 0.25 : 0.75) : stageSize.x / 2) + transform.pan.x;
+      const cy = stageSize.y / 2 + transform.pan.y;
+      const w = d.w * transform.scale;
+      const h = d.h * transform.scale;
+      return { l: cx - w / 2, t: cy - h / 2, w, h };
+    }
+    if (boxW <= 0 || boxH <= 0) return null;
+    const bcx = stageSize.x / 2 + transform.pan.x;
+    const bcy = stageSize.y / 2 + transform.pan.y;
+    const k = Math.min(boxW / d.w, boxH / d.h); // contain fit inside the box
+    const w = d.w * k * transform.scale;
+    const h = d.h * k * transform.scale;
+    return { l: bcx - w / 2, t: bcy - h / 2, w, h };
+  };
+
+  const pinPosOf = (c: Comment): { x: number; y: number } | null => {
+    const p = pointOf(c);
+    if (!p) return null;
+    const s = sides.find((x) => x.side === p.side);
+    if (!s) return null;
+    const r = sideStageRect(s);
+    return r ? { x: r.l + p.x * r.w, y: r.t + p.y * r.h } : null;
+  };
+
+  const pointPins = comments
+    .map((c) => ({ c, pos: pinPosOf(c), p: pointOf(c) }))
+    .filter((e): e is { c: Comment; pos: { x: number; y: number }; p: NonNullable<ReturnType<typeof pointOf>> } => e.pos != null && e.p != null);
+  const pinNumbers = numberPointComments(comments);
+  const bubble = (() => {
+    const c = comments.find((x) => x.id === openBubbleId);
+    if (!c || !onEditComment || !onDeleteComment || !onToggleResolvedComment) return null;
+    const pos = pinPosOf(c);
+    return pos ? { c, pos } : null;
+  })();
 
   // Difference blending needs its own stacking context on black: identical
   // pixels subtract to black, changes light up.
@@ -401,6 +500,21 @@ export function ImageLightbox({ path, sides, onClose }: {
             ))}
           </ToggleGroup>
         )}
+        {onAddComment && anyUsable && (
+          <button
+            type="button"
+            onClick={() => {
+              setCommentMode((v) => !v);
+              setOpenBubbleId(null);
+            }}
+            aria-label="Comment on a point"
+            aria-pressed={commentMode}
+            title={commentMode ? "Comment mode — click the image to place a pin (Esc to cancel)" : "Comment on a point"}
+            className={`${iconBtn} w-7 ${commentMode ? "bg-primary/15 text-primary ring-1 ring-border" : ""}`}
+          >
+            <MessageSquarePlus className="size-4" />
+          </button>
+        )}
         <div className="flex shrink-0 items-center gap-0.5" role="group" aria-label="Backdrop">
           {BACKDROPS.map((b) => (
             <button
@@ -446,7 +560,7 @@ export function ImageLightbox({ path, sides, onClose }: {
 
       <div
         ref={stageRef}
-        className={`relative min-h-0 flex-1 touch-none select-none overflow-hidden ${stageBackdropClass} ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
+        className={`relative min-h-0 flex-1 touch-none select-none overflow-hidden ${stageBackdropClass} ${commentMode ? "cursor-crosshair" : dragging ? "cursor-grabbing" : "cursor-grab"}`}
         style={stageBackdropStyle}
         onPointerDown={onStagePointerDown}
         onPointerMove={onStagePointerMove}
@@ -472,6 +586,7 @@ export function ImageLightbox({ path, sides, onClose }: {
                     <img
                       src={s.src}
                       alt={`${s.label} version`}
+                      data-side={s.side}
                       draggable={false}
                       decoding="async"
                       className="absolute left-1/2 top-1/2 max-w-none object-contain"
@@ -510,6 +625,7 @@ export function ImageLightbox({ path, sides, onClose }: {
                   key={s.side}
                   src={s.src}
                   alt={`${s.label} version`}
+                  data-side={s.side}
                   draggable={false}
                   decoding="async"
                   className="absolute inset-0 h-full w-full max-w-none object-contain"
@@ -542,6 +658,68 @@ export function ImageLightbox({ path, sides, onClose }: {
             <SideNote text={sides.some((s) => failed[s.side]) ? "Preview failed to load" : "No preview available"} />
           </div>
         )}
+
+        {/* Point-comment pins (#point): stage-space markers over the pixels.
+            A click toggles the comment's speech bubble; pins never start pans,
+            zooms, or the close-on-stage-click. */}
+        {pointPins.map(({ c, pos, p }) => {
+          const n = pinNumbers.get(c.id) ?? 0;
+          return (
+            <button
+              key={c.id}
+              type="button"
+              data-lightbox-pin={n}
+              aria-label={`Comment ${n} — ${p.side} side, ${pointSuffix(p.x, p.y)}`}
+              title={c.body.trim() === "" ? `Comment ${n}` : c.body}
+              className={`absolute z-20 flex size-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border text-[11px] font-semibold leading-none tabular-nums shadow-md transition-transform hover:scale-110 ${PIN_TONE_CLASS[pinToneFor(c)]}`}
+              style={{ left: pos.x, top: pos.y }}
+              onPointerDown={stopPointer}
+              onPointerMove={stopPointer}
+              onPointerUp={stopPointer}
+              onDoubleClick={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpenBubbleId(openBubbleId === c.id ? null : c.id);
+              }}
+            >
+              {n}
+            </button>
+          );
+        })}
+
+        {/* The open pin's speech bubble: the comment thread floating beside its
+            pin, clamped into the stage, with a tail pointing back at the pin.
+            Prefers the space above the pin; falls below when there isn't room. */}
+        {bubble && (() => {
+          const W = 340;
+          const left = Math.min(Math.max(bubble.pos.x + 14, 8), Math.max(8, stageSize.x - W - 8));
+          const above = bubble.pos.y > 240;
+          return (
+            <div
+              className="delta-ui-font absolute z-30"
+              style={{ left, top: above ? bubble.pos.y - 12 : bubble.pos.y + 14, width: W, transform: above ? "translateY(-100%)" : undefined }}
+              onPointerDown={stopPointer}
+              onPointerMove={stopPointer}
+              onPointerUp={stopPointer}
+              onDoubleClick={(e) => e.stopPropagation()}
+            >
+              <div className="relative rounded-xl border border-border bg-card shadow-lg">
+                <span
+                  aria-hidden
+                  className={`absolute -left-1 size-3 rotate-45 border-border bg-card ${above ? "bottom-3 border-b border-l" : "top-3 border-l border-t"}`}
+                />
+                <div className="p-2.5">
+                  <CommentThread
+                    comments={[bubble.c]}
+                    onEdit={onEditComment!}
+                    onDelete={onDeleteComment!}
+                    onToggleResolved={onToggleResolvedComment!}
+                  />
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {mode === "swipe" && sides.length === 2 && boxW > 0 && boxH > 0 && (
           <div className="pointer-events-none absolute" style={{ left: boxLeft + (swipePos / 100) * dispW, top: boxTop, height: dispH }}>
@@ -604,6 +782,9 @@ export function ImageLightbox({ path, sides, onClose }: {
       </div>
 
       <footer className="delta-ui-font flex h-8 shrink-0 items-center gap-4 border-t border-border px-4 text-[11px] text-muted-foreground">
+        {commentMode && (
+          <span className="font-medium text-primary">Click the image to place a comment · Esc to cancel</span>
+        )}
         {sides.map((s) =>
           s.size != null ? (
             <span key={s.side} className="tabular-nums">

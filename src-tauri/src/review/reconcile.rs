@@ -345,6 +345,8 @@ mod tests {
                 start_line: Some(line),
                 end_line: None,
                 snippet: Some(snippet.into()),
+                x: None,
+                y: None,
             }),
             body: "b".into(),
             stale: false,
@@ -522,6 +524,38 @@ mod tests {
         r.comments.push(line_comment("file.txt", 1, "line1"));
         let session = reconcile(&DiffCache::default(), r).unwrap();
         assert!(session.review.comments[0].stale);
+    }
+
+    #[test]
+    fn point_comment_follows_file_presence_like_a_file_scope_comment() {
+        // An image point comment has no snippet to re-anchor: it stays fresh
+        // while its file is in the diff and goes stale when the file vanishes —
+        // the same presence rule a file-scope comment gets.
+        let (dir, _repo) = repo_with_commit();
+        write(dir.path(), "logo.png", "\u{89}PNG\r\n\u{1a}\n"); // binary-ish content
+        let mut r = empty_review(dir.path().to_str().unwrap());
+        let mut c = line_comment("logo.png", 1, "");
+        c.scope = CommentScope::Point;
+        let a = c.anchor.as_mut().unwrap();
+        a.start_line = None;
+        a.snippet = None;
+        a.x = Some(0.3);
+        a.y = Some(0.6);
+        r.comments.push(c);
+        let session = reconcile(&DiffCache::default(), r).unwrap();
+        assert!(
+            !session.review.comments[0].stale,
+            "the file is in the diff — the point comment is fresh"
+        );
+
+        // The file is deleted from the working tree → it leaves the diff and
+        // the point comment goes stale.
+        std::fs::remove_file(dir.path().join("logo.png")).unwrap();
+        let session = reconcile(&DiffCache::default(), session.review).unwrap();
+        assert!(
+            session.review.comments[0].stale,
+            "the file is gone from the diff — the point comment is stale"
+        );
     }
 
     #[test]
