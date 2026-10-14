@@ -1,16 +1,18 @@
 # Changelog
 
-## 0.22.0 — 2026-10-14
-
-### 🚀 New Features
-
-- **Comments on binary files + point pins on images** — binary compare cards now carry their comment threads (file scope, and one per image pin) instead of hiding notes no one ever saw. Images add point comments: pins anchored as x/y fractions of the side's natural dimensions, so they read identically at any preview scale or zoom; the lightbox gains a comment mode (arm it, click a spot), pins track pan/zoom across all compare modes, and the index and both agent exports carry the spot (`image x 30% y 62%`).
+## 0.22.1 — 2026-10-14
 
 ### 🐛 Fixes
 
 - **Worktrees open correctly on Windows** — every path the app handles now passes through one canonicalizer (dunce: no `\\?\` verbatim prefix, no trailing separator, native separators) instead of a mix of libgit2's `workdir()` form, git's forward-slash worktree metadata, and Rust's verbatim `canonicalize` output. That mix is what made a Windows picker click on a worktree resolve to (or collide with) the main repository, and left registry-fed opens handing libgit2 paths its realpath layer doesn't accept.
 - **A running app's picker stays live** — the backend now emits `registry:changed` whenever the registry is written (repo imported, review opened/saved/deleted), and every picker refetches on it. Previously the list only refreshed on webview focus events, which WebView2 on Windows doesn't reliably deliver on native window activation — so a freshly imported repo never appeared without an app restart.
 - **Worktree rows resume their review** (all platforms) — the picker's review join compared paths as strings, but the stored review's path carries the trailing separator of libgit2's `workdir()` while the row's path doesn't, so a linked worktree's review (counts, resume, delete affordance) never joined its row; the join and the ⌘K palette's current-folder exclusion now compare folder identity. Duplicate registry entries for one repo no longer double every picker row.
+
+## 0.22.0 — 2026-10-14
+
+### 🚀 New Features
+
+- **Comments on binary files + point pins on images** — binary compare cards now carry their comment threads (file scope, and one per image pin) instead of hiding notes no one ever saw. Images add point comments: pins anchored as x/y fractions of the side's natural dimensions, so they read identically at any preview scale or zoom; the lightbox gains a comment mode (arm it, click a spot), pins track pan/zoom across all compare modes, and the index and both agent exports carry the spot (`image x 30% y 62%`).
 
 ## 0.21.0 — 2026-10-02
 
