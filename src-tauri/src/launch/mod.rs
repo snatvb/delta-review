@@ -178,13 +178,16 @@ fn worktree_meta(repo: &git2::Repository) -> (Option<String>, bool) {
 }
 
 /// Open a linked worktree and read its display metadata. Each call uses its own
-/// `Repository` handle, so this is safe to run on a worker thread.
+/// `Repository` handle, so this is safe to run on a worker thread. The path is
+/// normalized (git's worktree metadata stores forward-slash paths, even on
+/// Windows) so the row's path is one canonical form wherever it travels — the
+/// picker, the open click, and the review join.
 fn linked_worktree_entry(path: &Path) -> Option<WorktreeEntry> {
     let wt_repo = git2::Repository::open(path).ok()?;
     let branch = resolve_worktree(&wt_repo).unwrap_or_else(|_| "(detached)".into());
     let (last_commit_at, dirty) = worktree_meta(&wt_repo);
     Some(WorktreeEntry {
-        path: path.display().to_string(),
+        path: crate::git::canonical_repo_path(path),
         branch,
         is_main: false,
         last_commit_at,
@@ -201,7 +204,9 @@ pub fn list_git_worktrees(repo: &git2::Repository) -> Result<Vec<WorktreeEntry>,
     if let Some(wd) = repo.workdir() {
         let (last_commit_at, dirty) = worktree_meta(repo);
         out.push(WorktreeEntry {
-            path: wd.display().to_string(),
+            // workdir() carries a trailing separator; strip it so the main row's
+            // path matches the linked rows' canonical form (and the review join).
+            path: crate::git::canonical_repo_path(wd),
             branch: resolve_worktree(repo)?,
             is_main: true,
             last_commit_at,
@@ -698,6 +703,9 @@ mod tests {
         assert_eq!(wts.len(), 1);
         assert!(wts[0].is_main);
         assert_eq!(wts[0].branch, "main");
+        // One canonical row form: no trailing separator (workdir() carries one),
+        // so the main row's path matches the linked rows' and the review join.
+        assert!(!wts[0].path.ends_with('/') && !wts[0].path.ends_with('\\'));
     }
 
     #[test]

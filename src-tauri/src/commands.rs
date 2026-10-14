@@ -230,8 +230,10 @@ pub fn sync_vcs_overrides(reg: &Registry) -> Result<(), String> {
         .iter()
         .filter_map(|r| {
             r.vcs_override.map(|kind| {
-                let root =
-                    std::fs::canonicalize(&r.root).unwrap_or_else(|_| PathBuf::from(&r.root));
+                // dunce, matching how `vcs::Repo::open` probes (detect_markers)
+                // — Rust's own canonicalize adds the `\\?\` verbatim prefix on
+                // Windows and the key would never match its lookup.
+                let root = dunce::canonicalize(&r.root).unwrap_or_else(|_| PathBuf::from(&r.root));
                 (root, kind)
             })
         })
@@ -278,6 +280,9 @@ fn with_repo_name(mut session: ReviewSession) -> ReviewSession {
 
 struct RegistrySyncJob {
     reg_store: JsonRegistryStore,
+    /// Present in the app (absent in tests): broadcast `registry:changed` once
+    /// the job's writes land, so open pickers refetch.
+    app: Option<tauri::AppHandle>,
     review: Review,
     file_count: u32,
 }
@@ -294,12 +299,27 @@ fn registry_sync_queue() -> MutexGuard<'static, RegistrySyncQueue> {
     REGISTRY_SYNC.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Tell every open window the registry changed (repo imported, review
+/// opened/saved/deleted) so their pickers refetch. The picker also revalidates
+/// on webview focus events, but those are unreliable on Windows (WebView2
+/// doesn't emit DOM focus on native window activation) — an app-driven event
+/// makes a running app's list stay live on every platform.
+pub fn emit_registry_changed(app: &tauri::AppHandle) {
+    use tauri::Emitter;
+    let _ = app.emit("registry:changed", ());
+}
+
 /// The registry sync rescans every worktree's status — seconds on a huge repo — and
 /// the review doesn't depend on it, so it runs after the session is handed back.
 /// One worker drains the queue; bursts of refreshes collapse to the latest job per review.
-fn sync_registry_in_background(reg_store: JsonRegistryStore, session: &ReviewSession) {
+fn sync_registry_in_background(
+    reg_store: JsonRegistryStore,
+    app: Option<tauri::AppHandle>,
+    session: &ReviewSession,
+) {
     let job = RegistrySyncJob {
         reg_store,
+        app,
         review: session.review.clone(),
         file_count: session.reviewable_file_count(),
     };
@@ -323,8 +343,17 @@ fn drain_registry_sync_queue() {
             }
             queue.pending.drain().map(|(_, job)| job).collect()
         };
+        let mut app: Option<tauri::AppHandle> = None;
         for job in jobs {
             sync_registry_after_open(&job.reg_store, &job.review, job.file_count);
+            if app.is_none() {
+                app = job.app;
+            }
+        }
+        // The pickers watching the registry only hear about it after the writes
+        // land — one event per drained burst, not one per review.
+        if let Some(app) = app.as_ref() {
+            emit_registry_changed(app);
         }
     }
 }
@@ -423,7 +452,11 @@ pub async fn open_review(app: tauri::AppHandle, target: Target) -> Result<Review
     tauri::async_runtime::spawn_blocking(move || {
         let storage = JsonStorage::new(reviews.clone());
         let session = with_repo_name(open_review_impl(&cache, &storage, target)?);
-        sync_registry_in_background(JsonRegistryStore::new(reg_path, reviews), &session);
+        sync_registry_in_background(
+            JsonRegistryStore::new(reg_path, reviews),
+            Some(app),
+            &session,
+        );
         Ok(session)
     })
     .await
@@ -443,7 +476,11 @@ pub async fn refresh_review(
     tauri::async_runtime::spawn_blocking(move || {
         let storage = JsonStorage::new(reviews.clone());
         let session = with_repo_name(refresh_review_impl(&cache, &storage, review)?);
-        sync_registry_in_background(JsonRegistryStore::new(reg_path, reviews), &session);
+        sync_registry_in_background(
+            JsonRegistryStore::new(reg_path, reviews),
+            Some(app),
+            &session,
+        );
         Ok(session)
     })
     .await
@@ -467,13 +504,17 @@ pub async fn save_review(
         save_review_impl_with_registry(&cache, &storage, &reg, review)
     })
     .await
-    .map_err(|e| format!("save_review task: {e}"))?
+    .map_err(|e| format!("save_review task: {e}"))??;
+    // Counts changed — a running picker shows them.
+    emit_registry_changed(&app);
+    Ok(())
 }
 
 #[tauri::command]
 pub fn delete_review(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let storage = JsonStorage::new(reviews_dir(&app)?);
     delete_review_impl(&storage, &reg_store(&app)?, &id)?;
+    emit_registry_changed(&app);
     if let Some(w) = app.get_webview_window(&format!("review-{id}")) {
         let _ = w.close();
     }
@@ -531,17 +572,34 @@ pub fn list_picker_impl(
 ) -> Result<PickerData, String> {
     let reg = reg_store.load()?;
     let mut worktrees = Vec::new();
+    let mut listed: Vec<String> = Vec::new();
     for repo in &reg.repos {
         // Best-effort: a repo whose worktrees can't be listed (moved/deleted) is skipped.
         let wts = Repo::open(&repo.root)
             .and_then(|r| r.list_worktrees())
             .unwrap_or_default();
         for w in wts {
+            // The folder is the row's identity: two registry entries can describe
+            // one repo (a stale pre-normalization id alongside a fresh one), and
+            // listing both would duplicate every row.
+            let key = crate::git::canonical_repo_path(&w.path);
+            if listed
+                .iter()
+                .any(|seen| crate::git::same_repo_folder(seen, &key))
+            {
+                continue;
+            }
+            listed.push(key);
             let review = reg
                 .reviews
                 .iter()
                 .find(|r| {
-                    r.target.repo_path == w.path
+                    // Folder-identity, not string equality: the stored review
+                    // path comes from libgit2's workdir (trailing separator,
+                    // POSIX slashes on Windows) while the row path is
+                    // dunce-normalized — a plain == never matches a linked
+                    // worktree's review.
+                    crate::git::same_repo_folder(&r.target.repo_path, &w.path)
                         && r.target.worktree.as_deref() == Some(w.branch.as_str())
                 })
                 .cloned();
@@ -645,6 +703,9 @@ pub async fn import_repo(app: tauri::AppHandle) -> Result<Option<RepoEntry>, Str
     let mut reg = store.load()?;
     reg.upsert_repo(entry.clone());
     store.save(&reg).and_then(|_| sync_vcs_overrides(&reg))?;
+    // The just-imported repo must appear in every running picker without a
+    // restart or a refocus — this is the event that makes that true.
+    emit_registry_changed(&app);
     Ok(Some(entry))
 }
 
@@ -1013,6 +1074,108 @@ mod tests {
         assert!(
             main.review.is_none(),
             "the linked worktree's review must not join the main row"
+        );
+    }
+
+    #[test]
+    fn list_picker_joins_reviews_saved_in_workdir_form() {
+        // The real flow's forms: open_target_window persists the review's
+        // repo_path as libgit2's workdir() (trailing separator; POSIX slashes
+        // on Windows), while the row path is dunce-normalized. A string-equal
+        // join never matched a linked worktree's review — folder identity must.
+        let (dir, repo) = repo_with_commit(); // main on "main"
+        add_worktree(&repo, dir.path(), "demo-feat", "feat/a");
+        let root = dir.path().to_str().unwrap().to_string();
+
+        let store_dir = tempfile::TempDir::new().unwrap();
+        let (_storage, reg_store) = stores(store_dir.path());
+        let entry = Repo::open(&root).unwrap().repo_entry().unwrap();
+        let repo_name = entry.name.clone();
+        let wt_path = entry
+            .worktrees
+            .iter()
+            .find(|w| !w.is_main)
+            .unwrap()
+            .path
+            .clone();
+        let mut reg = reg_store.load().unwrap();
+        reg.upsert_repo(entry);
+        // Reviews exactly as open_review_impl persists them: workdir form.
+        reg.upsert_review(ReviewEntry {
+            id: "rev-main".into(),
+            repo_name: repo_name.clone(),
+            target: Target {
+                repo_path: format!("{root}/"),
+                worktree: Some("main".into()),
+                mode: DiffMode::AllChanges,
+                base: None,
+                commit: None,
+            },
+            last_opened_at: "t".into(),
+            comment_count: 0,
+            stale_count: 0,
+            resolved_count: 0,
+            viewed_count: 0,
+            file_count: 1,
+        });
+        reg.upsert_review(ReviewEntry {
+            id: "rev-wt".into(),
+            repo_name,
+            target: Target {
+                repo_path: format!("{wt_path}/"),
+                worktree: Some("feat/a".into()),
+                mode: DiffMode::Uncommitted,
+                base: None,
+                commit: None,
+            },
+            last_opened_at: "t".into(),
+            comment_count: 0,
+            stale_count: 0,
+            resolved_count: 0,
+            viewed_count: 0,
+            file_count: 1,
+        });
+        reg_store.save(&reg).unwrap();
+
+        let data = list_picker_impl(&reg_store, None).unwrap();
+        assert_eq!(data.worktrees.len(), 2);
+        let main = data.worktrees.iter().find(|w| w.worktree.is_main).unwrap();
+        assert_eq!(main.review.as_ref().unwrap().id, "rev-main");
+        let linked = data.worktrees.iter().find(|w| !w.worktree.is_main).unwrap();
+        assert_eq!(
+            linked.review.as_ref().unwrap().id,
+            "rev-wt",
+            "a review saved in workdir form (trailing separator) must join the normalized row"
+        );
+    }
+
+    #[test]
+    fn list_picker_lists_a_folder_once_across_duplicate_repo_entries() {
+        // Two registry entries can describe one repo — a stale id from before a
+        // path-normalization change next to the fresh one. The folder is the
+        // row's identity; it must not double every row.
+        let (dir, repo) = repo_with_commit();
+        add_worktree(&repo, dir.path(), "dup-feat", "feat/dup");
+        let root = dir.path().to_str().unwrap().to_string();
+
+        let store_dir = tempfile::TempDir::new().unwrap();
+        let (_storage, reg_store) = stores(store_dir.path());
+        let entry = Repo::open(&root).unwrap().repo_entry().unwrap();
+        let mut stale = entry.clone();
+        stale.id = "stale-id".into();
+        stale.root = format!("{root}/"); // pre-normalization form
+        {
+            let mut reg = reg_store.load().unwrap();
+            reg.upsert_repo(entry);
+            reg.upsert_repo(stale);
+            reg_store.save(&reg).unwrap();
+        }
+
+        let data = list_picker_impl(&reg_store, None).unwrap();
+        assert_eq!(
+            data.worktrees.len(),
+            2,
+            "main + linked once each, not once per registry entry"
         );
     }
 

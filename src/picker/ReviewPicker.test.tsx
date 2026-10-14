@@ -109,6 +109,23 @@ describe("ReviewPicker", () => {
     expect(screen.queryByText("main")).not.toBeInTheDocument();
   });
 
+  it("excludes the current worktree even when its URL path carries a trailing separator", async () => {
+    // The review window's repo param comes from libgit2's workdir form
+    // ("/r/demo/" with the trailing slash), the row path is normalized —
+    // a strict === would let the current folder reappear in its own palette.
+    mock(DATA);
+    render(
+      <ReviewPicker
+        current={{ repoPath: "/r/demo/", mode: "uncommitted" }}
+        onOpenWorktree={() => {}}
+        onAddRepo={() => {}}
+        onDeleteReview={async () => false}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("spike/idea")).toBeInTheDocument());
+    expect(screen.queryByText("main")).not.toBeInTheDocument();
+  });
+
   it("shows an add-repo affordance and a hint when there are no known repos", async () => {
     mock({ worktrees: [] });
     render(<ReviewPicker onOpenWorktree={() => {}} onAddRepo={() => {}} onDeleteReview={async () => false} />);

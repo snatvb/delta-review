@@ -176,7 +176,10 @@ pub fn resolve_worktree(repo: &Repository) -> Result<String, GitError> {
 /// The shared `.git` directory for a repo and all its linked worktrees.
 /// git2 0.19 has no `commondir()`, so derive it from `path()`:
 /// main worktree → `<root>/.git`; linked worktree → `<root>/.git/worktrees/<name>`
-/// (strip at the `worktrees` segment). Canonicalized so both forms match.
+/// (strip at the `worktrees` segment). Canonicalized so both forms match —
+/// via dunce, because Rust's own `canonicalize` returns `\\?\`-verbatim paths
+/// on Windows, which would leak into registry ids and roots that libgit2's
+/// realpath layer (GetFullPathNameW/GetLongPathNameW) does not accept.
 pub fn common_git_dir(repo: &git2::Repository) -> std::path::PathBuf {
     let p = repo.path();
     let base = match p
@@ -186,7 +189,55 @@ pub fn common_git_dir(repo: &git2::Repository) -> std::path::PathBuf {
         Some(pos) => p.iter().take(pos).collect::<std::path::PathBuf>(),
         None => p.to_path_buf(),
     };
-    std::fs::canonicalize(&base).unwrap_or(base)
+    dunce::canonicalize(&base).unwrap_or(base)
+}
+
+/// The one canonical string form for a repo/worktree folder. Every boundary
+/// where a path crosses into storage, a URL, or the registry goes through
+/// this, because the app's sources disagree on form: libgit2's `workdir()`
+/// carries a trailing separator (and POSIX slashes on Windows), git's
+/// worktree metadata carries forward-slash paths, and Rust's `canonicalize`
+/// returns `\\?\`-prefixed verbatim paths on Windows. dunce gives the
+/// simplified absolute path; a lexical cleanup stands in when the folder no
+/// longer exists (a stale review's path), so comparisons stay deterministic.
+pub fn canonical_repo_path(path: impl AsRef<std::path::Path>) -> String {
+    match dunce::canonicalize(path.as_ref()) {
+        Ok(p) => p.display().to_string(),
+        Err(_) => lexical_repo_path(&path.as_ref().display().to_string()),
+    }
+}
+
+/// No-IO fallback of `canonical_repo_path`: strip Rust's Windows verbatim
+/// prefix, fold separators, drop trailing ones. Root `/` stays `/`.
+fn lexical_repo_path(path: &str) -> String {
+    let stripped = path.strip_prefix(r"\\?\").unwrap_or(path);
+    let folded = if cfg!(windows) {
+        stripped.replace('\\', "/")
+    } else {
+        stripped.to_string()
+    };
+    let trimmed = folded.trim_end_matches('/');
+    if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Folder identity across path-form drift (trailing separator, slash
+/// direction, verbatim prefix, and case on Windows where NTFS ignores it).
+/// Every "is this review about this worktree?" comparison uses this — a plain
+/// `==` silently misses linked-worktree reviews (their row path never carries
+/// the trailing separator `workdir()` produces) and misses everything on
+/// Windows, where the two halves come from libgit2 (POSIX slashes) and dunce
+/// (native slashes) respectively.
+pub fn same_repo_folder(a: &str, b: &str) -> bool {
+    let (a, b) = (canonical_repo_path(a), canonical_repo_path(b));
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(&b)
+    } else {
+        a == b
+    }
 }
 
 /// The main worktree directory = parent of the shared `.git` dir. Same for every
@@ -288,6 +339,43 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::*;
     use super::*;
+
+    #[test]
+    fn canonical_repo_path_strips_trailing_separator() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("repo");
+        std::fs::create_dir_all(&p).unwrap();
+        // libgit2's workdir() form (trailing separator) and the bare form are
+        // one folder.
+        let with_slash = format!("{}/", p.display());
+        assert_eq!(
+            canonical_repo_path(&with_slash),
+            canonical_repo_path(p.display().to_string())
+        );
+        assert!(!canonical_repo_path(&with_slash).ends_with('/'));
+    }
+
+    #[test]
+    fn same_repo_folder_tolerates_form_drift() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("repo");
+        std::fs::create_dir_all(&p).unwrap();
+        let live = p.display().to_string();
+        // The three forms that meet in list_picker's join: the dunce-normalized
+        // row path, libgit2's workdir form, and a dead path's lexical cleanup.
+        assert!(same_repo_folder(&live, &format!("{live}/")));
+        assert!(same_repo_folder(&format!("{live}/"), &live));
+        // Lexical fallback: a folder that no longer exists still folds verbatim
+        // prefixes and separators so stale reviews keep a deterministic form.
+        // (Forward slashes in the fixture: the fold is cfg(windows), so the
+        // test compares forms that normalize identically on every platform.)
+        let verbatim = r"\\?\C:/Users/me/proj";
+        let plain = "C:/Users/me/proj/";
+        assert_eq!(
+            canonical_repo_path(std::path::Path::new(verbatim)),
+            canonical_repo_path(std::path::Path::new(plain))
+        );
+    }
 
     #[test]
     fn mode_serializes_kebab_case() {

@@ -11,6 +11,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { rankWorktrees } from "./fuzzy";
 import { usePickerData } from "./usePickerData";
 import { worktreeIdentity, worktreeMeta } from "./pickerUi";
+import { sameFolder } from "../lib/sameFolder";
 import { Trash2, FolderPlus } from "lucide-react";
 import { Kbd } from "@/components/ui/kbd";
 import type { PickerWorktree, ReviewEntry, Target } from "../types";
@@ -84,9 +85,11 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
   }, []);
 
   // Exclude the worktree you're currently viewing — it's not a switch target. Keyed
-  // on the worktree path, not mode/base: switching the diff-mode dropdown shouldn't
+  // on the worktree folder (form-tolerant: the URL's path and the row's path come
+  // from different layers), not mode/base: switching the diff-mode dropdown shouldn't
   // make the current review reappear in the picker.
-  const isCurrentWorktree = (path: string) => current != null && path === current.repoPath;
+  const isCurrentWorktree = (path: string) =>
+    current != null && sameFolder(path, current.repoPath);
 
   const visible = (w: PickerWorktree): PickerWorktree =>
     w.review && deletedIds.has(w.review.id) ? { ...w, review: null } : w;

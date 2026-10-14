@@ -104,9 +104,19 @@ impl Repo {
                 .map_err(|_| format!("{path} is not a git or svn working copy"));
         };
         match apply_override(&root, kind) {
-            VcsKind::Git => git2::Repository::discover(path)
-                .map(Repo::Git)
-                .map_err(|e| format!("open repo: {e}")),
+            VcsKind::Git => {
+                // Hand libgit2 a simplified absolute path, never the raw input:
+                // registry roots may carry Rust-canonicalize's `\\?\` verbatim
+                // prefix (Windows) and git worktree metadata carries forward
+                // slashes — libgit2's realpath layer does not reliably accept
+                // the former, and one normalized form keeps every open on the
+                // same path identity.
+                let start =
+                    dunce::canonicalize(Path::new(path)).unwrap_or_else(|_| PathBuf::from(path));
+                git2::Repository::discover(&start)
+                    .map(Repo::Git)
+                    .map_err(|e| format!("open repo: {e}"))
+            }
             VcsKind::Svn => Ok(Repo::Svn(svn::SvnRepo::new(root))),
         }
     }

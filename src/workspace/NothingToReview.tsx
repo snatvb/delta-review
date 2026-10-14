@@ -7,6 +7,7 @@ import { GitCompareArrows } from "lucide-react";
 import { api } from "../api";
 import { worktreeIdentity, worktreeMeta } from "../picker/pickerUi";
 import { openTarget } from "../lib/openTarget";
+import { sameFolder } from "../lib/sameFolder";
 import { Kbd } from "@/components/ui/kbd";
 import type { Target, WorktreeEntry } from "../types";
 
@@ -20,9 +21,10 @@ export function NothingToReview({ target, repoName, modeLabel }: { target: Targe
       .listWorktrees(target.repoPath)
       .then((wts) => {
         if (cancelled) return;
-        // Drop the worktree we're already in; newest-committed first, undated last.
+        // Drop the worktree we're already in (folder identity: the URL path and
+        // the listed rows differ in trailing-separator form); newest first.
         const others = wts
-          .filter((w) => w.path !== target.repoPath)
+          .filter((w) => !sameFolder(w.path, target.repoPath))
           .sort((a, b) => (b.lastCommitAt ?? "").localeCompare(a.lastCommitAt ?? ""));
         setSiblings(others);
       })

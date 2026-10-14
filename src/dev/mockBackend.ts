@@ -5,6 +5,7 @@
 // Keep fixtures realistic but small. As Plan 2 adds commands (open_review,
 // refresh_review, save_review, export_review) extend the switch + fixtures here.
 import { __setBlobUrlForDev, __setInvokeForDev } from "../api";
+import { sameFolder } from "../lib/sameFolder";
 import type { AppSettings, BaseStrategy, DiffSummary, FileDiff, PickerData, Registry, Review, ReviewSession } from "../types";
 
 // Canvas-drawn PNG data URL so an image compare card shows something in browser dev.
@@ -768,9 +769,10 @@ export function installMockBackend(): void {
         // current branch ("main") joins its saved review, the linked worktrees
         // list without one (their branches have no matching review).
         const reviews = REGISTRY.reviews;
-        // Joined exactly like the backend: by (path, live branch).
+        // Joined exactly like the backend: by (folder, live branch) — folder
+        // identity, not string equality (see lib/sameFolder).
         const joined = (path: string, branch: string) =>
-          reviews.find((r) => r.target.repoPath === path && r.target.worktree === branch) ?? null;
+          reviews.find((r) => sameFolder(r.target.repoPath, path) && r.target.worktree === branch) ?? null;
         const data: PickerData = emptyParam
           ? { home: REGISTRY.home, worktrees: [] }
           : {
