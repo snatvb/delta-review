@@ -207,8 +207,11 @@ collect() { # collect <bundle-subdir> <glob...>
 bake_builder_image() {
   local image="delta-review-linux-builder:latest"
   if ! docker image inspect "$image" >/dev/null 2>&1; then
-    printf 'Baking %s (one-time, ~10 min under emulation)...\n' "$image"
-    docker build --platform linux/amd64 -t "$image" -f scripts/linux-builder.Dockerfile scripts
+    printf 'Baking %s (one-time, ~10 min under emulation)...\n' "$image" >&2
+    # docker build writes its step log to stdout — keep it off stdout, or the
+    # $(...) capture at the call site hands multi-line garbage to docker run
+    # ("invalid reference format") on the first bake.
+    docker build --platform linux/amd64 -t "$image" -f scripts/linux-builder.Dockerfile scripts >&2
   fi
   printf '%s' "$image"
 }
