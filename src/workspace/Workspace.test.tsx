@@ -1,6 +1,6 @@
 // src/workspace/Workspace.test.tsx — opens its target on mount; mode switch re-opens in place
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 
 const openReview = vi.fn();
 const openTarget = vi.fn();
@@ -48,6 +48,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 import { Workspace } from "./Workspace";
 import { api } from "../api";
 import { setChangeDetection } from "../changeDetection";
+import { setHideIgnoredFiles } from "../ignoredFilesPref";
 import type { FileDiff, Target } from "../types";
 
 const target: Target = { repoPath: "/r", mode: "all-changes" };
@@ -59,6 +60,18 @@ const minimalSession = {
 const fileSession = {
   ...minimalSession,
   summary: { files: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0, binary: false }], baseLabel: "main", headLabel: "wt" },
+};
+// A review with one regular and one .deltaignore'd file — the eye-toggle's case.
+const ignoredSession = {
+  ...minimalSession,
+  summary: {
+    files: [
+      { path: "src/a.ts", status: "modified", additions: 1, deletions: 0, binary: false },
+      { path: "src/gen.ts", status: "modified", additions: 0, deletions: 0, binary: false, ignored: true },
+    ],
+    baseLabel: "main",
+    headLabel: "wt",
+  },
 };
 const COMMITS = [
   { oid: "o0", shortOid: "o0aaaaa", subject: "third", author: "me", time: 3 },
@@ -373,5 +386,89 @@ describe("Workspace", () => {
       fsChanged?.({ payload: { paths: [], gitMeta: true } });
     });
     await waitFor(() => expect(screen.getByRole("button", { name: /refresh/i })).toBeInTheDocument());
+  });
+
+  // The eye toggle on the tree's "Ignored (N)" group row hides .deltaignore'd
+  // files from the diff pane. The choice persists (localStorage) and syncs
+  // across open review windows.
+  describe("ignored-files toggle", () => {
+    // Sections only mount once viewportH > 0, which never happens on its own in
+    // happy-dom (no layout → clientHeight 0) — mirror VirtualDiffPane.test's stub
+    // so the ignored card's header (and its "ignored" badge) actually renders.
+    let clientHeightDesc: PropertyDescriptor | undefined;
+    beforeAll(() => {
+      clientHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 900 });
+    });
+    afterAll(() => {
+      if (clientHeightDesc) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDesc);
+    });
+
+    beforeEach(() => {
+      // The pref caches its value at module scope, so localStorage.clear() alone
+      // wouldn't reset it between tests — write through the setter.
+      setHideIgnoredFiles("off");
+      localStorage.removeItem("delta.hideIgnoredFiles");
+      openReview.mockResolvedValue(ignoredSession);
+      listCommits.mockResolvedValue({ commits: [], hasMore: false });
+      vi.mocked(api.getFileDiff).mockResolvedValue({ status: "modified", binary: false, oldContent: "a\n", newContent: "b\n" } as FileDiff);
+    });
+
+    it("hides the ignored card from the diff pane, not from the tree, and persists", async () => {
+      render(<Workspace target={target} />);
+      const pane = await screen.findByTestId("diff-pane");
+      // The ignored file renders as a (collapsed) card with its badge; the tree
+      // carries its own "Ignored (1)" group outside the pane.
+      await waitFor(() => expect(within(pane).getByText("ignored")).toBeInTheDocument());
+      expect(screen.getByText("Ignored (1)")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Hide ignored files (1)" }));
+      expect(within(pane).queryByText("ignored")).not.toBeInTheDocument();
+      // The regular file's card is untouched.
+      expect(within(pane).getByText("a.ts")).toBeInTheDocument();
+      // The tree's Ignored group survives — hiding is pane-only.
+      expect(screen.getByText("Ignored (1)")).toBeInTheDocument();
+      // Persisted for reloads / other windows.
+      expect(localStorage.getItem("delta.hideIgnoredFiles")).toBe("on");
+
+      // And back: the card returns.
+      fireEvent.click(screen.getByRole("button", { name: "Show ignored files (1)" }));
+      await waitFor(() => expect(within(pane).getByText("ignored")).toBeInTheDocument());
+      expect(localStorage.getItem("delta.hideIgnoredFiles")).toBe("off");
+    });
+
+    it("adopts a hidden-state change made in another window (storage event)", async () => {
+      render(<Workspace target={target} />);
+      const pane = await screen.findByTestId("diff-pane");
+      await waitFor(() => expect(within(pane).getByText("ignored")).toBeInTheDocument());
+
+      act(() => {
+        localStorage.setItem("delta.hideIgnoredFiles", "on");
+        window.dispatchEvent(new StorageEvent("storage", { key: "delta.hideIgnoredFiles", newValue: "on" }));
+      });
+      await waitFor(() => expect(within(pane).queryByText("ignored")).not.toBeInTheDocument());
+      expect(screen.getByRole("button", { name: "Show ignored files (1)" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("offers no toggle when the review has no ignored files", async () => {
+      openReview.mockResolvedValue(fileSession);
+      render(<Workspace target={target} />);
+      await screen.findByTestId("diff-pane");
+      expect(screen.queryByRole("button", { name: /ignored files/i })).not.toBeInTheDocument();
+    });
+
+    it("shows an empty state with a way back when every file is ignored and hidden", async () => {
+      setHideIgnoredFiles("on");
+      openReview.mockResolvedValue({
+        ...minimalSession,
+        summary: { files: [{ path: "src/gen.ts", status: "modified", additions: 0, deletions: 0, binary: false, ignored: true }], baseLabel: "main", headLabel: "wt" },
+      });
+      render(<Workspace target={target} />);
+      expect(await screen.findByText("Every file in this review is ignored.")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Show ignored files" }));
+      const pane = await screen.findByTestId("diff-pane");
+      await waitFor(() => expect(within(pane).getByText("ignored")).toBeInTheDocument());
+    });
   });
 });

@@ -2,11 +2,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Kbd } from "@/components/ui/kbd";
-import { ChevronRight, ChevronsDownUp, ChevronsUpDown, EyeOff, Folder, FolderOpen, Check, List, ListTree, MessageSquare, Minus, Search, X } from "lucide-react";
+import { ChevronRight, ChevronsDownUp, ChevronsUpDown, Eye, EyeOff, Folder, FolderOpen, Check, List, ListTree, MessageSquare, Minus, Search, X } from "lucide-react";
 import type { FileEntry, FileStatus } from "../types";
 import { buildTree, type TreeNode } from "./buildTree";
 import { sumChangeStats } from "./changeStats";
 import { useViewedStatsExclude } from "../viewedStatsPref";
+import { useHideIgnoredFiles } from "../ignoredFilesPref";
 import { FileTypeIcon } from "./fileTypeIcons";
 
 const STATUS_COLOR: Record<FileStatus, string> = {
@@ -39,6 +40,11 @@ const fmtCount = (n: number) => (n > 9_999 ? `${Math.floor(n / 1000)}k` : String
 // Git paths are repo-relative, so a leading "/" can never collide with a real file.
 const IGNORED_GROUP = "/:ignored";
 
+// File count under a node — sizes the Ignored group's eye-toggle label
+// ("Hide ignored files (2)"), correct for nested or flat group children.
+const countFiles = (node: TreeNode): number =>
+  node.children.reduce((n, c) => n + (c.kind === "file" ? 1 : countFiles(c)), 0);
+
 // Row windowing geometry (#virtual). Rows are a fixed height, so a row's y-offset is
 // exact arithmetic — we mount only the on-screen slice of a flattened node list and
 // float it over a full-height spacer. Same idea as VirtualDiffPane, but simpler
@@ -66,6 +72,10 @@ interface RowHandlers {
   onToggleViewed: (file: string) => void;
   // Folder checkbox: mark/clear every file under a folder in one update.
   onSetViewedBulk: (files: string[], viewed: boolean) => void;
+  // Ignored group's eye toggle: hide/show the ignored files' cards in the diff
+  // pane (shared pref — Workspace filters the pane by the same store).
+  ignoredHidden: boolean;
+  onToggleIgnoredHidden: () => void;
   // Pointer rested on / left a file row — drives hover-prefetch of its diff.
   onHoverFile: (path: string | null) => void;
 }
@@ -180,6 +190,21 @@ function Row({ node, depth, top, h }: { node: TreeNode; depth: number; top: numb
           {dirSome && <Minus className="size-2.5" strokeWidth={3} />}
         </button>
       )}
+      {/* The Ignored group's own control, pinned to the row's right edge:
+          hide/show these files' cards in the diff pane. The tree itself always
+          keeps the group (and this button), so hidden files stay reachable. */}
+      {isIgnoredGroup && (
+        <button
+          type="button"
+          aria-pressed={h.ignoredHidden}
+          aria-label={h.ignoredHidden ? `Show ignored files (${countFiles(node)})` : `Hide ignored files (${countFiles(node)})`}
+          title={h.ignoredHidden ? `Show ignored files (${countFiles(node)})` : `Hide ignored files (${countFiles(node)})`}
+          onClick={(e) => { e.stopPropagation(); h.onToggleIgnoredHidden(); }}
+          className={`flex size-5 shrink-0 items-center justify-center rounded-[5px] transition-colors hover:bg-foreground/[0.06] ${h.ignoredHidden ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}
+        >
+          {h.ignoredHidden ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+        </button>
+      )}
       {!isDir && node.entry && !isIgnoredFile && (
         <>
           {commentN > 0 && (
@@ -291,6 +316,10 @@ export function FilesPanel({
   // Declared before the memos that read `excluding`.
   const [excludeViewed, setExcludeViewed] = useViewedStatsExclude();
   const excluding = excludeViewed === "on";
+  // Ignored files' eye toggle lives on the Ignored group's row; Workspace reads
+  // the same store to drop those files from the diff pane.
+  const [hideIgnoredPref, setHideIgnoredPref] = useHideIgnoredFiles();
+  const hideIgnored = hideIgnoredPref === "on";
   const filteredFiles = useMemo(
     () => (searching ? files.filter((f) => f.path.toLowerCase().includes(q)) : files),
     [files, q, searching],
@@ -495,6 +524,8 @@ export function FilesPanel({
     onSelectFile: selectFile,
     onToggleViewed,
     onSetViewedBulk,
+    ignoredHidden: hideIgnored,
+    onToggleIgnoredHidden: () => setHideIgnoredPref(hideIgnored ? "off" : "on"),
     onHoverFile,
   };
 

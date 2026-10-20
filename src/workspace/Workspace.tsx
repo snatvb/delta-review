@@ -24,8 +24,9 @@ import { useResolvedTheme } from "../theme";
 import { vcsProfile } from "../vcsProfile";
 import { useDiffLayout } from "../diff/useDiffLayout";
 import { useResizableWidth, usePaneResize, PaneResizer, FILE_PANE } from "../lib/resizablePane";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Columns2, Copy, ExternalLink, GitBranch, Loader2, MessageSquare, RefreshCw, Rows2, Search, Settings } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Columns2, Copy, ExternalLink, Eye, EyeOff, GitBranch, Loader2, MessageSquare, RefreshCw, Rows2, Search, Settings } from "lucide-react";
 import { getEditorPref } from "../editor";
+import { useHideIgnoredFiles } from "../ignoredFilesPref";
 import { worktreeName } from "../lib/utils";
 import { isMac } from "../lib/platform";
 import {
@@ -90,6 +91,12 @@ function reviewSig(s: DiffSummary | null, r: Review | null): string {
 export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: Target; onOpenPalette?: () => void; onOpenSettings?: () => void }) {
   const theme = useResolvedTheme();
   const [layout, setLayout] = useDiffLayout();
+  // Ignored (.deltaignore) files: hidden from the diff pane while this is on.
+  // The toggle itself lives on the tree's "Ignored (N)" group row (FilesPanel);
+  // both read this shared, persisted pref (synced across open windows), so
+  // reloads and new review windows keep the choice.
+  const [hideIgnoredPref, setHideIgnoredPref] = useHideIgnoredFiles();
+  const hideIgnored = hideIgnoredPref === "on";
   // Resizable, persisted file panel; the divider lives on its right edge.
   const [sidebarWidth, setSidebarWidth] = useResizableWidth(FILE_PANE);
   const fileResize = usePaneResize(FILE_PANE, sidebarWidth, setSidebarWidth, "right");
@@ -725,6 +732,15 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // the active row mid-scroll. (#jump-preload)
   const orderedFiles = useMemo(() => reviewOrder(viewSummary?.files ?? []), [viewSummary?.files]);
 
+  // The diff pane renders the review minus its ignored entries while the tree's
+  // Ignored-group eye-toggle is on; the tree keeps the full list (its Ignored
+  // group is where they stay visible), so what's hidden remains discoverable.
+  const ignoredCount = useMemo(() => orderedFiles.reduce((n, f) => n + (f.ignored ? 1 : 0), 0), [orderedFiles]);
+  const diffFiles = useMemo(
+    () => (hideIgnored && ignoredCount > 0 ? orderedFiles.filter((f) => !f.ignored) : orderedFiles),
+    [orderedFiles, hideIgnored, ignoredCount],
+  );
+
   // Keep the mirror current, and release a held jump once its file is in view —
   // the diff pane's jump effect can't wait for the file itself.
   useEffect(() => {
@@ -1035,9 +1051,21 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                   <PaneResizer edge="right" label="Resize file panel" {...fileResize} />
                 </aside>
                 <main aria-busy={busy} className="min-h-0 min-w-0 flex-1 -ml-1.5 transition-opacity aria-busy:pointer-events-none aria-busy:opacity-50">
+                  {diffFiles.length === 0 ? (
+                    /* Every file is ignored and the eye-toggle hides them — the
+                        pane would render nothing, so say so and offer the way back. */
+                    <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
+                      <ReloadSettler invalidate={diffInval} onSettled={() => setRefreshing(false)} />
+                      <EyeOff className="size-5" />
+                      <p className="text-[13px]">Every file in this review is ignored.</p>
+                      <Button size="sm" variant="outline" className="h-7 text-[13px]" onClick={() => setHideIgnoredPref("off")}>
+                        <Eye className="size-3.5" /> Show ignored files
+                      </Button>
+                    </div>
+                  ) : (
                   <VirtualDiffPane
                     target={viewTarget!}
-                    files={orderedFiles}
+                    files={diffFiles}
                     theme={theme}
                     layout={layout}
                     viewedFiles={viewedFiles}
@@ -1057,6 +1085,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                     onToggleResolvedComment={toggleResolved}
                     onFileEdited={onFileEdited}
                   />
+                  )}
                 </main>
               </>
             )}
