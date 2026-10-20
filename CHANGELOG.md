@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.23.0 — 2026-10-20
+
+### 🚀 New Features
+
+- **Hide ignored files from the diff pane** — the tree's "Ignored (N)" group row carries an eye toggle at its right edge: on, the diff pane skips the ignored files' placeholder cards entirely, while the tree keeps the group (and the toggle), so what's hidden stays discoverable. The choice persists across reloads and newly opened review windows, and syncs live between open windows. A review where every file is ignored shows a centered note with a one-click "Show ignored files" instead of a blank pane.
+
 ## 0.22.1 — 2026-10-14
 
 ### 🐛 Fixes
