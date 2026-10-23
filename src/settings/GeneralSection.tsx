@@ -3,6 +3,7 @@ import { usePickerOpenMode, type PickerOpenMode } from "../windowMode";
 import { useWindowPerBranch } from "../windowPerBranch";
 import { useChangeDetection } from "../changeDetection";
 import { useViewedStatsExclude } from "../viewedStatsPref";
+import { useHideViewedFiles } from "../hideViewedFilesPref";
 import { useUpdateCheck } from "../updater/updateCheckPref";
 import { useAutoDownload } from "../updater/autoDownloadPref";
 import { Chevron, Divider, OnOffToggle, Row, selectClass } from "./controls";
@@ -16,6 +17,7 @@ export function GeneralSection() {
   const [windowPerBranch, setWindowPerBranch] = useWindowPerBranch();
   const [changeDetection, setChangeDetection] = useChangeDetection();
   const [excludeViewed, setExcludeViewed] = useViewedStatsExclude();
+  const [hideViewed, setHideViewed] = useHideViewedFiles();
   const [updateCheck, setUpdateCheck] = useUpdateCheck();
   const [autoDownload, setAutoDownload] = useAutoDownload();
 
@@ -106,6 +108,22 @@ export function GeneralSection() {
             onChange={setExcludeViewed}
             onTitle="Count only files not yet viewed"
             offTitle="Count every file"
+          />
+        }
+      />
+
+      <Divider />
+
+      <Row
+        label="Hide viewed files"
+        hint="Files you mark viewed leave the diff pane until you unmark them; the file tree keeps them."
+        control={
+          <OnOffToggle
+            label="Hide viewed files"
+            value={hideViewed}
+            onChange={setHideViewed}
+            onTitle="Marking a file viewed removes its card from the pane"
+            offTitle="Keep viewed files' cards in the pane"
           />
         }
       />

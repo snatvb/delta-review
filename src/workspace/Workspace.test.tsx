@@ -49,6 +49,7 @@ import { Workspace } from "./Workspace";
 import { api } from "../api";
 import { setChangeDetection } from "../changeDetection";
 import { setHideIgnoredFiles } from "../ignoredFilesPref";
+import { setHideViewedFiles } from "../hideViewedFilesPref";
 import type { FileDiff, Target } from "../types";
 
 const target: Target = { repoPath: "/r", mode: "all-changes" };
@@ -469,6 +470,172 @@ describe("Workspace", () => {
       fireEvent.click(screen.getByRole("button", { name: "Show ignored files" }));
       const pane = await screen.findByTestId("diff-pane");
       await waitFor(() => expect(within(pane).getByText("ignored")).toBeInTheDocument());
+    });
+  });
+
+  // The CheckCheck toggle in the workspace toolbar hides viewed files' cards
+  // from the diff pane (Settings → General exposes the same pref). The choice
+  // persists (localStorage) and syncs across open review windows; the tree
+  // keeps every row, so unmarking stays possible.
+  describe("viewed-files toggle", () => {
+    // Sections only mount once viewportH > 0, which never happens on its own in
+    // happy-dom (no layout → clientHeight 0) — mirror the ignored suite's stub
+    // so the cards (and their "Viewed" buttons) actually render.
+    let clientHeightDesc: PropertyDescriptor | undefined;
+    beforeAll(() => {
+      clientHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 900 });
+    });
+    afterAll(() => {
+      if (clientHeightDesc) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDesc);
+    });
+
+    beforeEach(() => {
+      // The pref caches its value at module scope, so localStorage.clear() alone
+      // wouldn't reset it between tests — write through the setter.
+      setHideViewedFiles("off");
+      localStorage.removeItem("delta.hideViewedFiles");
+      openReview.mockResolvedValue(fileSession);
+      listCommits.mockResolvedValue({ commits: [], hasMore: false });
+      vi.mocked(api.getFileDiff).mockResolvedValue({ status: "modified", binary: false, oldContent: "a\n", newContent: "b\n" } as FileDiff);
+    });
+
+    it("a card leaves the pane the moment its file is marked viewed while the toggle is on", async () => {
+      // Two files so the pane keeps a live card — with one file the pane would
+      // unmount into the all-viewed empty state (that path has its own test).
+      openReview.mockResolvedValue({
+        ...fileSession,
+        summary: {
+          files: [
+            { path: "src/a.ts", status: "modified", additions: 1, deletions: 0, binary: false },
+            { path: "src/b.ts", status: "modified", additions: 1, deletions: 0, binary: false },
+          ],
+          baseLabel: "main",
+          headLabel: "wt",
+        },
+      });
+      render(<Workspace target={target} />);
+      const pane = await screen.findByTestId("diff-pane");
+      await waitFor(() => expect(within(pane).getByText("a.ts")).toBeInTheDocument());
+
+      // Arm the mode first (the count is 0 — nothing viewed yet)…
+      fireEvent.click(screen.getByRole("button", { name: "Hide viewed files (0)" }));
+      expect(screen.getByRole("button", { name: "Show viewed files (0)" })).toHaveAttribute("aria-pressed", "true");
+      expect(localStorage.getItem("delta.hideViewedFiles")).toBe("on");
+      // …then review: marking viewed from the card itself drops it right away.
+      fireEvent.click(within(pane).getByRole("button", { name: "viewed src/a.ts" }));
+      await waitFor(() => expect(within(pane).queryByText("a.ts")).not.toBeInTheDocument());
+      expect(within(pane).getByText("b.ts")).toBeInTheDocument();
+
+      // The tree keeps its row — that's where the mark comes off again. The
+      // mode itself stays armed (nothing viewed → nothing to drop, both cards
+      // show); turning it off is one click.
+      fireEvent.click(screen.getByRole("button", { name: "viewed src/a.ts" }));
+      await waitFor(() => expect(within(pane).getByText("a.ts")).toBeInTheDocument());
+      const armed = screen.getByRole("button", { name: "Show viewed files (0)" });
+      expect(armed).toHaveAttribute("aria-pressed", "true");
+      fireEvent.click(armed);
+      expect(screen.getByRole("button", { name: "Hide viewed files (0)" })).toHaveAttribute("aria-pressed", "false");
+      expect(localStorage.getItem("delta.hideViewedFiles")).toBe("off");
+    });
+
+    it("hides already-viewed cards from the pane, not from the tree, and persists", async () => {
+      openReview.mockResolvedValue({
+        ...fileSession,
+        review: { ...fileSession.review, viewed: [{ file: "src/a.ts", diffHash: "" }] },
+        summary: {
+          files: [
+            { path: "src/a.ts", status: "modified", additions: 1, deletions: 0, binary: false },
+            { path: "src/b.ts", status: "modified", additions: 1, deletions: 0, binary: false },
+          ],
+          baseLabel: "main",
+          headLabel: "wt",
+        },
+      });
+      render(<Workspace target={target} />);
+      const pane = await screen.findByTestId("diff-pane");
+      await waitFor(() => expect(within(pane).getByText("a.ts")).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole("button", { name: "Hide viewed files (1)" }));
+      await waitFor(() => expect(within(pane).queryByText("a.ts")).not.toBeInTheDocument());
+      // The unviewed file's card is untouched.
+      expect(within(pane).getByText("b.ts")).toBeInTheDocument();
+      // The tree keeps the viewed row (checkbox still there) — hiding is pane-only.
+      expect(screen.getByRole("button", { name: "viewed src/a.ts" })).toBeInTheDocument();
+      // Persisted for reloads / other windows.
+      expect(localStorage.getItem("delta.hideViewedFiles")).toBe("on");
+
+      // And back: the card returns.
+      fireEvent.click(screen.getByRole("button", { name: "Show viewed files (1)" }));
+      await waitFor(() => expect(within(pane).getByText("a.ts")).toBeInTheDocument());
+      expect(localStorage.getItem("delta.hideViewedFiles")).toBe("off");
+    });
+
+    it("adopts a hidden-state change made in another window (storage event)", async () => {
+      openReview.mockResolvedValue({
+        ...fileSession,
+        review: { ...fileSession.review, viewed: [{ file: "src/a.ts", diffHash: "" }] },
+      });
+      render(<Workspace target={target} />);
+      const pane = await screen.findByTestId("diff-pane");
+      await waitFor(() => expect(within(pane).getByText("a.ts")).toBeInTheDocument());
+
+      act(() => {
+        localStorage.setItem("delta.hideViewedFiles", "on");
+        window.dispatchEvent(new StorageEvent("storage", { key: "delta.hideViewedFiles", newValue: "on" }));
+      });
+      await waitFor(() => expect(within(pane).queryByText("a.ts")).not.toBeInTheDocument());
+      expect(screen.getByRole("button", { name: "Show viewed files (1)" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("shows an empty state with a way back when every file is viewed and hidden", async () => {
+      setHideViewedFiles("on");
+      openReview.mockResolvedValue({
+        ...fileSession,
+        review: { ...fileSession.review, viewed: [{ file: "src/a.ts", diffHash: "" }] },
+      });
+      render(<Workspace target={target} />);
+      expect(await screen.findByText("Every file in this review is viewed.")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Show viewed files" }));
+      const pane = await screen.findByTestId("diff-pane");
+      await waitFor(() => expect(within(pane).getByText("a.ts")).toBeInTheDocument());
+    });
+
+    it("jumping to a comment in a hidden viewed file unmarks the file so the jump lands", async () => {
+      openReview.mockResolvedValue({
+        ...fileSession,
+        review: {
+          ...fileSession.review,
+          viewed: [{ file: "src/a.ts", diffHash: "" }],
+          comments: [{
+            id: "c1", scope: "line", body: "check this",
+            anchor: { file: "src/a.ts", side: "new", startLine: 1, endLine: null, snippet: null },
+            stale: false, resolved: false, createdAt: "t", updatedAt: "t",
+          }],
+        },
+        summary: {
+          files: [
+            { path: "src/a.ts", status: "modified", additions: 1, deletions: 0, binary: false },
+            { path: "src/b.ts", status: "modified", additions: 1, deletions: 0, binary: false },
+          ],
+          baseLabel: "main",
+          headLabel: "wt",
+        },
+      });
+      render(<Workspace target={target} />);
+      const pane = await screen.findByTestId("diff-pane");
+      await waitFor(() => expect(within(pane).getByText("a.ts")).toBeInTheDocument());
+
+      // Hide the viewed file, then jump to its comment from the index.
+      fireEvent.click(screen.getByRole("button", { name: "Hide viewed files (1)" }));
+      await waitFor(() => expect(within(pane).queryByText("a.ts")).not.toBeInTheDocument());
+      fireEvent.click(screen.getByRole("button", { name: "Comments (1)" }));
+      fireEvent.click(screen.getByRole("button", { name: "Jump to comment on src/a.ts" }));
+
+      // The mark came off and the card returned — the jump has somewhere to land.
+      await waitFor(() => expect(within(pane).getByText("a.ts")).toBeInTheDocument());
+      expect(screen.getByRole("button", { name: "Show viewed files (0)" })).toBeInTheDocument();
     });
   });
 });

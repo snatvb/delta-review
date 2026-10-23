@@ -24,8 +24,9 @@ import { useResolvedTheme } from "../theme";
 import { vcsProfile } from "../vcsProfile";
 import { useDiffLayout } from "../diff/useDiffLayout";
 import { useResizableWidth, usePaneResize, PaneResizer, FILE_PANE } from "../lib/resizablePane";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Columns2, Copy, ExternalLink, Eye, EyeOff, GitBranch, Loader2, MessageSquare, RefreshCw, Rows2, Search, Settings } from "lucide-react";
+import { Check, CheckCheck, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Columns2, Copy, ExternalLink, Eye, EyeOff, GitBranch, Loader2, MessageSquare, RefreshCw, Rows2, Search, Settings } from "lucide-react";
 import { getEditorPref } from "../editor";
+import { getHideViewedFiles, useHideViewedFiles } from "../hideViewedFilesPref";
 import { useHideIgnoredFiles } from "../ignoredFilesPref";
 import { worktreeName } from "../lib/utils";
 import { isMac } from "../lib/platform";
@@ -97,6 +98,11 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // reloads and new review windows keep the choice.
   const [hideIgnoredPref, setHideIgnoredPref] = useHideIgnoredFiles();
   const hideIgnored = hideIgnoredPref === "on";
+  // Viewed files: their cards leave the diff pane while this is on. The toggle
+  // lives in the workspace toolbar (and Settings → General); the tree keeps
+  // every row with its checkbox, so unmarking stays possible.
+  const [hideViewedPref, setHideViewedPref] = useHideViewedFiles();
+  const hideViewed = hideViewedPref === "on";
   // Resizable, persisted file panel; the divider lives on its right edge.
   const [sidebarWidth, setSidebarWidth] = useResizableWidth(FILE_PANE);
   const fileResize = usePaneResize(FILE_PANE, sidebarWidth, setSidebarWidth, "right");
@@ -624,11 +630,17 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // the view yet (the pinned commit's summary is still loading), hold the jump and
   // let the effect below fire it once the file arrives.
   const fireJump = useCallback((file: string, commentId?: string) => {
+    // A jump at a file the hide-viewed mode dropped from the pane would land
+    // nowhere — unmark it so the card returns with the jump. Revisiting a
+    // comment reopens the file for review; re-marking it is one click.
+    if (getHideViewedFiles() === "on" && reviewRef.current?.viewed.some((v) => v.file === file)) {
+      toggleViewed(file, "");
+    }
     const present = orderedFilesRef.current.some((f) => f.path === file);
     heldJumpRef.current = null; // latest intent wins
     if (present) setJump({ file, commentId, n: Date.now() });
     else heldJumpRef.current = { file, commentId };
-  }, []);
+  }, [toggleViewed]);
   const onJump = useCallback((c: Comment) => {
     if (c.commit) pickCommit(c.commit);
     if (c.anchor?.file) fireJump(c.anchor.file, c.id);
@@ -733,12 +745,25 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   const orderedFiles = useMemo(() => reviewOrder(viewSummary?.files ?? []), [viewSummary?.files]);
 
   // The diff pane renders the review minus its ignored entries while the tree's
-  // Ignored-group eye-toggle is on; the tree keeps the full list (its Ignored
-  // group is where they stay visible), so what's hidden remains discoverable.
+  // Ignored-group eye-toggle is on, and minus viewed entries while the
+  // toolbar's hide-viewed toggle is on. The tree keeps the full list (ignored
+  // files stay in their group, viewed ones stay dimmed with their checkboxes),
+  // so what's hidden remains discoverable — and unmarkable.
   const ignoredCount = useMemo(() => orderedFiles.reduce((n, f) => n + (f.ignored ? 1 : 0), 0), [orderedFiles]);
+  // Counted against the review's files, not viewedFiles.size — the set can
+  // carry paths the latest diff no longer has.
+  const viewedInDiff = useMemo(
+    () => orderedFiles.reduce((n, f) => n + (viewedFiles.has(f.path) ? 1 : 0), 0),
+    [orderedFiles, viewedFiles],
+  );
+  // Returns orderedFiles itself when nothing is dropped, keeping the identity
+  // stable for the tree's `visible` memo (see the #jump-preload note above).
   const diffFiles = useMemo(
-    () => (hideIgnored && ignoredCount > 0 ? orderedFiles.filter((f) => !f.ignored) : orderedFiles),
-    [orderedFiles, hideIgnored, ignoredCount],
+    () =>
+      (hideIgnored && ignoredCount > 0) || (hideViewed && viewedInDiff > 0)
+        ? orderedFiles.filter((f) => !(hideIgnored && f.ignored) && !(hideViewed && viewedFiles.has(f.path)))
+        : orderedFiles,
+    [orderedFiles, hideIgnored, ignoredCount, hideViewed, viewedFiles, viewedInDiff],
   );
 
   // Keep the mirror current, and release a held jump once its file is in view —
@@ -952,6 +977,20 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                   <RefreshCw className={`size-4 ${refreshing ? "animate-spin will-change-transform" : ""}`} />
                 </button>
               )}
+              {/* Hide-viewed toggle for the diff pane: while on, a card leaves
+                  the pane the moment its file is marked viewed. Always armed —
+                  enabling it before reviewing is the intended flow. The count
+                  mirrors the tree's "N / M viewed" chip. */}
+              <button
+                type="button"
+                aria-pressed={hideViewed}
+                aria-label={hideViewed ? `Show viewed files (${viewedInDiff})` : `Hide viewed files (${viewedInDiff})`}
+                title={hideViewed ? `Show viewed files (${viewedInDiff})` : `Hide viewed files (${viewedInDiff})`}
+                onClick={() => setHideViewedPref(hideViewed ? "off" : "on")}
+                className={`${ICON_BUTTON} aria-pressed:border-primary/40 aria-pressed:bg-primary/10 aria-pressed:text-primary`}
+              >
+                <CheckCheck className="size-4" />
+              </button>
               <ToggleGroup
                 type="single"
                 size="sm"
@@ -1052,15 +1091,29 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                 </aside>
                 <main aria-busy={busy} className="min-h-0 min-w-0 flex-1 -ml-1.5 transition-opacity aria-busy:pointer-events-none aria-busy:opacity-50">
                   {diffFiles.length === 0 ? (
-                    /* Every file is ignored and the eye-toggle hides them — the
-                        pane would render nothing, so say so and offer the way back. */
+                    /* Every file was dropped by a hide toggle — ignored or
+                        viewed — so the pane would render nothing. Say which and
+                        offer the way back; viewed wins the wording when both
+                        contributed. */
                     <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
                       <ReloadSettler invalidate={diffInval} onSettled={() => setRefreshing(false)} />
-                      <EyeOff className="size-5" />
-                      <p className="text-[13px]">Every file in this review is ignored.</p>
-                      <Button size="sm" variant="outline" className="h-7 text-[13px]" onClick={() => setHideIgnoredPref("off")}>
-                        <Eye className="size-3.5" /> Show ignored files
-                      </Button>
+                      {hideViewed && viewedInDiff > 0 ? (
+                        <>
+                          <CheckCheck className="size-5" />
+                          <p className="text-[13px]">Every file in this review is viewed.</p>
+                          <Button size="sm" variant="outline" className="h-7 text-[13px]" onClick={() => setHideViewedPref("off")}>
+                            <Eye className="size-3.5" /> Show viewed files
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <EyeOff className="size-5" />
+                          <p className="text-[13px]">Every file in this review is ignored.</p>
+                          <Button size="sm" variant="outline" className="h-7 text-[13px]" onClick={() => setHideIgnoredPref("off")}>
+                            <Eye className="size-3.5" /> Show ignored files
+                          </Button>
+                        </>
+                      )}
                     </div>
                   ) : (
                   <VirtualDiffPane
