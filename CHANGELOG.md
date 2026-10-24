@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.24.0 — 2026-10-24
+
+### 🚀 New Features
+
+- **"Binaries & giant diffs last" setting** — the partition that moved binary and giant-diff files to the end of the diff pane is now an opt-in (Settings → General), not always-on. The new default is plain tree order: cards never reshuffle as summaries update, which used to make the pane's scroll jump mid-review. Turned on, readable diffs come first again — binaries and giants move to the end (still ahead of the ignored group), each group keeping tree order. The preference persists across reloads and syncs live between open windows.
+
+### 🔧 Changes
+
+- **The comments list is a floating panel now** — opening it no longer makes the diff pane resize: the index appears over the diff's right side as a rounded card with a border and soft shadow, inset 12px from the pane's edges. Open/close animates only opacity and position — compositor properties — so the virtualized diff underneath is never re-laid-out mid-animation; the old in-flow panel animated its width every frame, which read as lag on large reviews. Drag-to-resize and the persisted width are unchanged.
+
 ## 0.23.0 — 2026-10-20
 
 ### 🚀 New Features
