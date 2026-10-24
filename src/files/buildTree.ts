@@ -56,9 +56,14 @@ export function flattenTreeFiles(files: FileEntry[]): FileEntry[] {
 
 const unreviewable = (e: FileEntry) => e.binary || isGiant(e);
 
-/** Tree order, with binaries and giant diffs moved to the end so readable diffs come first, then `.deltaignore`d files. */
-export function reviewOrder(files: FileEntry[]): FileEntry[] {
+/** Tree order, `.deltaignore`d files last. With `unreviewableLast`, binaries and
+    giant diffs move to the end (before the ignored ones) so readable diffs come
+    first — an opt-in: the partition reshuffles cards as summaries update, which
+    makes the pane's scroll jump mid-review. */
+export function reviewOrder(files: FileEntry[], unreviewableLast = false): FileEntry[] {
   const flat = flattenTreeFiles(files);
   const reviewable = flat.filter((e) => !e.ignored);
-  return [...reviewable.filter((e) => !unreviewable(e)), ...reviewable.filter(unreviewable), ...flat.filter((e) => e.ignored)];
+  const ignored = flat.filter((e) => e.ignored);
+  if (!unreviewableLast) return [...reviewable, ...ignored];
+  return [...reviewable.filter((e) => !unreviewable(e)), ...reviewable.filter(unreviewable), ...ignored];
 }

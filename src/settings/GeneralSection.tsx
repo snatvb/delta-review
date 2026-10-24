@@ -4,6 +4,7 @@ import { useWindowPerBranch } from "../windowPerBranch";
 import { useChangeDetection } from "../changeDetection";
 import { useViewedStatsExclude } from "../viewedStatsPref";
 import { useHideViewedFiles } from "../hideViewedFilesPref";
+import { useUnreviewableLast } from "../unreviewableLastPref";
 import { useUpdateCheck } from "../updater/updateCheckPref";
 import { useAutoDownload } from "../updater/autoDownloadPref";
 import { Chevron, Divider, OnOffToggle, Row, selectClass } from "./controls";
@@ -18,6 +19,7 @@ export function GeneralSection() {
   const [changeDetection, setChangeDetection] = useChangeDetection();
   const [excludeViewed, setExcludeViewed] = useViewedStatsExclude();
   const [hideViewed, setHideViewed] = useHideViewedFiles();
+  const [unreviewableLast, setUnreviewableLast] = useUnreviewableLast();
   const [updateCheck, setUpdateCheck] = useUpdateCheck();
   const [autoDownload, setAutoDownload] = useAutoDownload();
 
@@ -124,6 +126,22 @@ export function GeneralSection() {
             onChange={setHideViewed}
             onTitle="Marking a file viewed removes its card from the pane"
             offTitle="Keep viewed files' cards in the pane"
+          />
+        }
+      />
+
+      <Divider />
+
+      <Row
+        label="Binaries & giant diffs last"
+        hint="Readable diffs come first in the pane. Off: plain tree order, no reshuffling as summaries update."
+        control={
+          <OnOffToggle
+            label="Binaries & giant diffs last"
+            value={unreviewableLast}
+            onChange={setUnreviewableLast}
+            onTitle="Move binary and huge files to the end of the pane"
+            offTitle="Keep plain tree order"
           />
         }
       />

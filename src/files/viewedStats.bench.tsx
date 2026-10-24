@@ -65,8 +65,11 @@ for (const n of [2_500, 10_000]) {
   });
 
   describe(`per-open context (unchanged by the pref) — ${n.toLocaleString()} files`, () => {
-    bench("reviewOrder (sort + partition)", () => {
+    bench("reviewOrder (default: plain tree order)", () => {
       void reviewOrder(files);
+    });
+    bench("reviewOrder (sort + partition)", () => {
+      void reviewOrder(files, true);
     });
   });
 }

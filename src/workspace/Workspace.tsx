@@ -27,6 +27,7 @@ import { useResizableWidth, usePaneResize, PaneResizer, FILE_PANE } from "../lib
 import { Check, CheckCheck, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Columns2, Copy, ExternalLink, Eye, EyeOff, GitBranch, Loader2, MessageSquare, RefreshCw, Rows2, Search, Settings } from "lucide-react";
 import { getEditorPref } from "../editor";
 import { getHideViewedFiles, useHideViewedFiles } from "../hideViewedFilesPref";
+import { useUnreviewableLast } from "../unreviewableLastPref";
 import { useHideIgnoredFiles } from "../ignoredFilesPref";
 import { worktreeName } from "../lib/utils";
 import { isMac } from "../lib/platform";
@@ -103,6 +104,10 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // every row with its checkbox, so unmarking stays possible.
   const [hideViewedPref, setHideViewedPref] = useHideViewedFiles();
   const hideViewed = hideViewedPref === "on";
+  // Opt-in: keep binaries/giant diffs at the end of the pane (reviewOrder).
+  // Off = plain tree order — no reshuffle-driven scroll jumps.
+  const [unreviewableLastPref] = useUnreviewableLast();
+  const unreviewableLast = unreviewableLastPref === "on";
   // Resizable, persisted file panel; the divider lives on its right edge.
   const [sidebarWidth, setSidebarWidth] = useResizableWidth(FILE_PANE);
   const fileResize = usePaneResize(FILE_PANE, sidebarWidth, setSidebarWidth, "right");
@@ -742,7 +747,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // prefetch). An unstable array here churns the files tree's `visible` memo, which
   // re-fires its "keep active row in view" scroll effect and yanks the tree back to
   // the active row mid-scroll. (#jump-preload)
-  const orderedFiles = useMemo(() => reviewOrder(viewSummary?.files ?? []), [viewSummary?.files]);
+  const orderedFiles = useMemo(() => reviewOrder(viewSummary?.files ?? [], unreviewableLast), [viewSummary?.files, unreviewableLast]);
 
   // The diff pane renders the review minus its ignored entries while the tree's
   // Ignored-group eye-toggle is on, and minus viewed entries while the
