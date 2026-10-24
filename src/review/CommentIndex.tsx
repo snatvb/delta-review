@@ -48,22 +48,18 @@ export function CommentIndex({
   onDeleteAll?: () => void;
   onToggleResolved?: (id: string) => void;
 }) {
-  // Inset right panel — part of the layout, not an overlay. The <aside>'s width
-  // animates 0↔20rem, so the diff pane makes room smoothly instead of snapping.
-  // The jank this used to cause: animating width resizes the sibling diff pane
-  // every frame, and a naive width observer there re-renders the whole virtualized
-  // list each time. The diff pane now DEBOUNCES its width state (see
-  // VirtualDiffPane's ResizeObserver), so during this transition the rows reflow
-  // natively — cheap — with zero React re-renders; viewportW commits once it
-  // settles. The content is pinned to the right edge and revealed by the widening
-  // aside, so it reads as sliding in from the side. (#4)
+  // Overlay panel — NOT part of the layout. It floats over the diff's right
+  // side (absolute), so the diff pane never makes room for it: the old in-flow
+  // aside animated its width on open/close, resizing the virtualized diff every
+  // frame — the jank this replaces. The open/close animation is transform +
+  // opacity only, compositor properties that don't relayout or repaint the diff
+  // underneath.
   //
   // Content stays mounted through the close animation (via `render`) so it can
-  // slide out before unmounting. Reduced-motion neutralizes the transition
+  // fade out before unmounting. Reduced-motion neutralizes the transition
   // app-wide, so open/close is then instant.
-  // Resizable, persisted comments panel; the divider lives on its left edge (the
-  // pane grows leftward). `resizing` suppresses the open/close width transition so
-  // the edge tracks the pointer instead of easing behind it.
+  // Resizable, persisted width; the divider lives on the panel's left edge (it
+  // grows leftward), hanging in the 12px gap the panel floats in.
   const [commentsWidth, setCommentsWidth] = useResizableWidth(COMMENTS_PANE);
   const { resizing, separatorProps } = usePaneResize(COMMENTS_PANE, commentsWidth, setCommentsWidth, "left");
 
@@ -119,19 +115,17 @@ export function CommentIndex({
   return (
     <aside
       aria-hidden={!open}
-      style={{ width: open ? commentsWidth : 0 }}
-      className={`relative shrink-0 ${resizing ? "" : "transition-[width] duration-200 ease-out"}`}
+      style={{ width: commentsWidth }}
+      className={`absolute inset-y-3 right-3 z-30 flex flex-col rounded-xl border border-border bg-background shadow-2xl ring-1 ring-foreground/5 transition-[opacity,translate] duration-200 ease-out dark:ring-foreground/10 ${
+        open ? "translate-x-0 opacity-100" : "pointer-events-none translate-x-3 opacity-0"
+      }`}
     >
-      {/* Clip only the sliding content — the resize divider (rendered after) sits in
-          the gutter to the panel's left and must NOT be clipped by the aside. */}
-      <div className="absolute inset-0 overflow-hidden">
       {visible && (
-      // Floating layout (#pad): transparent panel, no borders, PAD inset; the comment
-      // cards float on the canvas. Pinned to the right edge (absolute) so the widening
-      // aside reveals it in place — the slide — and the fixed width keeps the content
-      // from reflowing while the aside animates.
-      <div data-testid="comment-index" style={{ width: commentsWidth }} className="absolute right-0 top-0 flex h-full min-h-0 flex-col pt-3.5">
-      <div className="flex h-8 shrink-0 items-center gap-2 pl-0 pr-3.5 text-[12px]">
+      // The card look the app's floating surfaces share (see ConfirmDialog).
+      // bg-background keeps the bg-card comment cards one notch elevated in both
+      // themes, as they were on the old transparent panel.
+      <div data-testid="comment-index" className="flex h-full min-h-0 flex-col pt-3">
+      <div className="flex h-8 shrink-0 items-center gap-2 px-3 text-[12px]">
         <span className="text-[15px] font-semibold text-foreground">Comments</span>
         <span className="text-muted-foreground/50">·</span>
         <span className="text-[12px] text-muted-foreground">{anchored.length}</span>
@@ -188,7 +182,7 @@ export function CommentIndex({
           </Button>
         </span>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-auto pl-0 pr-3.5 pb-3.5 pt-2">
+      <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-auto px-3 pb-3 pt-2">
         {anchored.length === 0 && (
           <div className="flex flex-col items-center px-4 py-12 text-center">
             <span className="flex size-11 items-center justify-center rounded-2xl squircle bg-muted/60 text-muted-foreground/70">
@@ -309,7 +303,6 @@ export function CommentIndex({
       />
       </div>
       )}
-      </div>
       {open && <PaneResizer edge="left" label="Resize comments panel" resizing={resizing} separatorProps={separatorProps} />}
     </aside>
   );

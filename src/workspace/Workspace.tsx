@@ -589,7 +589,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       addComment("file", { file, side: "new", startLine: null, endLine: null, snippet: null }, body, commitOid),
     [addComment, commitOid],
   );
-  // Inset panel stays open so the user can move between comments.
+  // The comments overlay stays open so the user can move between comments.
   // (onJump lives after pickCommit below — it needs it to open a comment's commit.)
 
   // Commit-mode navigation. "Last commit" is the same diff as the newest commit, so

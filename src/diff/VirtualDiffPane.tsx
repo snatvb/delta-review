@@ -1799,14 +1799,15 @@ export function VirtualDiffPane({
     let raf = 0;
     const onScroll = () => { if (raf) return; raf = requestAnimationFrame(() => { raf = 0; setScrollTop(pane.scrollTop); }); };
     pane.addEventListener("scroll", onScroll, { passive: true });
-    // Height drives the row window → commit immediately (it's unchanged while the
-    // comments pane animates width, so that's a no-op re-render). Width only feeds
-    // the per-file horizontal-overflow test, so DEBOUNCE it: a comments open/close
-    // animates the pane width over ~200ms, and updating viewportW every frame would
-    // re-render every on-screen file section. Rows reflow natively meanwhile;
-    // commit width once the resize settles. (#pane-anim) (Wrapped files reflow
-    // their text immediately but re-allocate row height only at settle, so a
-    // wrapped row may briefly overlap mid-resize.)
+    // Height drives the row window → commit immediately. Width only feeds the
+    // per-file horizontal-overflow test, so DEBOUNCE it: a drag of the file
+    // panel's divider (or a window resize) fires this observer in bursts, and
+    // updating viewportW every event would re-render every on-screen file
+    // section. Rows reflow natively meanwhile; commit width once the resize
+    // settles. (#pane-anim) (The comments pane is an overlay now and never
+    // resizes this pane; wrapped files reflow their text immediately but
+    // re-allocate row height only at settle, so a wrapped row may briefly
+    // overlap mid-resize.)
     let wTimer = 0;
     const ro = new ResizeObserver(() => {
       setViewportH(pane.clientHeight);
