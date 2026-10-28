@@ -4,6 +4,7 @@ import { markdownComponents } from "@/lib/markdownLink";
 import { Check, Copy, Pencil, Trash2, RotateCcw, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Hint } from "@/components/Hint";
 import { CommentEditor } from "./CommentEditor";
 import { useCopyCommentForAgent } from "./commentForAgent";
 import type { Comment } from "../types";
@@ -100,15 +101,21 @@ export function CommentThread({
               ) : collapsed ? (
                 <div className="flex items-center gap-2.5 px-4 py-2.5">
                   <Check className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                  <span className="min-w-0 flex-1 truncate text-muted-foreground" title={c.body}>
-                    {c.body.trim() === "" ? "Empty note" : c.body}
-                  </span>
-                  <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Reopen" title="Reopen" onClick={() => onToggleResolved(c.id)}>
-                    <RotateCcw className="size-4" />
-                  </Button>
-                  <Button variant="ghost" size="icon-xs" className={DEL_BTN} aria-label="Delete" title="Delete" onClick={() => setConfirmId(c.id)}>
-                    <Trash2 className="size-4" />
-                  </Button>
+                  <Hint tip={c.body}>
+                    <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                      {c.body.trim() === "" ? "Empty note" : c.body}
+                    </span>
+                  </Hint>
+                  <Hint tip="Reopen">
+                    <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Reopen" onClick={() => onToggleResolved(c.id)}>
+                      <RotateCcw className="size-4" />
+                    </Button>
+                  </Hint>
+                  <Hint tip="Delete">
+                    <Button variant="ghost" size="icon-xs" className={DEL_BTN} aria-label="Delete" onClick={() => setConfirmId(c.id)}>
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </Hint>
                 </div>
               ) : (
                 <div className="pl-4 pr-3 pt-2.5 pb-3.5">
@@ -121,18 +128,26 @@ export function CommentThread({
                       <span className="text-[12px] text-muted-foreground/70">{relTime(c.createdAt)}</span>
                     )}
                     <div className="ml-auto flex items-center gap-0.5">
-                      <Button variant="ghost" size="icon-xs" className={RESOLVE_BTN} aria-label="Resolve" title="Resolve" onClick={() => onToggleResolved(c.id)}>
-                        <Check className="size-4" />
-                      </Button>
-                      <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Edit" title="Edit" onClick={() => open(c)}>
-                        <Pencil className="size-4" />
-                      </Button>
-                      <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Copy for agent" title="Copy for agent" onClick={() => copy(c)}>
-                        {copiedId === c.id ? <Check className="size-4 text-emerald-600 dark:text-emerald-400" /> : <Copy className="size-4" />}
-                      </Button>
-                      <Button variant="ghost" size="icon-xs" className={DEL_BTN} aria-label="Delete" title="Delete" onClick={() => setConfirmId(c.id)}>
-                        <Trash2 className="size-4" />
-                      </Button>
+                      <Hint tip="Resolve">
+                        <Button variant="ghost" size="icon-xs" className={RESOLVE_BTN} aria-label="Resolve" onClick={() => onToggleResolved(c.id)}>
+                          <Check className="size-4" />
+                        </Button>
+                      </Hint>
+                      <Hint tip="Edit">
+                        <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Edit" onClick={() => open(c)}>
+                          <Pencil className="size-4" />
+                        </Button>
+                      </Hint>
+                      <Hint tip="Copy for agent">
+                        <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Copy for agent" onClick={() => copy(c)}>
+                          {copiedId === c.id ? <Check className="size-4 text-emerald-600 dark:text-emerald-400" /> : <Copy className="size-4" />}
+                        </Button>
+                      </Hint>
+                      <Hint tip="Delete">
+                        <Button variant="ghost" size="icon-xs" className={DEL_BTN} aria-label="Delete" onClick={() => setConfirmId(c.id)}>
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </Hint>
                     </div>
                   </div>
                   {c.body.trim() === "" ? (

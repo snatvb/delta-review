@@ -1,6 +1,7 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Components } from "react-markdown";
+import { Hint } from "@/components/Hint";
 
 // Schemes we hand off to the OS default handler (browser, mail client, dialer).
 const EXTERNAL = /^(https?|mailto|tel):/i;
@@ -25,16 +26,19 @@ export function openExternal(href: string) {
 export const markdownComponents: Components = {
   a({ href, title, children }) {
     return (
-      <a
-        href={href}
-        title={title}
-        onClick={(e) => {
-          e.preventDefault();
-          if (href && EXTERNAL.test(href)) openExternal(href);
-        }}
-      >
-        {children}
-      </a>
+      // Optional markdown link titles ride the app tooltip; links without one
+      // render the bare anchor (Hint's disabled drops the wrapper).
+      <Hint tip={title} disabled={!title}>
+        <a
+          href={href}
+          onClick={(e) => {
+            e.preventDefault();
+            if (href && EXTERNAL.test(href)) openExternal(href);
+          }}
+        >
+          {children}
+        </a>
+      </Hint>
     );
   },
 };

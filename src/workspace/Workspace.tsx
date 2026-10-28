@@ -22,6 +22,8 @@ import { mergeRefreshedReview } from "../review/mergeRefreshedReview";
 import { useReview } from "../review/useReview";
 import { useResolvedTheme } from "../theme";
 import { vcsProfile } from "../vcsProfile";
+import { Hint } from "@/components/Hint";
+import { CommitMetaBody } from "@/components/CommitMetaTip";
 import { useDiffLayout } from "../diff/useDiffLayout";
 import { useResizableWidth, usePaneResize, PaneResizer, FILE_PANE } from "../lib/resizablePane";
 import { Check, CheckCheck, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Columns2, Copy, ExternalLink, Eye, EyeOff, GitBranch, Loader2, MessageSquare, RefreshCw, Rows2, Search, Settings } from "lucide-react";
@@ -722,6 +724,9 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     () => (inCommitMode ? allComments.filter((c) => c.commit === commitOid) : allComments.filter((c) => !c.commit)),
     [allComments, inCommitMode, commitOid],
   );
+  // Loaded commits by full oid — CommentIndex's handed-off chips hover against
+  // it (subject/author/date when the oid is on the loaded page, oid otherwise).
+  const commitMetaById = useMemo(() => new Map(commits.map((c) => [c.oid, c])), [commits]);
   // General notes were removed; ignore any legacy ones. Counted over ALL comments so
   // the comments button's badge reflects the whole review (the index shows everything).
   const commentCount = allComments.filter((c) => c.scope !== "general").length;
@@ -825,12 +830,12 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
         data-tauri-drag-region
         className={`flex h-12 shrink-0 items-center gap-2.5 border-b border-border bg-card pr-3 ${isMac ? "pl-24" : "pl-3"}`}
       >
-        <button
-          type="button"
-          onClick={onOpenPalette}
-          title="Open command palette (⌘P)"
-          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-input bg-muted/40 px-2.5 text-[13px] font-medium text-foreground transition-colors hover:bg-muted focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
+        <Hint tip="Open command palette" kbd="⌘P">
+          <button
+            type="button"
+            onClick={onOpenPalette}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-input bg-muted/40 px-2.5 text-[13px] font-medium text-foreground transition-colors hover:bg-muted focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
           <Search className="size-3.5 shrink-0 text-muted-foreground" />
           {(() => {
             const wt = worktreeName(target.repoPath);
@@ -854,34 +859,40 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
             </span>
           ) : null}
           <Kbd keys="⌘P" className="ml-1" />
-        </button>
+          </button>
+        </Hint>
         {summary && (
           <>
             <DropdownMenu>
-              <DropdownMenuTrigger
-                aria-label="Diff mode"
-                className="ml-1 inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-input bg-muted/40 pl-2.5 pr-2 text-[12px] font-medium text-foreground outline-none transition-colors hover:bg-muted data-[state=open]:bg-muted"
+              <Hint
+                disabled={!inCommitMode}
+                tip={<CommitMetaBody meta={commits[commitIndex]} oid={commitOid ?? ""} />}
               >
-                {/* Hidden reservers size the trigger to the widest possible label, so
-                    its width is constant across every mode; the visible label overlays,
-                    left-aligned (the chevron stays put → the stepper never shifts).
-                    The commit reserver renders only when the VCS has history, so an
-                    SVN trigger isn't sized for commit labels it can never show. */}
-                <span className="grid justify-items-start">
-                  {profile.modes.map((m) => (
-                    <span key={m.id} aria-hidden className="invisible col-start-1 row-start-1 whitespace-nowrap">{m.label}</span>
-                  ))}
-                  {profile.history && (
-                    <span aria-hidden className="invisible col-start-1 row-start-1 whitespace-nowrap">Commit <span className="font-mono">0000000</span></span>
-                  )}
-                  <span className="col-start-1 row-start-1 whitespace-nowrap">
-                    {inCommitMode
-                      ? <>Commit <span className="font-mono font-normal text-muted-foreground">{commits[commitIndex]?.shortOid ?? "…"}</span></>
-                      : (profile.modes.find((m) => m.id === diffMode)?.label ?? diffMode)}
+                <DropdownMenuTrigger
+                  aria-label="Diff mode"
+                  className="ml-1 inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-input bg-muted/40 pl-2.5 pr-2 text-[12px] font-medium text-foreground outline-none transition-colors hover:bg-muted data-[state=open]:bg-muted"
+                >
+                  {/* Hidden reservers size the trigger to the widest possible label, so
+                      its width is constant across every mode; the visible label overlays,
+                      left-aligned (the chevron stays put → the stepper never shifts).
+                      The commit reserver renders only when the VCS has history, so an
+                      SVN trigger isn't sized for commit labels it can never show. */}
+                  <span className="grid justify-items-start">
+                    {profile.modes.map((m) => (
+                      <span key={m.id} aria-hidden className="invisible col-start-1 row-start-1 whitespace-nowrap">{m.label}</span>
+                    ))}
+                    {profile.history && (
+                      <span aria-hidden className="invisible col-start-1 row-start-1 whitespace-nowrap">Commit <span className="font-mono">0000000</span></span>
+                    )}
+                    <span className="col-start-1 row-start-1 whitespace-nowrap">
+                      {inCommitMode
+                        ? <>Commit <span className="font-mono font-normal text-muted-foreground">{commits[commitIndex]?.shortOid ?? "…"}</span></>
+                        : (profile.modes.find((m) => m.id === diffMode)?.label ?? diffMode)}
+                    </span>
                   </span>
-                </span>
-                <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
-              </DropdownMenuTrigger>
+                  <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+                </DropdownMenuTrigger>
+              </Hint>
               <DropdownMenuContent align="start">
                 {profile.modes.map((m) => (
                   <DropdownMenuItem key={m.id} onSelect={() => exitCommitMode(m.id)}>
@@ -930,21 +941,25 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
             {stepperVisible && (
               <div className="ml-1 flex items-center" data-testid="commit-stepper">
                 <div className="inline-flex h-7 items-center rounded-md border border-input bg-muted/40">
-                  <button
-                    type="button" aria-label="Previous commit" title="Previous commit ([)" disabled={stepIndex <= 0}
-                    onClick={() => void stepCommit(-1)}
-                    className="flex h-full w-7 items-center justify-center rounded-l-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-                  >
-                    <ChevronLeft className="size-3.5" />
-                  </button>
+                  <Hint tip="Previous commit" kbd="[">
+                    <button
+                      type="button" aria-label="Previous commit" disabled={stepIndex <= 0}
+                      onClick={() => void stepCommit(-1)}
+                      className="flex h-full w-7 items-center justify-center rounded-l-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+                    >
+                      <ChevronLeft className="size-3.5" />
+                    </button>
+                  </Hint>
                   <span className="h-3.5 w-px bg-border" />
-                  <button
-                    type="button" aria-label="Next commit" title="Next commit (])" disabled={stepIndex < 0 || (stepIndex >= commits.length - 1 && !commitsHasMore)}
-                    onClick={() => void stepCommit(1)}
-                    className="flex h-full w-7 items-center justify-center rounded-r-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-                  >
-                    <ChevronRight className="size-3.5" />
-                  </button>
+                  <Hint tip="Next commit" kbd="]">
+                    <button
+                      type="button" aria-label="Next commit" disabled={stepIndex < 0 || (stepIndex >= commits.length - 1 && !commitsHasMore)}
+                      onClick={() => void stepCommit(1)}
+                      className="flex h-full w-7 items-center justify-center rounded-r-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+                    >
+                      <ChevronRight className="size-3.5" />
+                    </button>
+                  </Hint>
                 </div>
                 <span className="ml-2 font-mono tabular-nums text-[11px] text-muted-foreground">{stepIndex + 1}/{commits.length}{commitsHasMore ? "+" : ""}</span>
               </div>
@@ -957,45 +972,48 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
             <div className="ml-auto flex items-center gap-3">
               <CliInstallButton />
               {pendingRefresh ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void applyRefresh()}
-                  title="The diff changed on disk — click to update (⌘R)"
-                  className="h-7 gap-1.5 px-2.5 text-[13px] border-amber-500/40 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 hover:text-amber-700 dark:border-amber-400/40 dark:bg-amber-400/10 dark:text-amber-400 dark:hover:text-amber-300"
-                >
-                  <RefreshCw className={`size-3.5 ${refreshing ? "animate-spin will-change-transform" : ""}`} /> Refresh
-                  <Kbd keys="⌘R" className="border-amber-600/30 bg-amber-500/15 text-amber-700 dark:border-amber-400/30 dark:text-amber-300" />
-                </Button>
+                <Hint tip="The diff changed on disk — click to update" kbd="⌘R">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void applyRefresh()}
+                    className="h-7 gap-1.5 px-2.5 text-[13px] border-amber-500/40 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 hover:text-amber-700 dark:border-amber-400/40 dark:bg-amber-400/10 dark:text-amber-400 dark:hover:text-amber-300"
+                  >
+                    <RefreshCw className={`size-3.5 ${refreshing ? "animate-spin will-change-transform" : ""}`} /> Refresh
+                    <Kbd keys="⌘R" className="border-amber-600/30 bg-amber-500/15 text-amber-700 dark:border-amber-400/30 dark:text-amber-300" />
+                  </Button>
+                </Hint>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => void forceRefresh()}
-                  disabled={refreshing}
-                  title={refreshing ? "Re-diffing…" : "Re-diff now (⌘R)"}
-                  aria-label="Re-diff now"
-                  className={ICON_BUTTON}
-                >
-                  {/* will-change promotes the spin to its own compositor layer, so it
-                      keeps rotating through the reload's main-thread jank instead of
-                      freezing with it. (#refresh-feedback) */}
-                  <RefreshCw className={`size-4 ${refreshing ? "animate-spin will-change-transform" : ""}`} />
-                </button>
+                <Hint tip={refreshing ? "Re-diffing…" : "Re-diff now"} kbd={refreshing ? undefined : "⌘R"}>
+                  <button
+                    type="button"
+                    onClick={() => void forceRefresh()}
+                    disabled={refreshing}
+                    aria-label="Re-diff now"
+                    className={ICON_BUTTON}
+                  >
+                    {/* will-change promotes the spin to its own compositor layer, so it
+                        keeps rotating through the reload's main-thread jank instead of
+                        freezing with it. (#refresh-feedback) */}
+                    <RefreshCw className={`size-4 ${refreshing ? "animate-spin will-change-transform" : ""}`} />
+                  </button>
+                </Hint>
               )}
               {/* Hide-viewed toggle for the diff pane: while on, a card leaves
                   the pane the moment its file is marked viewed. Always armed —
                   enabling it before reviewing is the intended flow. The count
                   mirrors the tree's "N / M viewed" chip. */}
-              <button
-                type="button"
-                aria-pressed={hideViewed}
-                aria-label={hideViewed ? `Show viewed files (${viewedInDiff})` : `Hide viewed files (${viewedInDiff})`}
-                title={hideViewed ? `Show viewed files (${viewedInDiff})` : `Hide viewed files (${viewedInDiff})`}
-                onClick={() => setHideViewedPref(hideViewed ? "off" : "on")}
-                className={`${ICON_BUTTON} aria-pressed:border-primary/40 aria-pressed:bg-primary/10 aria-pressed:text-primary`}
-              >
-                <CheckCheck className="size-4" />
-              </button>
+              <Hint tip={hideViewed ? `Show viewed files (${viewedInDiff})` : `Hide viewed files (${viewedInDiff})`}>
+                <button
+                  type="button"
+                  aria-pressed={hideViewed}
+                  aria-label={hideViewed ? `Show viewed files (${viewedInDiff})` : `Hide viewed files (${viewedInDiff})`}
+                  onClick={() => setHideViewedPref(hideViewed ? "off" : "on")}
+                  className={`${ICON_BUTTON} aria-pressed:border-primary/40 aria-pressed:bg-primary/10 aria-pressed:text-primary`}
+                >
+                  <CheckCheck className="size-4" />
+                </button>
+              </Hint>
               <ToggleGroup
                 type="single"
                 size="sm"
@@ -1003,58 +1021,69 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                 onValueChange={(v) => v && setLayout(v as "unified" | "split")}
                 className="gap-0.5 rounded-md bg-muted/70 p-0.5"
               >
-                <ToggleGroupItem value="unified" aria-label="Unified" title="Unified view" className="size-6 rounded-[5px] border-0 p-0 text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm"><Rows2 className="size-3.5" /></ToggleGroupItem>
-                <ToggleGroupItem value="split" aria-label="Split" title="Split view" className="size-6 rounded-[5px] border-0 p-0 text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm"><Columns2 className="size-3.5" /></ToggleGroupItem>
+                <Hint tip="Unified view">
+                  <ToggleGroupItem value="unified" aria-label="Unified" className="size-6 rounded-[5px] border-0 p-0 text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm"><Rows2 className="size-3.5" /></ToggleGroupItem>
+                </Hint>
+                <Hint tip="Split view">
+                  <ToggleGroupItem value="split" aria-label="Split" className="size-6 rounded-[5px] border-0 p-0 text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm"><Columns2 className="size-3.5" /></ToggleGroupItem>
+                </Hint>
               </ToggleGroup>
               <Button size="sm" variant="outline" aria-label={`Comments (${commentCount})`} aria-pressed={indexOpen} className="h-7 gap-1.5 px-2.5 text-[13px] text-muted-foreground hover:text-foreground aria-pressed:border-primary/40 aria-pressed:bg-primary/10 aria-pressed:text-primary dark:aria-pressed:bg-primary/10" onClick={() => setIndexOpen((o) => !o)}>
                 <MessageSquare className="size-4" /> {commentCount}
               </Button>
-              <Button
-                size="sm"
-                className="h-7 min-w-[11.75rem] justify-center gap-1.5 px-2.5 text-[13px] transition-colors"
-                style={
-                  copyState === "ok"
-                    ? { backgroundColor: "#059669", color: "#fff" }
-                    : copyState === "err"
-                      ? { backgroundColor: "var(--destructive)", color: "#fff" }
-                      : undefined
-                }
-                onClick={copyForClaude}
-                disabled={copyCount === 0}
-                title={copyCount === 0 ? "No open comments in this view to copy" : undefined}
-              >
-                {copyState === "ok" ? (
-                  <><Check className="size-3.5" /> Copied</>
-                ) : copyState === "err" ? (
-                  <><Copy className="size-3.5" /> Failed</>
-                ) : (
-                  <><Copy className="size-3.5" /> Copy for agents<Kbd keys="⌘⇧C" className="border-primary-foreground/30 bg-primary-foreground/15 text-primary-foreground/90" /></>
-                )}
-              </Button>
+              {/* The span carries the tooltip because the button itself goes
+                  disabled (pointer-events off) exactly when the tip matters. */}
+              <Hint tip="No open comments in this view to copy" disabled={copyCount !== 0}>
+                <span className="inline-flex">
+                  <Button
+                    size="sm"
+                    className="h-7 min-w-[11.75rem] justify-center gap-1.5 px-2.5 text-[13px] transition-colors"
+                    style={
+                      copyState === "ok"
+                        ? { backgroundColor: "#059669", color: "#fff" }
+                        : copyState === "err"
+                          ? { backgroundColor: "var(--destructive)", color: "#fff" }
+                          : undefined
+                    }
+                    onClick={copyForClaude}
+                    disabled={copyCount === 0}
+                  >
+                    {copyState === "ok" ? (
+                      <><Check className="size-3.5" /> Copied</>
+                    ) : copyState === "err" ? (
+                      <><Copy className="size-3.5" /> Failed</>
+                    ) : (
+                      <><Copy className="size-3.5" /> Copy for agents<Kbd keys="⌘⇧C" className="border-primary-foreground/30 bg-primary-foreground/15 text-primary-foreground/90" /></>
+                    )}
+                  </Button>
+                </span>
+              </Hint>
             </div>
           </>
         )}
         {/* Settings sits last on the right; the spacer keeps it edge-aligned even
             before the summary (and its toolbar) has loaded. (#5) */}
         {!summary && <div className="ml-auto" />}
-        <button
-          type="button"
-          onClick={() => { void api.openInEditor(getEditorPref(), target.repoPath).catch((e) => setError(String(e))); }}
-          title="Open repository in editor"
-          aria-label="Open repository in editor"
-          className={ICON_BUTTON}
-        >
-          <ExternalLink className="size-4" />
-        </button>
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          title="Settings (⌘,)"
-          aria-label="Settings"
-          className={ICON_BUTTON}
-        >
-          <Settings className="size-4" />
-        </button>
+        <Hint tip="Open repository in editor">
+          <button
+            type="button"
+            onClick={() => { void api.openInEditor(getEditorPref(), target.repoPath).catch((e) => setError(String(e))); }}
+            aria-label="Open repository in editor"
+            className={ICON_BUTTON}
+          >
+            <ExternalLink className="size-4" />
+          </button>
+        </Hint>
+        <Hint tip="Settings" kbd="⌘,">
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            aria-label="Settings"
+            className={ICON_BUTTON}
+          >
+            <Settings className="size-4" />
+          </button>
+        </Hint>
       </header>
       {error && (
         <div className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[12px] text-destructive">{error}</div>
@@ -1151,6 +1180,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
               open={indexOpen}
               onOpenChange={setIndexOpen}
               comments={allComments}
+              commitMeta={commitMetaById}
               onJump={onJump}
               onEdit={updateCommentBody}
               onDelete={deleteComment}

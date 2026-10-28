@@ -2,6 +2,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Kbd } from "@/components/ui/kbd";
+import { Hint } from "@/components/Hint";
 import { ChevronRight, ChevronsDownUp, ChevronsUpDown, Eye, EyeOff, Folder, FolderOpen, Check, List, ListTree, MessageSquare, Minus, Search, X } from "lucide-react";
 import type { FileEntry, FileStatus } from "../types";
 import { buildTree, type TreeNode } from "./buildTree";
@@ -125,112 +126,124 @@ function Row({ node, depth, top, h }: { node: TreeNode; depth: number; top: numb
   // Renamed file → tooltip names the source path (the sky icon already flags the
   // rename; the old path isn't shown inline to keep the narrow rows uncluttered).
   const renamedFrom = !isDir && node.entry?.status === "renamed" && node.entry.oldPath ? node.entry.oldPath : null;
+  // Folder +/− rollup text — exact numbers for the tooltip/aria-label, compacted
+  // on the row itself.
+  const rollupTip = dirAgg && (dirAgg.adds > 0 || dirAgg.dels > 0)
+    ? `+${dirAgg.adds} / −${dirAgg.dels}${h.excluding ? " left" : ""} under ${node.path}${h.excluding ? " (unviewed-only)" : ""}`
+    : null;
 
   return (
-    <div
-      data-path={node.path}
-      title={renamedFrom ? `Renamed from ${renamedFrom}` : undefined}
-      className={`group absolute inset-x-0 flex h-[26px] select-none items-center gap-1.5 rounded-md pr-1.5 ${active ? "bg-accent" : "hover:bg-foreground/[0.05]"} ${isViewed ? "opacity-65" : ""}`}
-      style={{ top, paddingLeft }}
-      onClick={() => (isDir ? h.onToggleDir(node.path) : h.onSelectFile(node.path))}
-      onMouseEnter={isDir ? undefined : () => h.onHoverFile(node.path)}
-      onMouseLeave={isDir ? undefined : () => h.onHoverFile(null)}
-    >
-      {/* One vertical guide per ancestor level, replacing the old nested border-l
-          wrappers. Positioned from the row's left edge, so stacked rows line up into
-          continuous rules at the same x the nested version drew them. (#virtual) */}
-      {!h.flat && depth > 0 && Array.from({ length: depth }, (_, k) => (
-        <span
-          key={k}
-          aria-hidden
-          className="pointer-events-none absolute top-0 bottom-0 border-l border-border/40"
-          style={{ left: (k + 1) * INDENT }}
-        />
-      ))}
-      {isDir ? (
-        <ChevronRight className={`size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ${open ? "rotate-90" : ""}`} />
-      ) : h.flat ? null : (
-        <span data-testid="tree-indent" className="w-3.5 shrink-0" />
-      )}
-      {isIgnoredGroup ? (
-        <EyeOff className="size-3.5 shrink-0 text-muted-foreground" />
-      ) : isDir ? (
-        open
-          ? <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
-          : <Folder className="size-3.5 shrink-0 text-muted-foreground" />
-      ) : (
-        <FileTypeIcon name={node.name} muted={isIgnoredFile} />
-      )}
-      <span className={`flex-1 truncate text-[13px] ${isIgnoredGroup ? "font-medium text-muted-foreground" : isDir ? "font-medium text-foreground" : isIgnoredFile ? "text-muted-foreground" : "text-foreground"}`}>
-        {node.name}
-      </span>
-      {/* Folder +/− rollup (same reading as the header counter; in unviewed-only
-          mode it shows what's left under this folder). Exact numbers in the
-          tooltip, compacted in the row. */}
-      {isDir && dirAgg && (dirAgg.adds > 0 || dirAgg.dels > 0) && (
-        <span
-          className="flex shrink-0 items-center gap-1 text-[11px] tabular-nums"
-          title={`+${dirAgg.adds} / −${dirAgg.dels}${h.excluding ? " left" : ""} under ${node.path}${h.excluding ? " (unviewed-only)" : ""}`}
-        >
-          {dirAgg.adds > 0 && <span className="text-emerald-500">+{fmtCount(dirAgg.adds)}</span>}
-          {dirAgg.dels > 0 && <span className="text-rose-500">−{fmtCount(dirAgg.dels)}</span>}
+    <Hint tip={renamedFrom ? `Renamed from ${renamedFrom}` : undefined} disabled={!renamedFrom}>
+      <div
+        data-path={node.path}
+        aria-label={renamedFrom ? `Renamed from ${renamedFrom}` : undefined}
+        className={`group absolute inset-x-0 flex h-[26px] select-none items-center gap-1.5 rounded-md pr-1.5 ${active ? "bg-accent" : "hover:bg-foreground/[0.05]"} ${isViewed ? "opacity-65" : ""}`}
+        style={{ top, paddingLeft }}
+        onClick={() => (isDir ? h.onToggleDir(node.path) : h.onSelectFile(node.path))}
+        onMouseEnter={isDir ? undefined : () => h.onHoverFile(node.path)}
+        onMouseLeave={isDir ? undefined : () => h.onHoverFile(null)}
+      >
+        {/* One vertical guide per ancestor level, replacing the old nested border-l
+            wrappers. Positioned from the row's left edge, so stacked rows line up into
+            continuous rules at the same x the nested version drew them. (#virtual) */}
+        {!h.flat && depth > 0 && Array.from({ length: depth }, (_, k) => (
+          <span
+            key={k}
+            aria-hidden
+            className="pointer-events-none absolute top-0 bottom-0 border-l border-border/40"
+            style={{ left: (k + 1) * INDENT }}
+          />
+        ))}
+        {isDir ? (
+          <ChevronRight className={`size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ${open ? "rotate-90" : ""}`} />
+        ) : h.flat ? null : (
+          <span data-testid="tree-indent" className="w-3.5 shrink-0" />
+        )}
+        {isIgnoredGroup ? (
+          <EyeOff className="size-3.5 shrink-0 text-muted-foreground" />
+        ) : isDir ? (
+          open
+            ? <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
+            : <Folder className="size-3.5 shrink-0 text-muted-foreground" />
+        ) : (
+          <FileTypeIcon name={node.name} muted={isIgnoredFile} />
+        )}
+        <span className={`flex-1 truncate text-[13px] ${isIgnoredGroup ? "font-medium text-muted-foreground" : isDir ? "font-medium text-foreground" : isIgnoredFile ? "text-muted-foreground" : "text-foreground"}`}>
+          {node.name}
         </span>
-      )}
-      {/* Folder checkbox marks/clears every reviewable descendant at once —
-          standard tri-state cycle: empty marks all viewed, check/dash clears. */}
-      {isDir && dirAgg && dirAgg.total > 0 && (
-        <button
-          type="button"
-          aria-label={`viewed folder ${node.path}`}
-          title={dirAll || dirSome ? `Clear viewed (${dirAgg.viewed}/${dirAgg.total})` : `Mark all viewed (${dirAgg.total} ${dirAgg.total === 1 ? "file" : "files"})`}
-          onClick={(e) => { e.stopPropagation(); h.onSetViewedBulk(dirFiles(node), !dirAll && !dirSome); }}
-          className={`flex size-4 shrink-0 items-center justify-center rounded-[5px] border transition-colors ${dirAll || dirSome ? "border-primary bg-primary text-primary-foreground" : "border-border/80 bg-card dark:bg-transparent group-hover:border-foreground/40 hover:!border-foreground/60"}`}
-        >
-          {dirAll && <Check className="size-2.5" strokeWidth={3} />}
-          {dirSome && <Minus className="size-2.5" strokeWidth={3} />}
-        </button>
-      )}
-      {/* The Ignored group's own control, pinned to the row's right edge:
-          hide/show these files' cards in the diff pane. The tree itself always
-          keeps the group (and this button), so hidden files stay reachable. */}
-      {isIgnoredGroup && (
-        <button
-          type="button"
-          aria-pressed={h.ignoredHidden}
-          aria-label={h.ignoredHidden ? `Show ignored files (${countFiles(node)})` : `Hide ignored files (${countFiles(node)})`}
-          title={h.ignoredHidden ? `Show ignored files (${countFiles(node)})` : `Hide ignored files (${countFiles(node)})`}
-          onClick={(e) => { e.stopPropagation(); h.onToggleIgnoredHidden(); }}
-          className={`flex size-5 shrink-0 items-center justify-center rounded-[5px] transition-colors hover:bg-foreground/[0.06] ${h.ignoredHidden ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}
-        >
-          {h.ignoredHidden ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-        </button>
-      )}
-      {!isDir && node.entry && !isIgnoredFile && (
-        <>
-          {commentN > 0 && (
+        {/* Folder +/− rollup (same reading as the header counter; in unviewed-only
+            mode it shows what's left under this folder). Exact numbers in the
+            tooltip, compacted in the row. */}
+        {isDir && rollupTip && (
+          <Hint tip={rollupTip}>
             <span
-              className="flex shrink-0 items-center gap-0.5 text-[11px] tabular-nums text-muted-foreground"
-              title={`${commentN} comment${commentN === 1 ? "" : "s"}`}
+              aria-label={rollupTip}
+              className="flex shrink-0 items-center gap-1 text-[11px] tabular-nums"
             >
-              <MessageSquare className="size-3" />
-              {commentN}
+              {dirAgg!.adds > 0 && <span className="text-emerald-500">+{fmtCount(dirAgg!.adds)}</span>}
+              {dirAgg!.dels > 0 && <span className="text-rose-500">−{fmtCount(dirAgg!.dels)}</span>}
             </span>
-          )}
-          <span className="flex shrink-0 items-center gap-1 text-[11px] tabular-nums" title={node.entry.status}>
-            <span className={`font-semibold ${STATUS_COLOR[node.entry.status]}`}>{STATUS_LETTER[node.entry.status]}</span>
-            {node.entry.additions > 0 && <span className="text-emerald-500">+{fmtCount(node.entry.additions)}</span>}
-            {node.entry.deletions > 0 && <span className="text-rose-500">−{fmtCount(node.entry.deletions)}</span>}
-          </span>
-          <button
-            aria-label={`viewed ${node.entry.path}`}
-            onClick={(e) => { e.stopPropagation(); h.onToggleViewed(node.entry!.path); }}
-            className={`flex size-4 shrink-0 items-center justify-center rounded-[5px] border transition-colors ${isViewed ? "border-primary bg-primary text-primary-foreground" : "border-border/80 bg-card dark:bg-transparent group-hover:border-foreground/40 hover:!border-foreground/60"}`}
-          >
-            {isViewed && <Check className="size-2.5" strokeWidth={3} />}
-          </button>
-        </>
-      )}
-    </div>
+          </Hint>
+        )}
+        {/* Folder checkbox marks/clears every reviewable descendant at once —
+            standard tri-state cycle: empty marks all viewed, check/dash clears. */}
+        {isDir && dirAgg && dirAgg.total > 0 && (
+          <Hint tip={dirAll || dirSome ? `Clear viewed (${dirAgg.viewed}/${dirAgg.total})` : `Mark all viewed (${dirAgg.total} ${dirAgg.total === 1 ? "file" : "files"})`}>
+            <button
+              type="button"
+              aria-label={`viewed folder ${node.path}`}
+              onClick={(e) => { e.stopPropagation(); h.onSetViewedBulk(dirFiles(node), !dirAll && !dirSome); }}
+              className={`flex size-4 shrink-0 items-center justify-center rounded-[5px] border transition-colors ${dirAll || dirSome ? "border-primary bg-primary text-primary-foreground" : "border-border/80 bg-card dark:bg-transparent group-hover:border-foreground/40 hover:!border-foreground/60"}`}
+            >
+              {dirAll && <Check className="size-2.5" strokeWidth={3} />}
+              {dirSome && <Minus className="size-2.5" strokeWidth={3} />}
+            </button>
+          </Hint>
+        )}
+        {/* The Ignored group's own control, pinned to the row's right edge:
+            hide/show these files' cards in the diff pane. The tree itself always
+            keeps the group (and this button), so hidden files stay reachable. */}
+        {isIgnoredGroup && (
+          <Hint tip={h.ignoredHidden ? `Show ignored files (${countFiles(node)})` : `Hide ignored files (${countFiles(node)})`}>
+            <button
+              type="button"
+              aria-pressed={h.ignoredHidden}
+              aria-label={h.ignoredHidden ? `Show ignored files (${countFiles(node)})` : `Hide ignored files (${countFiles(node)})`}
+              onClick={(e) => { e.stopPropagation(); h.onToggleIgnoredHidden(); }}
+              className={`flex size-5 shrink-0 items-center justify-center rounded-[5px] transition-colors hover:bg-foreground/[0.06] ${h.ignoredHidden ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              {h.ignoredHidden ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+            </button>
+          </Hint>
+        )}
+        {!isDir && node.entry && !isIgnoredFile && (
+          <>
+            {commentN > 0 && (
+              <Hint tip={`${commentN} comment${commentN === 1 ? "" : "s"}`}>
+                <span className="flex shrink-0 items-center gap-0.5 text-[11px] tabular-nums text-muted-foreground">
+                  <MessageSquare className="size-3" />
+                  {commentN}
+                </span>
+              </Hint>
+            )}
+            <Hint tip={node.entry.status}>
+              <span className="flex shrink-0 items-center gap-1 text-[11px] tabular-nums">
+                <span className={`font-semibold ${STATUS_COLOR[node.entry.status]}`}>{STATUS_LETTER[node.entry.status]}</span>
+                {node.entry.additions > 0 && <span className="text-emerald-500">+{fmtCount(node.entry.additions)}</span>}
+                {node.entry.deletions > 0 && <span className="text-rose-500">−{fmtCount(node.entry.deletions)}</span>}
+              </span>
+            </Hint>
+            <button
+              aria-label={`viewed ${node.entry.path}`}
+              onClick={(e) => { e.stopPropagation(); h.onToggleViewed(node.entry!.path); }}
+              className={`flex size-4 shrink-0 items-center justify-center rounded-[5px] border transition-colors ${isViewed ? "border-primary bg-primary text-primary-foreground" : "border-border/80 bg-card dark:bg-transparent group-hover:border-foreground/40 hover:!border-foreground/60"}`}
+            >
+              {isViewed && <Check className="size-2.5" strokeWidth={3} />}
+            </button>
+          </>
+        )}
+      </div>
+    </Hint>
   );
 }
 
@@ -543,47 +556,53 @@ export function FilesPanel({
     // panes share one floating rhythm. (#pad)
     <div className="flex min-h-0 flex-1 flex-col pl-1.5 pt-3.5">
       <div className="flex h-7 shrink-0 items-center gap-2 px-2 text-[12px]">
-        <span
-          className={`inline-block min-w-0 shrink truncate select-none rounded-md px-2 py-0.5 text-[13px] tabular-nums ${allViewed ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground"}`}
-          title="Files viewed"
-        >
-          <span className={`font-medium ${allViewed ? "" : "text-foreground"}`}>{viewedCount}</span>
-          <span className="opacity-80">{" / "}{reviewable.length} viewed</span>
-        </span>
+        <Hint tip="Files viewed">
+          <span
+            aria-label="Files viewed"
+            className={`inline-block min-w-0 shrink truncate select-none rounded-md px-2 py-0.5 text-[13px] tabular-nums ${allViewed ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground"}`}
+          >
+            <span className={`font-medium ${allViewed ? "" : "text-foreground"}`}>{viewedCount}</span>
+            <span className="opacity-80">{" / "}{reviewable.length} viewed</span>
+          </span>
+        </Hint>
         {/* The +/− counter doubles as the "unviewed-only totals" toggle (same
             pref as Settings → General): click to switch between counting every
             file and counting only what's left to review. */}
-        <button
-          type="button"
-          aria-label="Toggle unviewed-only totals"
-          aria-pressed={excluding}
-          onClick={() => setExcludeViewed(excluding ? "off" : "on")}
-          title={
+        <Hint
+          tip={
             excluding
               ? viewedCount > 0
                 ? `+${fmtCount(totalAdds)} / −${fmtCount(totalDels)} left to review — ${viewedCount} viewed ${viewedCount === 1 ? "file" : "files"} excluded. Click to count all files.`
                 : "Counting only unviewed files. Click to count all files."
               : "Counting all files. Click to exclude viewed files."
           }
-          className="ml-auto shrink-0 whitespace-nowrap rounded px-1 tabular-nums transition-colors hover:bg-foreground/[0.06]"
         >
-          {excluding && (totalAdds > 0 || totalDels > 0) && (
-            <span aria-hidden className="mr-1 inline-block size-1.5 shrink-0 rounded-full bg-primary" />
-          )}
-          {totalAdds > 0 && <span className="text-emerald-500">+{fmtCount(totalAdds)}</span>}{" "}
-          {totalDels > 0 && <span className="text-rose-500">−{fmtCount(totalDels)}</span>}
-        </button>
+          <button
+            type="button"
+            aria-label="Toggle unviewed-only totals"
+            aria-pressed={excluding}
+            onClick={() => setExcludeViewed(excluding ? "off" : "on")}
+            className="ml-auto shrink-0 whitespace-nowrap rounded px-1 tabular-nums transition-colors hover:bg-foreground/[0.06]"
+          >
+            {excluding && (totalAdds > 0 || totalDels > 0) && (
+              <span aria-hidden className="mr-1 inline-block size-1.5 shrink-0 rounded-full bg-primary" />
+            )}
+            {totalAdds > 0 && <span className="text-emerald-500">+{fmtCount(totalAdds)}</span>}{" "}
+            {totalDels > 0 && <span className="text-rose-500">−{fmtCount(totalDels)}</span>}
+          </button>
+        </Hint>
         <div className="flex shrink-0 items-center gap-1">
           {mode === "tree" && !searching && (
-            <button
-              type="button"
-              onClick={toggleAll}
-              aria-label={anyDirOpen ? "Collapse all" : "Expand all"}
-              title={anyDirOpen ? "Collapse all" : "Expand all"}
-              className="flex size-5 items-center justify-center rounded-[5px] text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
-            >
-              {anyDirOpen ? <ChevronsDownUp className="size-3.5" /> : <ChevronsUpDown className="size-3.5" />}
-            </button>
+            <Hint tip={anyDirOpen ? "Collapse all" : "Expand all"}>
+              <button
+                type="button"
+                onClick={toggleAll}
+                aria-label={anyDirOpen ? "Collapse all" : "Expand all"}
+                className="flex size-5 items-center justify-center rounded-[5px] text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+              >
+                {anyDirOpen ? <ChevronsDownUp className="size-3.5" /> : <ChevronsUpDown className="size-3.5" />}
+              </button>
+            </Hint>
           )}
           <ToggleGroup
             type="single"
@@ -592,8 +611,12 @@ export function FilesPanel({
             onValueChange={(v) => v && setMode(v as "tree" | "list")}
             className="gap-0.5 rounded-md bg-muted/70 p-0.5"
           >
-            <ToggleGroupItem value="list" aria-label="List" title="List" className="size-5 rounded-[5px] border-0 p-0 text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm"><List className="size-3.5" /></ToggleGroupItem>
-            <ToggleGroupItem value="tree" aria-label="Tree" title="Tree" className="size-5 rounded-[5px] border-0 p-0 text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm"><ListTree className="size-3.5" /></ToggleGroupItem>
+            <Hint tip="List">
+              <ToggleGroupItem value="list" aria-label="List" className="size-5 rounded-[5px] border-0 p-0 text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm"><List className="size-3.5" /></ToggleGroupItem>
+            </Hint>
+            <Hint tip="Tree">
+              <ToggleGroupItem value="tree" aria-label="Tree" className="size-5 rounded-[5px] border-0 p-0 text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm"><ListTree className="size-3.5" /></ToggleGroupItem>
+            </Hint>
           </ToggleGroup>
         </div>
       </div>
@@ -618,15 +641,16 @@ export function FilesPanel({
           className="h-7 w-full rounded-md border border-input bg-card pl-8 pr-12 text-[12px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 hover:border-foreground/25 focus:border-ring"
         />
         {searching ? (
-          <button
-            type="button"
-            onClick={() => { setQuery(""); searchRef.current?.focus(); }}
-            aria-label="Clear search"
-            title="Clear"
-            className="absolute right-3.5 top-1/2 flex size-4 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-          >
-            <X className="size-3" strokeWidth={2.5} />
-          </button>
+          <Hint tip="Clear">
+            <button
+              type="button"
+              onClick={() => { setQuery(""); searchRef.current?.focus(); }}
+              aria-label="Clear search"
+              className="absolute right-3.5 top-1/2 flex size-4 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+            >
+              <X className="size-3" strokeWidth={2.5} />
+            </button>
+          </Hint>
         ) : (
           <Kbd keys="⌘⇧F" className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2" />
         )}

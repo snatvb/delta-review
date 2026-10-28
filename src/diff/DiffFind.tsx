@@ -6,6 +6,7 @@
 // VirtualDiffPane. (#find)
 import { CaseSensitive, ChevronDown, ChevronUp, WholeWord, X } from "lucide-react";
 import type { RefObject } from "react";
+import { Hint } from "@/components/Hint";
 
 export function DiffFind({
   query, onQueryChange, count, activeIndex, caseSensitive, wholeWord, onPrev, onNext, onToggleCaseSensitive, onToggleWholeWord, onClose, inputRef,
@@ -52,22 +53,32 @@ export function DiffFind({
       <span className="min-w-[3.5rem] select-none text-right text-[11px] tabular-nums text-muted-foreground">
         {has ? (count > 0 ? `${activeIndex + 1}/${count}` : "0/0") : ""}
       </span>
-      <button type="button" onClick={onToggleCaseSensitive} aria-pressed={caseSensitive} aria-label="Match case" title="Match case" className={toggle(caseSensitive)}>
-        <CaseSensitive className="size-4" />
-      </button>
-      <button type="button" onClick={onToggleWholeWord} aria-pressed={wholeWord} aria-label="Match whole word" title="Match whole word" className={toggle(wholeWord)}>
-        <WholeWord className="size-4" />
-      </button>
+      <Hint tip="Match case">
+        <button type="button" onClick={onToggleCaseSensitive} aria-pressed={caseSensitive} aria-label="Match case" className={toggle(caseSensitive)}>
+          <CaseSensitive className="size-4" />
+        </button>
+      </Hint>
+      <Hint tip="Match whole word">
+        <button type="button" onClick={onToggleWholeWord} aria-pressed={wholeWord} aria-label="Match whole word" className={toggle(wholeWord)}>
+          <WholeWord className="size-4" />
+        </button>
+      </Hint>
       <div className="mx-0.5 h-5 w-px bg-border" />
-      <button type="button" onClick={onPrev} disabled={count === 0} aria-label="Previous match" title="Previous (⇧⏎)" className={btn}>
-        <ChevronUp className="size-4" />
-      </button>
-      <button type="button" onClick={onNext} disabled={count === 0} aria-label="Next match" title="Next (⏎)" className={btn}>
-        <ChevronDown className="size-4" />
-      </button>
-      <button type="button" onClick={onClose} aria-label="Close find" title="Close (Esc)" className={btn}>
-        <X className="size-3.5" strokeWidth={2.5} />
-      </button>
+      <Hint tip="Previous" kbd="⇧⏎">
+        <button type="button" onClick={onPrev} disabled={count === 0} aria-label="Previous match" className={btn}>
+          <ChevronUp className="size-4" />
+        </button>
+      </Hint>
+      <Hint tip="Next" kbd="⏎">
+        <button type="button" onClick={onNext} disabled={count === 0} aria-label="Next match" className={btn}>
+          <ChevronDown className="size-4" />
+        </button>
+      </Hint>
+      <Hint tip="Close" kbd="esc">
+        <button type="button" onClick={onClose} aria-label="Close find" className={btn}>
+          <X className="size-3.5" strokeWidth={2.5} />
+        </button>
+      </Hint>
     </div>
   );
 }

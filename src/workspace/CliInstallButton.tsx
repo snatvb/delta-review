@@ -4,6 +4,7 @@
 // install state machine lives in useCliInstall so the launcher empty-state promo
 // shares the same status/dismiss/outcomes. (#cli)
 import { Terminal, X, CheckCircle2, Loader2, TriangleAlert } from "lucide-react";
+import { Hint } from "@/components/Hint";
 import { useCliInstall } from "./useCliInstall";
 
 export function CliInstallButton() {
@@ -25,53 +26,54 @@ export function CliInstallButton() {
 
   if (phase === "linked" || phase === "pathUpdated") {
     return (
-      <span
-        className={`${pill} animate-in fade-in zoom-in-95 duration-200 border-emerald-500/40 bg-emerald-500/15 px-2.5 font-medium text-emerald-700 dark:border-emerald-400/40 dark:bg-emerald-400/15 dark:text-emerald-300`}
-        title={detail}
-      >
-        <CheckCircle2 className="size-4" />
-        {phase === "pathUpdated" ? "Installed — open a new terminal" : "delta CLI installed"}
-      </span>
+      <Hint tip={detail}>
+        <span
+          className={`${pill} animate-in fade-in zoom-in-95 duration-200 border-emerald-500/40 bg-emerald-500/15 px-2.5 font-medium text-emerald-700 dark:border-emerald-400/40 dark:bg-emerald-400/15 dark:text-emerald-300`}
+        >
+          <CheckCircle2 className="size-4" />
+          {phase === "pathUpdated" ? "Installed — open a new terminal" : "delta CLI installed"}
+        </span>
+      </Hint>
     );
   }
 
   if (phase === "manual" || phase === "error") {
     return (
-      <span
-        className={`${pill} border-amber-500/40 bg-amber-500/10 pl-2.5 pr-1 text-amber-600 dark:border-amber-400/40 dark:text-amber-400`}
-        title={detail}
-      >
-        <TriangleAlert className="size-3.5 shrink-0" />
-        {phase === "manual" ? (
-          <button type="button" onClick={copyCommand} className="font-medium underline-offset-2 transition-colors hover:underline">
-            {copied ? "Copied — paste in a terminal" : "Copy install command"}
+      <Hint tip={detail}>
+        <span className={`${pill} border-amber-500/40 bg-amber-500/10 pl-2.5 pr-1 text-amber-600 dark:border-amber-400/40 dark:text-amber-400`}>
+          <TriangleAlert className="size-3.5 shrink-0" />
+          {phase === "manual" ? (
+            <button type="button" onClick={copyCommand} className="font-medium underline-offset-2 transition-colors hover:underline">
+              {copied ? "Copied — paste in a terminal" : "Copy install command"}
+            </button>
+          ) : (
+            <span className="font-medium">Install failed</span>
+          )}
+          <button
+            type="button"
+            onClick={dismiss}
+            aria-label="Dismiss"
+            className="inline-flex size-5 items-center justify-center rounded transition-colors hover:bg-amber-500/20"
+          >
+            <X className="size-3.5" />
           </button>
-        ) : (
-          <span className="font-medium">Install failed</span>
-        )}
-        <button
-          type="button"
-          onClick={dismiss}
-          aria-label="Dismiss"
-          className="inline-flex size-5 items-center justify-center rounded transition-colors hover:bg-amber-500/20"
-        >
-          <X className="size-3.5" />
-        </button>
-      </span>
+        </span>
+      </Hint>
     );
   }
 
   // idle
   return (
     <span className={`${pill} border-primary/30 bg-primary/10 px-1 font-medium text-primary`}>
-      <button
-        type="button"
-        onClick={install}
-        title="Symlink the delta CLI onto your PATH so you can run `delta` from any terminal"
-        className="inline-flex h-5 items-center gap-1.5 rounded px-1.5 transition-colors hover:bg-primary/20 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-      >
-        <Terminal className="size-3.5" /> Install CLI
-      </button>
+      <Hint tip="Symlink the delta CLI onto your PATH so you can run `delta` from any terminal">
+        <button
+          type="button"
+          onClick={install}
+          className="inline-flex h-5 items-center gap-1.5 rounded px-1.5 transition-colors hover:bg-primary/20 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <Terminal className="size-3.5" /> Install CLI
+        </button>
+      </Hint>
       <button
         type="button"
         onClick={dismiss}

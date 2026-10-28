@@ -12,6 +12,7 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuSeparator, DropdownMenuCheck,
 } from "@/components/ui/dropdown-menu";
+import { Hint } from "@/components/Hint";
 
 interface BasePickerProps {
   repoPath: string;
@@ -52,9 +53,11 @@ function BranchRow({
       <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-2 text-[11px] text-muted-foreground">
         {branch.isDefault && <span className="rounded bg-muted px-1">default</span>}
         {branch.isCurrent && <span className="rounded bg-muted px-1">current</span>}
-        <span title={`${branch.ahead} ahead / ${branch.behind} behind`}>
-          {suggested ? "cut here" : ago(branch.lastCommitAt)}
-        </span>
+        <Hint tip={`${branch.ahead} ahead / ${branch.behind} behind`}>
+          <span>
+            {suggested ? "cut here" : ago(branch.lastCommitAt)}
+          </span>
+        </Hint>
       </span>
     </>
   );
@@ -116,17 +119,19 @@ export function BasePicker({ repoPath, headOid, override, strategy, resolvedLabe
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger aria-label="Base branch" title={title} className={CHIP}>
-        <GitBranch className="size-3 shrink-0 text-muted-foreground" />
-        <span className="text-muted-foreground">vs</span>
-        <span className="max-w-[16ch] truncate">{label}</span>
-        {strategy !== undefined && !explicit && (
-          <span className="text-[11px] font-normal text-muted-foreground">
-            ({pinned ? "pinned" : "auto"})
-          </span>
-        )}
-        <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
-      </DropdownMenuTrigger>
+      <Hint tip={title}>
+        <DropdownMenuTrigger aria-label="Base branch" className={CHIP}>
+          <GitBranch className="size-3 shrink-0 text-muted-foreground" />
+          <span className="text-muted-foreground">vs</span>
+          <span className="max-w-[16ch] truncate">{label}</span>
+          {strategy !== undefined && !explicit && (
+            <span className="text-[11px] font-normal text-muted-foreground">
+              ({pinned ? "pinned" : "auto"})
+            </span>
+          )}
+          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+        </DropdownMenuTrigger>
+      </Hint>
       <DropdownMenuContent align="start" className="min-w-[18rem]">
         {/* Radix menu owns arrow keys for item navigation; the filter input must
             keep its keystrokes to itself. */}

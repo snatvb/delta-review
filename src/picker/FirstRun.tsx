@@ -5,6 +5,7 @@
 // (#empty)
 import { FolderOpen, ArrowRight, Terminal, X, CheckCircle2, Loader2, TriangleAlert } from "lucide-react";
 import { Kbd } from "@/components/ui/kbd";
+import { Hint } from "@/components/Hint";
 import { useCliInstall } from "@/workspace/useCliInstall";
 
 export function FirstRun({ onOpenRepo }: { onOpenRepo: () => void }) {
@@ -100,29 +101,30 @@ function CliAction({ phase, detail, copied, install, dismiss, copyCommand }: Ret
 
   if (phase === "linked" || phase === "pathUpdated") {
     return (
-      <span
-        className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-1 text-[12px] font-medium text-emerald-600 dark:text-emerald-400"
-        title={detail}
-      >
-        <CheckCircle2 className="size-4" />
-        {phase === "pathUpdated" ? "Open a new terminal" : "Installed"}
-      </span>
+      <Hint tip={detail} disabled={!detail}>
+        <span className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-1 text-[12px] font-medium text-emerald-600 dark:text-emerald-400">
+          <CheckCircle2 className="size-4" />
+          {phase === "pathUpdated" ? "Open a new terminal" : "Installed"}
+        </span>
+      </Hint>
     );
   }
 
   if (phase === "manual" || phase === "error") {
     return (
-      <span className="inline-flex shrink-0 items-center gap-1 text-[12px] text-amber-600 dark:text-amber-400" title={detail}>
-        <TriangleAlert className="size-3.5 shrink-0" />
-        {phase === "manual" ? (
-          <button type="button" onClick={copyCommand} className="font-medium underline-offset-2 transition-colors hover:underline">
-            {copied ? "Copied" : "Copy command"}
-          </button>
-        ) : (
-          <span className="font-medium">Failed</span>
-        )}
-        {dismissBtn}
-      </span>
+      <Hint tip={detail} disabled={!detail}>
+        <span className="inline-flex shrink-0 items-center gap-1 text-[12px] text-amber-600 dark:text-amber-400">
+          <TriangleAlert className="size-3.5 shrink-0" />
+          {phase === "manual" ? (
+            <button type="button" onClick={copyCommand} className="font-medium underline-offset-2 transition-colors hover:underline">
+              {copied ? "Copied" : "Copy command"}
+            </button>
+          ) : (
+            <span className="font-medium">Failed</span>
+          )}
+          {dismissBtn}
+        </span>
+      </Hint>
     );
   }
 

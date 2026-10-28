@@ -3,6 +3,7 @@
 // stay visually identical.
 import { Folder, GitBranch, MessageSquare, TriangleAlert, Check } from "lucide-react";
 import type { ReactNode } from "react";
+import { Hint } from "@/components/Hint";
 import { worktreeName } from "../lib/utils";
 import type { ReviewEntry } from "../types";
 
@@ -69,9 +70,11 @@ export function worktreeMeta(w: {
         <span className="inline-flex items-center gap-1 tabular-nums text-emerald-500"><Check className="size-3.5" />{r.resolvedCount}</span>
       )}
       {w.dirty && (
-        <span className="inline-flex items-center gap-1 text-amber-500" title="Uncommitted changes">
-          <span className="size-1.5 rounded-full bg-amber-500" /> uncommitted
-        </span>
+        <Hint tip="Uncommitted changes">
+          <span className="inline-flex items-center gap-1 text-amber-500">
+            <span className="size-1.5 rounded-full bg-amber-500" /> uncommitted
+          </span>
+        </Hint>
       )}
       {at && <span>{relTime(at)}</span>}
     </span>

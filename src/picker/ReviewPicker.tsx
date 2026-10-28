@@ -14,6 +14,7 @@ import { worktreeIdentity, worktreeMeta } from "./pickerUi";
 import { sameFolder } from "../lib/sameFolder";
 import { Trash2, FolderPlus } from "lucide-react";
 import { Kbd } from "@/components/ui/kbd";
+import { Hint } from "@/components/Hint";
 import type { PickerWorktree, ReviewEntry, Target } from "../types";
 
 export interface ReviewPickerProps {
@@ -181,16 +182,17 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
             setSel(0);
           }}
         />
-        <button
-          type="button"
-          onClick={onAddRepo}
-          title="Add a repo…"
-          aria-label="Add a repo…"
-          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-input bg-muted/40 pl-2.5 pr-1.5 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          <FolderPlus className="size-3.5" /> Add repo
-          <Kbd keys="⌘O" className="bg-background/60" />
-        </button>
+        <Hint tip="Add a repo…">
+          <button
+            type="button"
+            onClick={onAddRepo}
+            aria-label="Add a repo…"
+            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-input bg-muted/40 pl-2.5 pr-1.5 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <FolderPlus className="size-3.5" /> Add repo
+            <Kbd keys="⌘O" className="bg-background/60" />
+          </button>
+        </Hint>
       </div>
       <div
         ref={listRef}
@@ -234,15 +236,16 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
                     {rows[c.i].node}
                   </button>
                   {rows[c.i].onDelete && (
-                    <button
-                      type="button"
-                      title="Delete review (⌘⌫)"
-                      aria-label="Delete review"
-                      onClick={rows[c.i].onDelete}
-                      className={`mr-2 inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus:outline-none focus-visible:ring-1 focus-visible:ring-ring ${c.i === clampedSel ? "visible" : "invisible group-hover:visible"}`}
-                    >
-                      <Trash2 className="size-3.5" />
-                    </button>
+                    <Hint tip="Delete review" kbd="⌘⌫">
+                      <button
+                        type="button"
+                        aria-label="Delete review"
+                        onClick={rows[c.i].onDelete}
+                        className={`mr-2 inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus:outline-none focus-visible:ring-1 focus-visible:ring-ring ${c.i === clampedSel ? "visible" : "invisible group-hover:visible"}`}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    </Hint>
                   )}
                 </div>
               ),

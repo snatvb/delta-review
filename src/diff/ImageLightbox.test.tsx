@@ -16,15 +16,15 @@ describe("ImageLightbox", () => {
     expect(screen.getByText("logo.png")).toBeInTheDocument();
     expect(screen.getByText("Old 45 B")).toBeInTheDocument();
     expect(screen.getByText("New 1.5 KB")).toBeInTheDocument();
-    expect(screen.getByTitle("Side by side")).toBeInTheDocument();
-    expect(screen.getByTitle("Swipe compare")).toBeInTheDocument();
+    expect(screen.getByLabelText("Side by side")).toBeInTheDocument();
+    expect(screen.getByLabelText("Swipe compare")).toBeInTheDocument();
     expect(screen.getByAltText("Old version")).toHaveAttribute("src", "blob://old/image/png");
     expect(screen.getByAltText("New version")).toHaveAttribute("src", "blob://new/image/png");
   });
 
   it("offers no compare modes for a single side", () => {
     render(<ImageLightbox path="added.png" sides={[newSide]} onClose={vi.fn()} />);
-    expect(screen.queryByTitle("Swipe compare")).toBeNull();
+    expect(screen.queryByLabelText("Swipe compare")).toBeNull();
     expect(screen.getByAltText("New version")).toHaveAttribute("src", "blob://new/image/png");
   });
 
@@ -54,9 +54,9 @@ describe("ImageLightbox", () => {
   it("steps the zoom readout from the buttons", () => {
     render(<ImageLightbox path="logo.png" sides={[oldSide, newSide]} onClose={vi.fn()} />);
     expect(screen.getByText("100%")).toBeInTheDocument();
-    fireEvent.click(screen.getByTitle("Zoom in"));
+    fireEvent.click(screen.getByLabelText("Zoom in"));
     expect(screen.getByText("125%")).toBeInTheDocument();
-    fireEvent.click(screen.getByTitle("Zoom out"));
+    fireEvent.click(screen.getByLabelText("Zoom out"));
     expect(screen.getByText("100%")).toBeInTheDocument();
   });
 
@@ -73,15 +73,15 @@ describe("ImageLightbox", () => {
     );
     expect(screen.queryByRole("img")).toBeNull();
     expect(screen.getByText("No preview available")).toBeInTheDocument();
-    expect(screen.getByTitle("Zoom in")).toBeDisabled();
-    expect(screen.getByTitle("Zoom out")).toBeDisabled();
+    expect(screen.getByLabelText("Zoom in")).toBeDisabled();
+    expect(screen.getByLabelText("Zoom out")).toBeDisabled();
   });
 
   // Point comments (#point): comment mode + pin placement + the bubble thread.
   describe("point comments", () => {
     it("hides the comment toggle unless a placement handler is wired", () => {
       render(<ImageLightbox path="logo.png" sides={[oldSide, newSide]} onClose={vi.fn()} />);
-      expect(screen.queryByTitle("Comment on a point")).toBeNull();
+      expect(screen.queryByLabelText("Comment on a point")).toBeNull();
     });
 
     it("places a point comment at the clicked fraction of the image, then exits the mode", () => {
@@ -107,8 +107,8 @@ describe("ImageLightbox", () => {
         fireEvent.pointerDown(img, { button: 0, clientX: 150, clientY: 100 });
         fireEvent.pointerUp(img, { button: 0, clientX: 150, clientY: 100 });
         expect(onAddComment).not.toHaveBeenCalled(); // not armed yet — plain click
-        fireEvent.click(screen.getByTitle("Comment on a point"));
-        expect(screen.getByTitle("Comment mode — click the image to place a pin (Esc to cancel)")).toBeInTheDocument();
+        fireEvent.click(screen.getByLabelText("Comment on a point"));
+        expect(screen.getByLabelText("Comment on a point")).toHaveAttribute("aria-pressed", "true");
         fireEvent.pointerDown(img, { button: 0, clientX: 150, clientY: 100 });
         fireEvent.pointerUp(img, { button: 0, clientX: 150, clientY: 100 });
         expect(onAddComment).toHaveBeenCalledTimes(1);
@@ -116,7 +116,7 @@ describe("ImageLightbox", () => {
         expect(anchor).toMatchObject({ file: "logo.png", side: "new", x: 0.25, y: 0.5 });
         expect(body).toBe("");
         // Mode exited after one placement.
-        expect(screen.getByTitle("Comment on a point")).toBeInTheDocument();
+        expect(screen.getByLabelText("Comment on a point")).toHaveAttribute("aria-pressed", "false");
         fireEvent.pointerDown(img, { button: 0, clientX: 160, clientY: 110 });
         fireEvent.pointerUp(img, { button: 0, clientX: 160, clientY: 110 });
         expect(onAddComment).toHaveBeenCalledTimes(1);
@@ -135,10 +135,10 @@ describe("ImageLightbox", () => {
           onAddComment={vi.fn()}
         />,
       );
-      fireEvent.click(screen.getByTitle("Comment on a point"));
+      fireEvent.click(screen.getByLabelText("Comment on a point"));
       fireEvent.keyDown(window, { key: "Escape" });
       expect(onClose).not.toHaveBeenCalled();
-      expect(screen.getByTitle("Comment on a point")).toBeInTheDocument();
+      expect(screen.getByLabelText("Comment on a point")).toHaveAttribute("aria-pressed", "false");
       fireEvent.keyDown(window, { key: "Escape" });
       expect(onClose).toHaveBeenCalledTimes(1);
     });

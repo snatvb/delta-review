@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Hint } from "@/components/Hint";
+import { CommitMetaBody } from "@/components/CommitMetaTip";
 import { Check, Copy, MessageSquareDashed, Pencil, RotateCcw, Trash2, X } from "lucide-react";
 import { useResizableWidth, usePaneResize, PaneResizer, COMMENTS_PANE } from "../lib/resizablePane";
 import { pointSuffix } from "../diff/imagePoints";
 import { CommentEditor } from "./CommentEditor";
 import { useCopyCommentForAgent } from "./commentForAgent";
-import type { Comment } from "../types";
+import type { Comment, CommitMeta } from "../types";
 
 // Split so the dir can truncate while the filename (last segment) + line range
 // always stay visible. (#r4)
@@ -30,11 +32,15 @@ const RESOLVE_BTN = "size-6 rounded-md text-muted-foreground hover:bg-emerald-50
 const DEL_BTN = "size-6 rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive";
 
 export function CommentIndex({
-  open, onOpenChange, comments, onJump, onEdit, onDelete, onDeleteAll, onToggleResolved,
+  open, onOpenChange, comments, onJump, onEdit, onDelete, onDeleteAll, onToggleResolved, commitMeta,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   comments: Comment[];
+  // Loaded branch commits keyed by full oid — powers the handed-off chip's rich
+  // hover (subject/author/date). Older commits may fall outside the loaded page;
+  // those chips fall back to the oid-only tooltip.
+  commitMeta?: Map<string, CommitMeta>;
   onJump: (comment: Comment) => void;
   // Card actions. A stale comment is unreachable in the diff (its anchor no longer
   // resolves to a row, so no thread — and no buttons — render there) and commit-mode
@@ -130,45 +136,46 @@ export function CommentIndex({
         <span className="text-muted-foreground/50">·</span>
         <span className="text-[12px] text-muted-foreground">{anchored.length}</span>
         {staleCount > 0 && (
-          <span
-            className="ml-auto flex items-center gap-1 rounded-md squircle bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-600 dark:text-amber-400"
-            title={`${staleCount} stale comment${staleCount === 1 ? "" : "s"}`}
-          >
-            ⚠ {staleCount} stale
-          </span>
+          <Hint tip={`${staleCount} stale comment${staleCount === 1 ? "" : "s"}`}>
+            <span className="ml-auto flex items-center gap-1 rounded-md squircle bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-600 dark:text-amber-400">
+              ⚠ {staleCount} stale
+            </span>
+          </Hint>
         )}
         <span className="ml-auto flex items-center gap-1">
           {onDeleteAll && anchored.length > 0 && (
             confirmingAll ? (
-              <Button
-                variant="ghost"
-                className="h-6 gap-1 rounded-md bg-destructive/10 px-2 text-[12px] font-medium text-destructive transition-colors hover:bg-destructive/20"
-                aria-label="Confirm delete all comments"
-                title="Click again to delete every comment in this review"
-                onClick={() => {
-                  setConfirmingAll(false);
-                  onDeleteAll();
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    e.stopPropagation();
+              <Hint tip="Click again to delete every comment in this review">
+                <Button
+                  variant="ghost"
+                  className="h-6 gap-1 rounded-md bg-destructive/10 px-2 text-[12px] font-medium text-destructive transition-colors hover:bg-destructive/20"
+                  aria-label="Confirm delete all comments"
+                  onClick={() => {
                     setConfirmingAll(false);
-                  }
-                }}
-              >
-                <Trash2 className="size-3.5" /> Delete all?
-              </Button>
+                    onDeleteAll();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.stopPropagation();
+                      setConfirmingAll(false);
+                    }
+                  }}
+                >
+                  <Trash2 className="size-3.5" /> Delete all?
+                </Button>
+              </Hint>
             ) : (
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="size-6 rounded-md text-muted-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive"
-                aria-label="Delete all comments"
-                title="Delete all comments"
-                onClick={() => setConfirmingAll(true)}
-              >
-                <Trash2 className="size-3.5" />
-              </Button>
+              <Hint tip="Delete all comments">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="size-6 rounded-md text-muted-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                  aria-label="Delete all comments"
+                  onClick={() => setConfirmingAll(true)}
+                >
+                  <Trash2 className="size-3.5" />
+                </Button>
+              </Hint>
             )
           )}
           <Button
@@ -223,12 +230,19 @@ export function CommentIndex({
                 <span className="ml-1 shrink-0 text-muted-foreground/70">{suffix}</span>
               </span>
               {c.commit && (
-                <span
-                  className="shrink-0 rounded-md squircle bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
-                  title={`Comment handed off to commit ${c.commit} — click the card to open that commit`}
+                <Hint
+                  tip={
+                    <CommitMetaBody
+                      meta={commitMeta?.get(c.commit)}
+                      oid={c.commit}
+                      note="Comment handed off to this commit — click the card to open it"
+                    />
+                  }
                 >
-                  {c.commit.slice(0, 7)}
-                </span>
+                  <span className="shrink-0 rounded-md squircle bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                    {c.commit.slice(0, 7)}
+                  </span>
+                </Hint>
               )}
               {c.stale && !c.resolved && <span className="shrink-0 rounded-md squircle bg-amber-500/15 px-1.5 py-0.5 text-amber-600 dark:text-amber-400">⚠ stale</span>}
               {c.resolved && <span className="shrink-0 rounded-md squircle bg-emerald-500/15 px-1.5 py-0.5 text-emerald-600 dark:text-emerald-400">✓</span>}
@@ -259,27 +273,37 @@ export function CommentIndex({
                 onClick={(e) => e.stopPropagation()}
               >
                 {onToggleResolved && (c.resolved ? (
-                  <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Reopen" title="Reopen" onClick={() => onToggleResolved(c.id)}>
-                    <RotateCcw className="size-3.5" />
-                  </Button>
+                  <Hint tip="Reopen">
+                    <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Reopen" onClick={() => onToggleResolved(c.id)}>
+                      <RotateCcw className="size-3.5" />
+                    </Button>
+                  </Hint>
                 ) : (
-                  <Button variant="ghost" size="icon-xs" className={RESOLVE_BTN} aria-label="Resolve" title="Resolve" onClick={() => onToggleResolved(c.id)}>
-                    <Check className="size-3.5" />
-                  </Button>
+                  <Hint tip="Resolve">
+                    <Button variant="ghost" size="icon-xs" className={RESOLVE_BTN} aria-label="Resolve" onClick={() => onToggleResolved(c.id)}>
+                      <Check className="size-3.5" />
+                    </Button>
+                  </Hint>
                 ))}
                 {/* Stale cards keep their edit pencil off — see the prop comment. */}
                 {onEdit && !c.stale && (
-                  <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Edit" title="Edit" onClick={() => setEditingId(c.id)}>
-                    <Pencil className="size-3.5" />
-                  </Button>
+                  <Hint tip="Edit">
+                    <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Edit" onClick={() => setEditingId(c.id)}>
+                      <Pencil className="size-3.5" />
+                    </Button>
+                  </Hint>
                 )}
-                <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Copy for agent" title="Copy for agent" onClick={() => copy(c)}>
-                  {copiedId === c.id ? <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="size-3.5" />}
-                </Button>
-                {onDelete && (
-                  <Button variant="ghost" size="icon-xs" className={DEL_BTN} aria-label="Delete" title="Delete" onClick={() => setConfirmId(c.id)}>
-                    <Trash2 className="size-3.5" />
+                <Hint tip="Copy for agent">
+                  <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Copy for agent" onClick={() => copy(c)}>
+                    {copiedId === c.id ? <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="size-3.5" />}
                   </Button>
+                </Hint>
+                {onDelete && (
+                  <Hint tip="Delete">
+                    <Button variant="ghost" size="icon-xs" className={DEL_BTN} aria-label="Delete" onClick={() => setConfirmId(c.id)}>
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  </Hint>
                 )}
               </div>
             )}

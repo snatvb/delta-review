@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { Monitor, Moon, Sun } from "lucide-react";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Hint } from "@/components/Hint";
 import { useThemePref, type ThemePref } from "../theme";
 import { useCodeFont, setCodeFontFamily, setCodeFontSize, installedMonoFonts, SIZE_OPTIONS } from "../codeFont";
 import { Chevron, Divider, Row, selectClass } from "./controls";
@@ -35,16 +36,16 @@ export function AppearanceSection() {
             className="gap-0.5 rounded-lg bg-muted/70 p-0.5"
           >
             {THEMES.map(({ value, label, Icon }) => (
-              <ToggleGroupItem
-                key={value}
-                value={value}
-                aria-label={label}
-                title={label}
-                className="h-7 gap-1.5 rounded-md border-0 px-2.5 text-[12px] text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm"
-              >
-                <Icon className="size-3.5" />
-                {label}
-              </ToggleGroupItem>
+              <Hint key={value} tip={label}>
+                <ToggleGroupItem
+                  value={value}
+                  aria-label={label}
+                  className="h-7 gap-1.5 rounded-md border-0 px-2.5 text-[12px] text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm"
+                >
+                  <Icon className="size-3.5" />
+                  {label}
+                </ToggleGroupItem>
+              </Hint>
             ))}
           </ToggleGroup>
         }

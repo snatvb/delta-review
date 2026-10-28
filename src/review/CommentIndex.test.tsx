@@ -41,15 +41,15 @@ describe("CommentIndex", () => {
         onEdit={onEdit} onDelete={onDelete} onToggleResolved={onToggleResolved}
       />,
     );
-    expect(screen.getByTitle("Resolve")).toBeInTheDocument();
-    expect(screen.getByTitle("Delete")).toBeInTheDocument();
-    expect(screen.queryByTitle("Edit")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resolve" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTitle("Resolve"));
+    fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
     expect(onToggleResolved).toHaveBeenCalledWith("l");
 
     // Delete goes through the confirm dialog before reaching onDelete.
-    fireEvent.click(screen.getByTitle("Delete"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     const dialog = screen.getByRole("alertdialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
     expect(onDelete).toHaveBeenCalledWith("l");
@@ -66,7 +66,7 @@ describe("CommentIndex", () => {
         onEdit={onEdit} onDelete={vi.fn()} onToggleResolved={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByTitle("Edit"));
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     const area = screen.getByRole("textbox") as HTMLTextAreaElement;
     expect(area.value).toBe("draft text");
     // Typing inside the editor must not count as a card click (no jump).
@@ -87,8 +87,8 @@ describe("CommentIndex", () => {
         onEdit={vi.fn()} onDelete={vi.fn()} onToggleResolved={onToggleResolved}
       />,
     );
-    expect(screen.queryByTitle("Resolve")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTitle("Reopen"));
+    expect(screen.queryByRole("button", { name: "Resolve" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reopen" }));
     expect(onToggleResolved).toHaveBeenCalledWith("d");
   });
 
@@ -99,7 +99,7 @@ describe("CommentIndex", () => {
     // No onEdit/onDelete/onToggleResolved: the copy button must still render.
     render(<CommentIndex open onOpenChange={() => {}} comments={comments} onJump={onJump} />);
     await act(async () => {
-      fireEvent.click(screen.getByTitle("Copy for agent"));
+      fireEvent.click(screen.getByRole("button", { name: "Copy for agent" }));
     });
     expect(writeText).toHaveBeenCalledWith("src/a.ts:22 (⚠ stale)\n```ts\nx\n```\nline note");
     expect(onJump).not.toHaveBeenCalled();

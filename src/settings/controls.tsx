@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Hint } from "@/components/Hint";
 import type { OnOff } from "../lib/onOffPref";
 
 // Shared pieces of the Settings section pages: the label/control row, the
@@ -50,12 +51,16 @@ export function OnOffToggle({
       onValueChange={(v) => v && onChange(v as OnOff)}
       className="gap-0.5 rounded-lg bg-muted/70 p-0.5"
     >
-      <ToggleGroupItem value="on" aria-label="On" title={onTitle} className={toggleItemClass}>
-        On
-      </ToggleGroupItem>
-      <ToggleGroupItem value="off" aria-label="Off" title={offTitle} className={toggleItemClass}>
-        Off
-      </ToggleGroupItem>
+      <Hint tip={onTitle}>
+        <ToggleGroupItem value="on" aria-label="On" className={toggleItemClass}>
+          On
+        </ToggleGroupItem>
+      </Hint>
+      <Hint tip={offTitle}>
+        <ToggleGroupItem value="off" aria-label="Off" className={toggleItemClass}>
+          Off
+        </ToggleGroupItem>
+      </Hint>
     </ToggleGroup>
   );
 }

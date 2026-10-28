@@ -9,6 +9,13 @@ const files: FileEntry[] = [
   { path: "src/a.ts", status: "modified", additions: 3, deletions: 1, binary: false },
 ];
 
+// Tooltips (Hint/radix) mount their content only while open — focus the trigger
+// (radix opens instantly on focus) and read the mounted text.
+async function openTip(el: Element): Promise<void> {
+  fireEvent.focus(el);
+  await screen.findByRole("tooltip");
+}
+
 describe("FilesPanel", () => {
   it("shows the empty state when there are no files", () => {
     render(<FilesPanel files={[]} selected={null} onSelect={() => {}} viewedFiles={new Set()} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
@@ -17,7 +24,7 @@ describe("FilesPanel", () => {
 
   it("renders the header, viewed count, toggle, and tree container", () => {
     render(<FilesPanel files={files} selected={null} onSelect={() => {}} viewedFiles={new Set()} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
-    expect(screen.getByTitle("Files viewed")).toHaveTextContent("0 / 1 viewed");
+    expect(screen.getByLabelText("Files viewed")).toHaveTextContent("0 / 1 viewed");
     expect(screen.getByTestId("files-tree")).toBeInTheDocument();
     // shadcn ToggleGroup renders items as role="radio" within a radiogroup
     expect(screen.getByRole("radio", { name: /list/i })).toBeInTheDocument();
@@ -25,7 +32,7 @@ describe("FilesPanel", () => {
 
   it("shows the viewed count in the header", () => {
     render(<FilesPanel files={files} selected={null} onSelect={() => {}} viewedFiles={new Set(["src/a.ts"])} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
-    expect(screen.getByTitle("Files viewed")).toHaveTextContent("1 / 1 viewed");
+    expect(screen.getByLabelText("Files viewed")).toHaveTextContent("1 / 1 viewed");
   });
 
   it("shows the global diff count (sum across files) in the header", () => {
@@ -57,7 +64,7 @@ describe("FilesPanel", () => {
       expect(counter.textContent).toContain("−5");
     });
 
-    it("excludes viewed files from the totals when the pref is on", () => {
+    it("excludes viewed files from the totals when the pref is on", async () => {
       setViewedStatsExclude("on");
       // Counts chosen so every header value differs from every row value.
       const multi: FileEntry[] = [
@@ -72,20 +79,22 @@ describe("FilesPanel", () => {
       expect(counter.textContent).toContain("−14");
       expect(counter.textContent).not.toContain("+9"); // the all-files total never shows
       // The tooltip names what was excluded, so the shrunken number reads deliberate.
-      expect(screen.getByTitle(/\+6 \/ −14 left to review — 1 viewed file excluded/)).toBeInTheDocument();
+      await openTip(counter);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("+6 / −14 left to review — 1 viewed file excluded");
       // The progress chip still counts every file.
-      expect(screen.getByTitle("Files viewed")).toHaveTextContent("1 / 3 viewed");
+      expect(screen.getByLabelText("Files viewed")).toHaveTextContent("1 / 3 viewed");
       // Per-file row numbers stay untouched — including the viewed file's.
       expect(screen.getByText("+3")).toBeInTheDocument();
     });
 
-    it("shows no +/− totals when every file is viewed and the pref is on", () => {
+    it("shows no +/− totals when every file is viewed and the pref is on", async () => {
       setViewedStatsExclude("on");
       render(<FilesPanel files={files} selected={null} onSelect={() => {}} viewedFiles={new Set(["src/a.ts"])} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
       // The header collapses to +0/−0 (hidden spans), while the file row keeps
       // its own numbers — so assert on the header tooltip, not on "+3", which
       // the row legitimately still renders.
-      expect(screen.getByTitle(/\+0 \/ −0 left to review — 1 viewed file excluded/)).toBeInTheDocument();
+      await openTip(screen.getByRole("button", { name: "Toggle unviewed-only totals" }));
+      expect(screen.getByRole("tooltip")).toHaveTextContent("+0 / −0 left to review — 1 viewed file excluded");
       expect(screen.getByText("+3")).toBeInTheDocument(); // the row's number survives
     });
 
@@ -116,7 +125,7 @@ describe("FilesPanel", () => {
       { path: "gen/api.ts", status: "modified", additions: 0, deletions: 0, binary: false, ignored: true },
     ];
     render(<FilesPanel files={withIgnored} selected={null} onSelect={() => {}} viewedFiles={new Set(["gen/api.ts"])} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
-    expect(screen.getByTitle("Files viewed")).toHaveTextContent("0 / 1 viewed");
+    expect(screen.getByLabelText("Files viewed")).toHaveTextContent("0 / 1 viewed");
     expect(screen.getByText("Ignored (1)")).toBeInTheDocument();
     expect(screen.queryByText("api.ts")).not.toBeInTheDocument();
 
@@ -154,7 +163,7 @@ describe("FilesPanel", () => {
       { path: "src/auth/token.ts", oldPath: "src/auth/session.ts", status: "renamed", additions: 0, deletions: 0, binary: false },
     ];
     render(<FilesPanel files={renamed} selected={null} onSelect={() => {}} viewedFiles={new Set()} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
-    expect(screen.getByTitle("Renamed from src/auth/session.ts")).toBeInTheDocument();
+    expect(screen.getByLabelText("Renamed from src/auth/session.ts")).toBeInTheDocument();
   });
 
   it("does not scroll the tree when a folder is collapsed or expanded", () => {
@@ -205,41 +214,48 @@ describe("FilesPanel", () => {
       { path: "other/c.ts", status: "modified", additions: 1, deletions: 0, binary: false },
     ];
 
-    it("marks every file under a folder (nested included) from an empty checkbox", () => {
+    it("marks every file under a folder (nested included) from an empty checkbox", async () => {
       const onSetViewedBulk = vi.fn();
       render(<FilesPanel files={tree} selected={null} onSelect={() => {}} viewedFiles={new Set()} onToggleViewed={() => {}} onSetViewedBulk={onSetViewedBulk} />);
       const btn = screen.getByRole("button", { name: "viewed folder lib" });
-      expect(btn).toHaveAttribute("title", "Mark all viewed (2 files)");
+      await openTip(btn);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Mark all viewed (2 files)");
       fireEvent.click(btn);
       const [paths, viewed] = onSetViewedBulk.mock.calls[0];
       expect([...paths].sort()).toEqual(["lib/a.ts", "lib/sub/b.ts"]); // nested files too, no outsiders
       expect(viewed).toBe(true);
     });
 
-    it("shows the dash state when only some files are viewed, and clears on click", () => {
+    it("shows the dash state when only some files are viewed, and clears on click", async () => {
       const onSetViewedBulk = vi.fn();
       render(<FilesPanel files={tree} selected={null} onSelect={() => {}} viewedFiles={new Set(["lib/a.ts"])} onToggleViewed={() => {}} onSetViewedBulk={onSetViewedBulk} />);
       const btn = screen.getByRole("button", { name: "viewed folder lib" });
-      expect(btn).toHaveAttribute("title", "Clear viewed (1/2)");
+      await openTip(btn);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Clear viewed (1/2)");
       fireEvent.click(btn);
       const [paths, viewed] = onSetViewedBulk.mock.calls[0];
       expect(paths).toHaveLength(2);
       expect(viewed).toBe(false);
     });
 
-    it("shows the checked state when every file is viewed, and clears on click", () => {
+    it("shows the checked state when every file is viewed, and clears on click", async () => {
       const onSetViewedBulk = vi.fn();
       render(<FilesPanel files={tree} selected={null} onSelect={() => {}} viewedFiles={new Set(["lib/a.ts", "lib/sub/b.ts"])} onToggleViewed={() => {}} onSetViewedBulk={onSetViewedBulk} />);
       const btn = screen.getByRole("button", { name: "viewed folder lib" });
-      expect(btn).toHaveAttribute("title", "Clear viewed (2/2)");
+      await openTip(btn);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Clear viewed (2/2)");
       fireEvent.click(btn);
       expect(onSetViewedBulk).toHaveBeenCalledWith(expect.arrayContaining(["lib/a.ts", "lib/sub/b.ts"]), false);
     });
 
-    it("rolls the parent folder up from nested folders (dash when a nested file is viewed)", () => {
+    it("rolls the parent folder up from nested folders (dash when a nested file is viewed)", async () => {
       render(<FilesPanel files={tree} selected={null} onSelect={() => {}} viewedFiles={new Set(["lib/sub/b.ts"])} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
-      expect(screen.getByRole("button", { name: "viewed folder lib" })).toHaveAttribute("title", "Clear viewed (1/2)");
-      expect(screen.getByRole("button", { name: "viewed folder lib/sub" })).toHaveAttribute("title", "Clear viewed (1/1)");
+      const libBtn = screen.getByRole("button", { name: "viewed folder lib" });
+      await openTip(libBtn);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Clear viewed (1/2)");
+      const subBtn = screen.getByRole("button", { name: "viewed folder lib/sub" });
+      await openTip(subBtn);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Clear viewed (1/1)");
     });
 
     it("toggles the checkbox without collapsing the folder", () => {
@@ -250,7 +266,7 @@ describe("FilesPanel", () => {
       expect(onSetViewedBulk).toHaveBeenCalled();
     });
 
-    it("keeps the checkbox when the same folder also holds ignored files (no Ignored-group overwrite)", () => {
+    it("keeps the checkbox when the same folder also holds ignored files (no Ignored-group overwrite)", async () => {
       // The Ignored group rebuilds folder paths that exist in the main tree
       // (godot/game/icons holds both a reviewable png and an ignored .import).
       // Its zeroed rollup must not overwrite the real folder's entry — that
@@ -263,12 +279,14 @@ describe("FilesPanel", () => {
       ];
       const onSetViewedBulk = vi.fn();
       render(<FilesPanel files={mixed} selected={null} onSelect={() => {}} viewedFiles={new Set()} onToggleViewed={() => {}} onSetViewedBulk={onSetViewedBulk} />);
-      expect(screen.getByRole("button", { name: "viewed folder godot" })).toHaveAttribute("title", "Mark all viewed (2 files)");
+      const godotBtn = screen.getByRole("button", { name: "viewed folder godot" });
+      await openTip(godotBtn);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Mark all viewed (2 files)");
       expect(screen.getByRole("button", { name: "viewed folder godot/game" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "viewed folder godot/game/icons" })).toBeInTheDocument();
-      expect(screen.getByTitle("+16 / −1 under godot")).toBeInTheDocument();
+      expect(screen.getByLabelText("+16 / −1 under godot")).toBeInTheDocument();
       // Bulk still acts on reviewable files only — the .import stays out.
-      fireEvent.click(screen.getByRole("button", { name: "viewed folder godot" }));
+      fireEvent.click(godotBtn);
       expect(onSetViewedBulk.mock.calls[0][0].sort()).toEqual(["godot/game/classes/class.ron", "godot/game/icons/hunter.png"]);
     });
 
@@ -296,9 +314,9 @@ describe("FilesPanel", () => {
 
     it("sums descendant changes on folder rows (exact numbers in the tooltip)", () => {
       render(<FilesPanel files={tree} selected={null} onSelect={() => {}} viewedFiles={new Set()} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
-      expect(screen.getByTitle("+12 / −3 under lib")).toBeInTheDocument();
-      expect(screen.getByTitle("+9 / −2 under lib/sub")).toBeInTheDocument();
-      expect(screen.getByTitle("+7 / −4 under other")).toBeInTheDocument();
+      expect(screen.getByLabelText("+12 / −3 under lib")).toBeInTheDocument();
+      expect(screen.getByLabelText("+9 / −2 under lib/sub")).toBeInTheDocument();
+      expect(screen.getByLabelText("+7 / −4 under other")).toBeInTheDocument();
       // The compacted rollup renders on the row itself, not just the tooltip.
       expect(screen.getByText("+12")).toBeInTheDocument();
     });
@@ -308,14 +326,14 @@ describe("FilesPanel", () => {
       render(<FilesPanel files={tree} selected={null} onSelect={() => {}} viewedFiles={new Set(["lib/a.ts"])} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
       // lib lost a.ts (+3/−1); lib/sub keeps its sum (nothing viewed inside),
       // but its tooltip still names the mode.
-      expect(screen.getByTitle("+9 / −2 left under lib (unviewed-only)")).toBeInTheDocument();
-      expect(screen.getByTitle("+9 / −2 left under lib/sub (unviewed-only)")).toBeInTheDocument();
+      expect(screen.getByLabelText("+9 / −2 left under lib (unviewed-only)")).toBeInTheDocument();
+      expect(screen.getByLabelText("+9 / −2 left under lib/sub (unviewed-only)")).toBeInTheDocument();
     });
 
     it("renders no rollup on the Ignored group (ignored files never count)", () => {
       const withIgnored: FileEntry[] = [...tree, { path: "gen/api.ts", status: "modified", additions: 5, deletions: 5, binary: false, ignored: true }];
       render(<FilesPanel files={withIgnored} selected={null} onSelect={() => {}} viewedFiles={new Set()} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
-      expect(screen.queryByTitle(/under \/:ignored/)).not.toBeInTheDocument();
+      expect(screen.queryByLabelText(/under \/:ignored/)).not.toBeInTheDocument();
     });
   });
 
@@ -341,7 +359,7 @@ describe("FilesPanel", () => {
       expect(counter().textContent).toContain("+183k");
       expect(counter().textContent).toContain("−10k");
       // Folder lib crosses the threshold that its rows don't: 9999+1 = 10000.
-      expect(screen.getByTitle("+10000 / −10000 under lib")).toBeInTheDocument(); // exact in the tooltip
+      expect(screen.getByLabelText("+10000 / −10000 under lib")).toBeInTheDocument(); // exact in the tooltip
       expect(screen.getByText("+10k")).toBeInTheDocument(); // compacted on the folder row
     });
 
@@ -354,7 +372,7 @@ describe("FilesPanel", () => {
         expect(counter().textContent).toContain("−10k");
         expect(counter().textContent).not.toContain("+183k");
         // src still renders a row-level rollup of zero → no stats span at all.
-        expect(screen.queryByTitle(/under src/)).not.toBeInTheDocument();
+        expect(screen.queryByLabelText(/under src/)).not.toBeInTheDocument();
       } finally {
         setViewedStatsExclude("off");
       }

@@ -12,6 +12,7 @@ import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as R
 import { createPortal } from "react-dom";
 import { ArrowLeft, ChevronsLeftRight, ImageOff, MessageSquarePlus, ZoomIn, ZoomOut } from "lucide-react";
 import { Kbd } from "@/components/ui/kbd";
+import { Hint } from "@/components/Hint";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { isMac } from "../lib/platform";
 import { formatBytes } from "./binaryFile";
@@ -465,16 +466,17 @@ export function ImageLightbox({
       {/* macOS traffic lights float over the top-left — pad the header past them
           like the workspace toolbar does (pl-24), so Back stays clickable. */}
       <header className={`flex h-12 shrink-0 items-center gap-3 border-b border-border bg-card pr-4 ${isMac ? "pl-24" : "pl-4"}`}>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Back to the diff"
-          title="Back to the diff (Esc)"
-          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-background pl-1.5 pr-2 text-[13px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          <ArrowLeft className="size-4" /> Back
-          <Kbd keys="esc" className="border-border/60 bg-muted/50" />
-        </button>
+        <Hint tip="Back to the diff" kbd="esc">
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Back to the diff"
+            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-background pl-1.5 pr-2 text-[13px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <ArrowLeft className="size-4" /> Back
+            <Kbd keys="esc" className="border-border/60 bg-muted/50" />
+          </button>
+        </Hint>
         <span className="min-w-0 flex-1 truncate font-mono text-[13px]">
           {dir && <span className="text-muted-foreground">{dir}</span>}
           <span className="font-medium text-foreground">{base}</span>
@@ -488,73 +490,83 @@ export function ImageLightbox({
             className="gap-0.5 rounded-lg bg-muted/70 p-0.5"
           >
             {MODES.map((m) => (
-              <ToggleGroupItem
-                key={m.value}
-                value={m.value}
-                aria-label={m.title}
-                title={m.title}
-                className="h-7 gap-1.5 rounded-md border-0 px-2.5 text-[12px] text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm"
-              >
-                {m.label}
-              </ToggleGroupItem>
+              <Hint key={m.value} tip={m.title}>
+                <ToggleGroupItem
+                  value={m.value}
+                  aria-label={m.title}
+                  className="h-7 gap-1.5 rounded-md border-0 px-2.5 text-[12px] text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm"
+                >
+                  {m.label}
+                </ToggleGroupItem>
+              </Hint>
             ))}
           </ToggleGroup>
         )}
         {onAddComment && anyUsable && (
-          <button
-            type="button"
-            onClick={() => {
-              setCommentMode((v) => !v);
-              setOpenBubbleId(null);
-            }}
-            aria-label="Comment on a point"
-            aria-pressed={commentMode}
-            title={commentMode ? "Comment mode — click the image to place a pin (Esc to cancel)" : "Comment on a point"}
-            className={`${iconBtn} w-7 ${commentMode ? "bg-primary/15 text-primary ring-1 ring-border" : ""}`}
-          >
-            <MessageSquarePlus className="size-4" />
-          </button>
+          <Hint tip={commentMode ? "Comment mode — click the image to place a pin (Esc to cancel)" : "Comment on a point"}>
+            <button
+              type="button"
+              onClick={() => {
+                setCommentMode((v) => !v);
+                setOpenBubbleId(null);
+              }}
+              aria-label="Comment on a point"
+              aria-pressed={commentMode}
+              className={`${iconBtn} w-7 ${commentMode ? "bg-primary/15 text-primary ring-1 ring-border" : ""}`}
+            >
+              <MessageSquarePlus className="size-4" />
+            </button>
+          </Hint>
         )}
         <div className="flex shrink-0 items-center gap-0.5" role="group" aria-label="Backdrop">
           {BACKDROPS.map((b) => (
-            <button
-              key={b.value}
-              type="button"
-              title={b.title}
-              aria-label={b.title}
-              aria-pressed={backdrop === b.value}
-              onClick={() => setBackdrop(b.value)}
-              className={`${iconBtn} w-7 ${backdrop === b.value ? "ring-1 ring-border" : ""}`}
-            >
-              <span
-                className={`size-3.5 rounded-sm ${b.value === "checker" ? "delta-checker" : ""}`}
-                style={b.value === "checker" ? undefined : { backgroundColor: BACKDROP_BG[b.value] }}
-              />
-            </button>
+            <Hint key={b.value} tip={b.title}>
+              <button
+                type="button"
+                aria-label={b.title}
+                aria-pressed={backdrop === b.value}
+                onClick={() => setBackdrop(b.value)}
+                className={`${iconBtn} w-7 ${backdrop === b.value ? "ring-1 ring-border" : ""}`}
+              >
+                <span
+                  className={`size-3.5 rounded-sm ${b.value === "checker" ? "delta-checker" : ""}`}
+                  style={b.value === "checker" ? undefined : { backgroundColor: BACKDROP_BG[b.value] }}
+                />
+              </button>
+            </Hint>
           ))}
         </div>
         <div className="flex shrink-0 items-center gap-0.5" role="group" aria-label="Zoom">
-          <button type="button" title="Zoom out" aria-label="Zoom out" disabled={!anyUsable} onClick={() => setTransform((t) => stepZoom(t, 1 / 1.25, geo))} className={`${iconBtn} w-7`}>
-            <ZoomOut className="size-4" />
-          </button>
-          <span className="w-12 text-center text-[12px] tabular-nums text-muted-foreground" title="Zoom level">
-            {Math.round(transform.scale * 100)}%
-          </span>
-          <button type="button" title="Zoom in" aria-label="Zoom in" disabled={!anyUsable} onClick={() => setTransform((t) => stepZoom(t, 1.25, geo))} className={`${iconBtn} w-7`}>
-            <ZoomIn className="size-4" />
-          </button>
-          <button
-            type="button"
-            title="Fit to window"
-            disabled={!anyUsable}
-            onClick={() => setTransform({ scale: fitScale, pan: { x: 0, y: 0 } })}
-            className={`${iconBtn} px-2 text-[12px]`}
-          >
-            Fit
-          </button>
-          <button type="button" title="Actual size" disabled={!anyUsable} onClick={() => setTransform({ scale: 1, pan: { x: 0, y: 0 } })} className={`${iconBtn} px-2 text-[12px]`}>
-            1:1
-          </button>
+          <Hint tip="Zoom out">
+            <button type="button" aria-label="Zoom out" disabled={!anyUsable} onClick={() => setTransform((t) => stepZoom(t, 1 / 1.25, geo))} className={`${iconBtn} w-7`}>
+              <ZoomOut className="size-4" />
+            </button>
+          </Hint>
+          <Hint tip="Zoom level">
+            <span className="w-12 text-center text-[12px] tabular-nums text-muted-foreground">
+              {Math.round(transform.scale * 100)}%
+            </span>
+          </Hint>
+          <Hint tip="Zoom in">
+            <button type="button" aria-label="Zoom in" disabled={!anyUsable} onClick={() => setTransform((t) => stepZoom(t, 1.25, geo))} className={`${iconBtn} w-7`}>
+              <ZoomIn className="size-4" />
+            </button>
+          </Hint>
+          <Hint tip="Fit to window">
+            <button
+              type="button"
+              disabled={!anyUsable}
+              onClick={() => setTransform({ scale: fitScale, pan: { x: 0, y: 0 } })}
+              className={`${iconBtn} px-2 text-[12px]`}
+            >
+              Fit
+            </button>
+          </Hint>
+          <Hint tip="Actual size">
+            <button type="button" disabled={!anyUsable} onClick={() => setTransform({ scale: 1, pan: { x: 0, y: 0 } })} className={`${iconBtn} px-2 text-[12px]`}>
+              1:1
+            </button>
+          </Hint>
         </div>
       </header>
 
@@ -665,25 +677,25 @@ export function ImageLightbox({
         {pointPins.map(({ c, pos, p }) => {
           const n = pinNumbers.get(c.id) ?? 0;
           return (
-            <button
-              key={c.id}
-              type="button"
-              data-lightbox-pin={n}
-              aria-label={`Comment ${n} — ${p.side} side, ${pointSuffix(p.x, p.y)}`}
-              title={c.body.trim() === "" ? `Comment ${n}` : c.body}
-              className={`absolute z-20 flex size-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border text-[11px] font-semibold leading-none tabular-nums shadow-md transition-transform hover:scale-110 ${PIN_TONE_CLASS[pinToneFor(c)]}`}
-              style={{ left: pos.x, top: pos.y }}
-              onPointerDown={stopPointer}
-              onPointerMove={stopPointer}
-              onPointerUp={stopPointer}
-              onDoubleClick={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                setOpenBubbleId(openBubbleId === c.id ? null : c.id);
-              }}
-            >
-              {n}
-            </button>
+            <Hint key={c.id} tip={c.body.trim() === "" ? `Comment ${n}` : c.body}>
+              <button
+                type="button"
+                data-lightbox-pin={n}
+                aria-label={`Comment ${n} — ${p.side} side, ${pointSuffix(p.x, p.y)}`}
+                className={`absolute z-20 flex size-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border text-[11px] font-semibold leading-none tabular-nums shadow-md transition-transform hover:scale-110 ${PIN_TONE_CLASS[pinToneFor(c)]}`}
+                style={{ left: pos.x, top: pos.y }}
+                onPointerDown={stopPointer}
+                onPointerMove={stopPointer}
+                onPointerUp={stopPointer}
+                onDoubleClick={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setOpenBubbleId(openBubbleId === c.id ? null : c.id);
+                }}
+              >
+                {n}
+              </button>
+            </Hint>
           );
         })}
 
@@ -724,38 +736,39 @@ export function ImageLightbox({
         {mode === "swipe" && sides.length === 2 && boxW > 0 && boxH > 0 && (
           <div className="pointer-events-none absolute" style={{ left: boxLeft + (swipePos / 100) * dispW, top: boxTop, height: dispH }}>
             <div className="absolute inset-y-0 left-0 w-px bg-foreground/70" />
-            <button
-              type="button"
-              aria-label="Swipe divider"
-              title="Drag to compare (or press [ and ])"
-              className="pointer-events-auto absolute left-1/2 top-1/2 flex size-7 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize items-center justify-center rounded-full border border-border bg-background shadow"
-              onPointerDown={(e) => {
-                stopPointer(e);
-                gripDragRef.current = e.pointerId;
-                try {
-                  e.currentTarget.setPointerCapture(e.pointerId);
-                } catch {
-                  // Capture is unavailable in headless DOMs; drags then stay on the grip.
-                }
-              }}
-              onPointerMove={(e) => {
-                if (gripDragRef.current !== e.pointerId) return;
-                stopPointer(e);
-                setSwipePos(posFromClientX(e.clientX));
-              }}
-              onPointerUp={(e) => {
-                if (gripDragRef.current !== e.pointerId) return;
-                gripDragRef.current = null;
-                stopPointer(e);
-              }}
-              onPointerCancel={(e) => {
-                if (gripDragRef.current !== e.pointerId) return;
-                gripDragRef.current = null;
-                stopPointer(e);
-              }}
-            >
-              <ChevronsLeftRight className="size-3.5 text-muted-foreground" />
-            </button>
+            <Hint tip="Drag to compare (or press [ and ])">
+              <button
+                type="button"
+                aria-label="Swipe divider"
+                className="pointer-events-auto absolute left-1/2 top-1/2 flex size-7 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize items-center justify-center rounded-full border border-border bg-background shadow"
+                onPointerDown={(e) => {
+                  stopPointer(e);
+                  gripDragRef.current = e.pointerId;
+                  try {
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                  } catch {
+                    // Capture is unavailable in headless DOMs; drags then stay on the grip.
+                  }
+                }}
+                onPointerMove={(e) => {
+                  if (gripDragRef.current !== e.pointerId) return;
+                  stopPointer(e);
+                  setSwipePos(posFromClientX(e.clientX));
+                }}
+                onPointerUp={(e) => {
+                  if (gripDragRef.current !== e.pointerId) return;
+                  gripDragRef.current = null;
+                  stopPointer(e);
+                }}
+                onPointerCancel={(e) => {
+                  if (gripDragRef.current !== e.pointerId) return;
+                  gripDragRef.current = null;
+                  stopPointer(e);
+                }}
+              >
+                <ChevronsLeftRight className="size-3.5 text-muted-foreground" />
+              </button>
+            </Hint>
           </div>
         )}
 

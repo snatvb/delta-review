@@ -19,6 +19,7 @@
 // card and the lightbox pins (same order — see imagePoints.ts).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ImageOff, Maximize2 } from "lucide-react";
+import { Hint } from "@/components/Hint";
 import { binarySidesFor, formatBytes, previewableImageSide } from "./binaryFile";
 import { PIN_TONE_CLASS } from "./imagePoints";
 import type { BinaryFileDiff, BlobSide, FileStatus } from "../types";
@@ -97,15 +98,16 @@ function ImagePane({
         )}
         {side.size != null && <span className="tabular-nums">{formatBytes(side.size)}</span>}
         {onExpand && (
-          <button
-            type="button"
-            onClick={onExpand}
-            aria-label={`Open full-size ${side.label.toLowerCase()} image`}
-            title="Open full view — zoom and compare"
-            className="absolute right-1 inline-flex size-6 items-center justify-center rounded text-muted-foreground/60 transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
-          >
-            <Maximize2 className="size-3.5" />
-          </button>
+          <Hint tip="Open full view — zoom and compare">
+            <button
+              type="button"
+              onClick={onExpand}
+              aria-label={`Open full-size ${side.label.toLowerCase()} image`}
+              className="absolute right-1 inline-flex size-6 items-center justify-center rounded text-muted-foreground/60 transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+            >
+              <Maximize2 className="size-3.5" />
+            </button>
+          </Hint>
         )}
       </div>
       <div ref={hostRef} className="delta-checker relative flex min-h-0 flex-1 items-center justify-center overflow-hidden border-t border-border/40 p-3">
@@ -132,22 +134,22 @@ function ImagePane({
           </span>
         )}
         {box && pins.map((p) => (
-          <button
-            key={p.commentId}
-            type="button"
-            data-image-pin={p.n}
-            aria-label={`Comment ${p.n} — ${side.label.toLowerCase()} image, x ${Math.round(p.x * 100)}% y ${Math.round(p.y * 100)}%`}
-            title={p.title}
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenPin?.(p.commentId);
-            }}
-            className={`absolute z-10 flex size-[18px] -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full border text-[10px] font-semibold leading-none tabular-nums shadow-sm transition-transform hover:scale-110 ${PIN_TONE_CLASS[p.tone]}`}
-            style={{ left: box.l + p.x * box.w, top: box.t + p.y * box.h }}
-          >
-            {p.n}
-          </button>
+          <Hint key={p.commentId} tip={p.title}>
+            <button
+              type="button"
+              data-image-pin={p.n}
+              aria-label={`Comment ${p.n} — ${side.label.toLowerCase()} image, x ${Math.round(p.x * 100)}% y ${Math.round(p.y * 100)}%`}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenPin?.(p.commentId);
+              }}
+              className={`absolute z-10 flex size-[18px] -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full border text-[10px] font-semibold leading-none tabular-nums shadow-sm transition-transform hover:scale-110 ${PIN_TONE_CLASS[p.tone]}`}
+              style={{ left: box.l + p.x * box.w, top: box.t + p.y * box.h }}
+            >
+              {p.n}
+            </button>
+          </Hint>
         ))}
       </div>
     </div>

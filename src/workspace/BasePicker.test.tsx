@@ -53,6 +53,13 @@ function openMenu() {
   fireEvent.click(trigger);
 }
 
+// The trigger's tooltip now rides the shared Hint component (radix mounts its
+// content on focus/hover) instead of a native `title` attribute.
+async function openTip(trigger: HTMLElement): Promise<HTMLElement> {
+  fireEvent.focus(trigger);
+  return await screen.findByRole("tooltip");
+}
+
 describe("BasePicker", () => {
   beforeEach(() => {
     listBranches.mockReset().mockResolvedValue(LIST);
@@ -64,8 +71,10 @@ describe("BasePicker", () => {
     expect(trigger.textContent).toContain("vs");
     expect(trigger.textContent).toContain("dev");
     expect(trigger.textContent).toContain("(auto)");
-    // Strategy loaded but auto → the trigger tooltip says so.
-    expect(trigger.title).toBe("Base auto-detected");
+    // Strategy loaded but auto → the trigger tooltip says so. The assertion
+    // awaits the branch-list fetch: the tip recomputes from "Base
+    // auto-detected" (pre-data placeholder) to the settled auto suggestion.
+    expect((await openTip(trigger)).textContent).toBe("Auto: cut from dev @ e4f5a6b · 3d ago");
     expect(container).toBeTruthy();
   });
 

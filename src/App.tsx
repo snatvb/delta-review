@@ -12,6 +12,7 @@ import { onNotice, type Notice } from "./lib/notify";
 import { useApplyTheme } from "./theme";
 import { useApplyCodeFont } from "./codeFont";
 import { DevBadge } from "@/components/DevBadge";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { useUpdater } from "@/updater/useUpdater";
 import { UpdateBanner } from "@/updater/UpdateBanner";
 import { initAnalytics, track } from "@/analytics";
@@ -101,7 +102,9 @@ export default function App() {
   }, [isReview]);
 
   return (
-    <>
+    // One provider roots every tooltip in the app (both windows + portals); Hint
+    // also nests its own so components work standalone (tests, stories).
+    <TooltipProvider delayDuration={200}>
       {isReview ? (
         <Workspace
           target={route.target}
@@ -135,6 +138,6 @@ export default function App() {
         />
       )}
       <DevBadge />
-    </>
+    </TooltipProvider>
   );
 }

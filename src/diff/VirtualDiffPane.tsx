@@ -23,6 +23,7 @@ import { getSyntaxLineTemplate } from "@git-diff-view/file";
 import { SplitSide } from "@git-diff-view/react";
 import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Hint } from "@/components/Hint";
 import { api } from "../api";
 import { getEditorPref } from "../editor";
 import { toDiffFile } from "./toDiffFile";
@@ -278,20 +279,23 @@ function LineEditInput({ state, onSave, onCancel, onEditFull }: { state: RowEdit
       />
       {/* Escalate to the full-file editor, cursor on this line. onMouseDown
           prevents the input's blur (→ cancel) from firing before the click lands. */}
-      <button
-        type="button"
-        onMouseDown={(e) => e.preventDefault()}
-        onClick={onEditFull}
-        title="Edit full file"
-        aria-label="Edit full file"
-        className="flex shrink-0 items-center self-center rounded px-1 text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
-      >
-        <Pencil className="size-3" />
-      </button>
+      <Hint tip="Edit full file">
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={onEditFull}
+          aria-label="Edit full file"
+          className="flex shrink-0 items-center self-center rounded px-1 text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+        >
+          <Pencil className="size-3" />
+        </button>
+      </Hint>
       {state.error && (
-        <div className="delta-comment-ui absolute left-0 top-full z-20 mt-1 max-w-md truncate rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-[12px] text-destructive shadow-md" title={state.error}>
-          {state.error}
-        </div>
+        <Hint tip={state.error}>
+          <div className="delta-comment-ui absolute left-0 top-full z-20 mt-1 max-w-md truncate rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-[12px] text-destructive shadow-md">
+            {state.error}
+          </div>
+        </Hint>
       )}
     </span>
   );
@@ -348,9 +352,11 @@ function Row({ model, index, top, height, wrap, selected, highlighted, onComment
         <span data-gutter="new" className={gutterCls}>{hasNew ? line.newLineNumber : ""}</span>
         <span className={`w-4 shrink-0 select-none text-center ${markerColor}`}>{marker}</span>
         {!readOnly && kind !== "hunk" && (
-          <button type="button" data-add-comment={side} onClick={() => onComment(side, (hasNew ? line.newLineNumber : line.oldLineNumber)!)} aria-label={`comment on line ${hasNew ? line.newLineNumber : line.oldLineNumber}`} title="Comment (drag for a range)" className={`left-[5.25rem] top-1/2 ${addBtnCls}`}>
-            <Plus className="size-3.5" strokeWidth={2.5} />
-          </button>
+          <Hint tip="Comment (drag for a range)">
+            <button type="button" data-add-comment={side} onClick={() => onComment(side, (hasNew ? line.newLineNumber : line.oldLineNumber)!)} aria-label={`comment on line ${hasNew ? line.newLineNumber : line.oldLineNumber}`} className={`left-[5.25rem] top-1/2 ${addBtnCls}`}>
+              <Plus className="size-3.5" strokeWidth={2.5} />
+            </button>
+          </Hint>
         )}
       </div>
       {isEditingThis && rowEdit ? (
@@ -389,9 +395,11 @@ function SplitColCell({ model, side, index, top, height, wrap, changed, highligh
       <div className="sticky left-0 z-[1] flex items-stretch bg-code" style={{ background: railBg(tint), boxShadow: accent ? `inset 3px 0 0 ${accent}` : undefined }}>
         <span data-gutter={side} className={gutterCls}>{has ? ln : ""}</span>
         {!readOnly && has && (
-          <button type="button" data-add-comment={side} onClick={() => onComment(side, ln)} aria-label={`comment on ${side} line ${ln}`} title="Comment (drag for a range)" className={`left-12 top-1/2 ${addBtnCls}`}>
-            <Plus className="size-3.5" strokeWidth={2.5} />
-          </button>
+          <Hint tip="Comment (drag for a range)">
+            <button type="button" data-add-comment={side} onClick={() => onComment(side, ln)} aria-label={`comment on ${side} line ${ln}`} className={`left-12 top-1/2 ${addBtnCls}`}>
+              <Plus className="size-3.5" strokeWidth={2.5} />
+            </button>
+          </Hint>
         )}
       </div>
       {isEditingThis && rowEdit ? (
@@ -429,19 +437,25 @@ function FoldRow({ top, count, showDown, showUp, onDown, onUp, onExpand, onAll }
     >
       <div className="sticky left-0 flex h-full w-24 shrink-0 border-r border-border/40">
         {showDown && (
-          <button type="button" onClick={onDown} title={`Show ${step} more line${step === 1 ? "" : "s"} (down)`} className="flex flex-1 items-center justify-center transition-colors hover:bg-primary/20 hover:text-foreground">
-            <ChevronDown className="size-[18px]" />
-          </button>
+          <Hint tip={`Show ${step} more line${step === 1 ? "" : "s"} (down)`}>
+            <button type="button" onClick={onDown} className="flex flex-1 items-center justify-center transition-colors hover:bg-primary/20 hover:text-foreground">
+              <ChevronDown className="size-[18px]" />
+            </button>
+          </Hint>
         )}
         {showUp && (
-          <button type="button" onClick={onUp} title={`Show ${step} more line${step === 1 ? "" : "s"} (up)`} className={`flex flex-1 items-center justify-center transition-colors hover:bg-primary/20 hover:text-foreground ${showDown ? "border-l border-border/40" : ""}`}>
-            <ChevronUp className="size-[18px]" />
-          </button>
+          <Hint tip={`Show ${step} more line${step === 1 ? "" : "s"} (up)`}>
+            <button type="button" onClick={onUp} className={`flex flex-1 items-center justify-center transition-colors hover:bg-primary/20 hover:text-foreground ${showDown ? "border-l border-border/40" : ""}`}>
+              <ChevronUp className="size-[18px]" />
+            </button>
+          </Hint>
         )}
       </div>
-      <button type="button" onClick={(e) => (e.altKey ? onAll() : onExpand())} title={`Show ${step} more line${step === 1 ? "" : "s"} · alt-click to expand all`} className="sticky left-24 flex flex-1 items-center px-3 text-left tabular-nums transition-colors hover:text-foreground">
-        {count} hidden line{count === 1 ? "" : "s"}
-      </button>
+      <Hint tip={`Show ${step} more line${step === 1 ? "" : "s"} · alt-click to expand all`}>
+        <button type="button" onClick={(e) => (e.altKey ? onAll() : onExpand())} className="sticky left-24 flex flex-1 items-center px-3 text-left tabular-nums transition-colors hover:text-foreground">
+          {count} hidden line{count === 1 ? "" : "s"}
+        </button>
+      </Hint>
     </div>
   );
 }
@@ -1065,20 +1079,23 @@ const VFileSection = memo(function VFileSection({
             </span>
           )}
           {isIgnored && (
-            <span className="delta-ui-font ml-1 shrink-0 rounded bg-muted px-1.5 py-px text-[11px] text-muted-foreground" title="Matched by .deltaignore">
-              ignored
-            </span>
+            <Hint tip="Matched by .deltaignore">
+              <span className="delta-ui-font ml-1 shrink-0 rounded bg-muted px-1.5 py-px text-[11px] text-muted-foreground">
+                ignored
+              </span>
+            </Hint>
           )}
           {/* Reveals on header hover (and keyboard focus); ✓ flashes after a copy. */}
-          <button
-            type="button"
-            onClick={copyName}
-            aria-label={`copy file name ${base}`}
-            title={copied ? "Copied" : "Copy file name"}
-            className="pointer-events-auto relative ml-1 flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-[color,background-color,opacity] hover:bg-foreground/[0.06] hover:text-foreground focus-visible:opacity-100 group-hover/h:opacity-100"
-          >
-            {copied ? <Check className="size-3 text-emerald-500" strokeWidth={3} /> : <Copy className="size-3" />}
-          </button>
+          <Hint tip={copied ? "Copied" : "Copy file name"}>
+            <button
+              type="button"
+              onClick={copyName}
+              aria-label={`copy file name ${base}`}
+              className="pointer-events-auto relative ml-1 flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-[color,background-color,opacity] hover:bg-foreground/[0.06] hover:text-foreground focus-visible:opacity-100 group-hover/h:opacity-100"
+            >
+              {copied ? <Check className="size-3 text-emerald-500" strokeWidth={3} /> : <Copy className="size-3" />}
+            </button>
+          </Hint>
         </span>
         <span className={`pointer-events-none relative shrink-0 text-[12px] tabular-nums ${viewed ? "opacity-55 group-hover/h:opacity-100" : ""}`}>
           {entry.additions > 0 && <span className="text-emerald-500">+{entry.additions}</span>}{" "}
@@ -1103,78 +1120,84 @@ const VFileSection = memo(function VFileSection({
                 aria-label={`view mode for ${entry.path}`}
                 className="gap-0.5 rounded-md bg-muted/70 p-0.5"
               >
-                <ToggleGroupItem value="diff" aria-label="Diff view" title="Diff" className="size-6 rounded-[5px] border-0 p-0 text-muted-foreground hover:text-foreground data-[state=on]:bg-primary/10 data-[state=on]:text-primary"><CodeIcon className="size-4" /></ToggleGroupItem>
-                <ToggleGroupItem value="preview" aria-label="Rich preview" title="Preview" className="size-6 rounded-[5px] border-0 p-0 text-muted-foreground hover:text-foreground data-[state=on]:bg-primary/10 data-[state=on]:text-primary"><BookOpen className="size-4" /></ToggleGroupItem>
+                <Hint tip="Diff">
+                  <ToggleGroupItem value="diff" aria-label="Diff view" className="size-6 rounded-[5px] border-0 p-0 text-muted-foreground hover:text-foreground data-[state=on]:bg-primary/10 data-[state=on]:text-primary"><CodeIcon className="size-4" /></ToggleGroupItem>
+                </Hint>
+                <Hint tip="Preview">
+                  <ToggleGroupItem value="preview" aria-label="Rich preview" className="size-6 rounded-[5px] border-0 p-0 text-muted-foreground hover:text-foreground data-[state=on]:bg-primary/10 data-[state=on]:text-primary"><BookOpen className="size-4" /></ToggleGroupItem>
+                </Hint>
               </ToggleGroup>
             )}
             {/* Wrap is a diff-view setting with no meaning in the rendered preview,
                 so it's disabled there. Active → the shared --primary pill. */}
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => onToggleWrap(entry.path)}
-              disabled={previewing}
-              aria-pressed={wrap}
-              aria-label={`wrap lines ${entry.path}`}
-              title="Wrap lines"
-              className={`h-7 px-2 ${wrap ? "bg-primary/10 text-primary hover:text-primary" : "text-muted-foreground hover:text-foreground"}`}
-            >
-              <WrapText className="size-4" />
-            </Button>
+            <Hint tip="Wrap lines">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => onToggleWrap(entry.path)}
+                disabled={previewing}
+                aria-pressed={wrap}
+                aria-label={`wrap lines ${entry.path}`}
+                className={`h-7 px-2 ${wrap ? "bg-primary/10 text-primary hover:text-primary" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                <WrapText className="size-4" />
+              </Button>
+            </Hint>
           </div>
           <span aria-hidden className="mx-1 h-5 w-px bg-border/60" />
           {/* Actions: one-shot, never carry persistent state. */}
           <div className="flex items-center gap-1">
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => { void api.openInEditor(getEditorPref(), repoPath, entry.path).catch((e) => console.error("open in editor:", e)); }}
-              aria-label={`open ${entry.path} in editor`}
-              title="Open in editor"
-              className="h-7 px-2 text-muted-foreground hover:text-foreground"
-            >
-              <ExternalLink className="size-4" />
-            </Button>
-            {isWorkingTreeTarget(mode) && !isIgnored && !isBinary && !isDeleted && (
+            <Hint tip="Open in editor">
               <Button
                 size="sm"
                 variant="ghost"
-                onClick={() => onOpenFileEditor(entry.path, null)}
-                aria-label={`edit ${entry.path}`}
-                title="Edit file"
+                onClick={() => { void api.openInEditor(getEditorPref(), repoPath, entry.path).catch((e) => console.error("open in editor:", e)); }}
+                aria-label={`open ${entry.path} in editor`}
                 className="h-7 px-2 text-muted-foreground hover:text-foreground"
               >
-                <Pencil className="size-4" />
+                <ExternalLink className="size-4" />
               </Button>
+            </Hint>
+            {isWorkingTreeTarget(mode) && !isIgnored && !isBinary && !isDeleted && (
+              <Hint tip="Edit file">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => onOpenFileEditor(entry.path, null)}
+                  aria-label={`edit ${entry.path}`}
+                  className="h-7 px-2 text-muted-foreground hover:text-foreground"
+                >
+                  <Pencil className="size-4" />
+                </Button>
+              </Hint>
             )}
             {!isIgnored && (
               <>
                 {/* While previewing there are no line anchors to attach to, so commenting is
-                    disabled rather than hidden. The title lives on the wrapping span so the
-                    native tooltip still shows over the disabled (pointer-events-none) button,
-                    and the span absorbs the click so it can't fall through to the collapse
+                    disabled rather than hidden. The hint wraps the span so the tooltip
+                    still shows over the disabled (pointer-events-none) button, and the
+                    span absorbs the click so it can't fall through to the collapse
                     target behind it. (#preview) */}
-                <span
-                  className="relative shrink-0"
-                  title={previewing ? "Switch to Diff to add a comment" : "Comment on file"}
-                >
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={previewing}
-                    onClick={() => {
-                      // A deleted or giant file hides its content behind a reveal, and the
-                      // file-comment form renders inside the (model-built) body — so reveal first,
-                      // else the comment this click creates would sit hidden behind the placeholder. (#11)
-                      if ((isDeleted || isGiant(entry) || isRenameOnly(entry)) && !revealed) { setRevealed(true); void cache.load(entry.path); }
-                      onAddFileComment(entry.path, "");
-                    }}
-                    aria-label={previewing ? `commenting disabled while previewing ${entry.path}` : `comment on ${entry.path}`}
-                    className="h-7 px-2 text-muted-foreground hover:text-foreground"
-                  >
-                    <MessageSquarePlus className="size-4" />
-                  </Button>
-                </span>
+                <Hint tip={previewing ? "Switch to Diff to add a comment" : "Comment on file"}>
+                  <span className="relative shrink-0">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={previewing}
+                      onClick={() => {
+                        // A deleted or giant file hides its content behind a reveal, and the
+                        // file-comment form renders inside the (model-built) body — so reveal first,
+                        // else the comment this click creates would sit hidden behind the placeholder. (#11)
+                        if ((isDeleted || isGiant(entry) || isRenameOnly(entry)) && !revealed) { setRevealed(true); void cache.load(entry.path); }
+                        onAddFileComment(entry.path, "");
+                      }}
+                      aria-label={previewing ? `commenting disabled while previewing ${entry.path}` : `comment on ${entry.path}`}
+                      className="h-7 px-2 text-muted-foreground hover:text-foreground"
+                    >
+                      <MessageSquarePlus className="size-4" />
+                    </Button>
+                  </span>
+                </Hint>
               </>
             )}
           </div>
@@ -1182,20 +1205,21 @@ const VFileSection = memo(function VFileSection({
             <>
               <span aria-hidden className="mx-1 h-5 w-px bg-border/60" />
               {/* Review state: the per-file "done" checkpoint, pinned to the edge. */}
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => onToggleViewed(entry.path)}
-                aria-pressed={viewed}
-                aria-label={`viewed ${entry.path}`}
-                title="Mark viewed"
-                className={`delta-ui-font h-7 gap-1.5 px-2 text-[12px] ${viewed ? "text-primary hover:text-primary" : "text-muted-foreground hover:text-foreground"}`}
-              >
-                <span className={`flex size-4 items-center justify-center rounded-[5px] border transition-colors ${viewed ? "border-primary bg-primary text-primary-foreground" : "border-border/80"}`}>
-                  {viewed && <Check className="size-3" strokeWidth={3} />}
-                </span>
-                Viewed
-              </Button>
+              <Hint tip="Mark viewed">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => onToggleViewed(entry.path)}
+                  aria-pressed={viewed}
+                  aria-label={`viewed ${entry.path}`}
+                  className={`delta-ui-font h-7 gap-1.5 px-2 text-[12px] ${viewed ? "text-primary hover:text-primary" : "text-muted-foreground hover:text-foreground"}`}
+                >
+                  <span className={`flex size-4 items-center justify-center rounded-[5px] border transition-colors ${viewed ? "border-primary bg-primary text-primary-foreground" : "border-border/80"}`}>
+                    {viewed && <Check className="size-3" strokeWidth={3} />}
+                  </span>
+                  Viewed
+                </Button>
+              </Hint>
             </>
           )}
         </div>
@@ -1268,14 +1292,15 @@ const VFileSection = memo(function VFileSection({
                       <span className="rounded bg-muted px-1 py-px text-[10px]">old side</span>
                     )}
                     {isImageCard && (
-                      <button
-                        type="button"
-                        onClick={() => openImageLightbox(first.id)}
-                        className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
-                        title="Show on the image"
-                      >
-                        <Maximize2 className="size-3" /> Show
-                      </button>
+                      <Hint tip="Show on the image">
+                        <button
+                          type="button"
+                          onClick={() => openImageLightbox(first.id)}
+                          className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+                        >
+                          <Maximize2 className="size-3" /> Show
+                        </button>
+                      </Hint>
                     )}
                   </div>
                 ) : undefined;

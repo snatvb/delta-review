@@ -4,6 +4,7 @@ import { ArrowLeft, Loader2 } from "lucide-react";
 import type { EditorView as EditorViewType } from "@codemirror/view";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
+import { Hint } from "@/components/Hint";
 import { SaveDiscardDialog } from "@/components/ui/save-discard-dialog";
 import { isMac } from "../lib/platform";
 import { api } from "../api";
@@ -179,30 +180,37 @@ export function FileEditorOverlay({
         {/* macOS traffic lights float over the top-left — pad past them (pl-24)
             like the workspace toolbar, so Back stays clickable. */}
         <header className={`flex h-12 shrink-0 items-center gap-3 border-b border-border bg-card pr-4 ${isMac ? "pl-24" : "pl-4"}`}>
-          <button
-            type="button"
-            onClick={requestClose}
-            aria-label="Back to the diff"
-            title="Back to the diff (Esc)"
-            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-background pl-1.5 pr-2 text-[13px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            <ArrowLeft className="size-4" /> Back
-            <Kbd keys="esc" className="border-border/60 bg-muted/50" />
-          </button>
+          <Hint tip="Back to the diff" kbd="esc">
+            <button
+              type="button"
+              onClick={requestClose}
+              aria-label="Back to the diff"
+              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-background pl-1.5 pr-2 text-[13px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <ArrowLeft className="size-4" /> Back
+              <Kbd keys="esc" className="border-border/60 bg-muted/50" />
+            </button>
+          </Hint>
           <span className="min-w-0 flex-1 truncate font-mono text-[13px]">
             {dir && <span className="text-muted-foreground">{dir}</span>}
             <span className="font-medium text-foreground">{base}</span>
-            {dirty && <span aria-label="unsaved changes" title="Unsaved changes" className="ml-2 inline-block size-1.5 rounded-full bg-primary align-middle" />}
+            {dirty && (
+              <Hint tip="Unsaved changes">
+                <span aria-label="unsaved changes" className="ml-2 inline-block size-1.5 rounded-full bg-primary align-middle" />
+              </Hint>
+            )}
           </span>
           {saveError && (
-            <div className="delta-comment-ui flex max-w-md items-center gap-2 truncate rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-[12px] text-destructive" title={saveError}>
-              <span className="truncate">{saveError}</span>
-              {isStaleWriteError(saveError) && (
-                <button type="button" onClick={reloadLatest} className="shrink-0 whitespace-nowrap underline underline-offset-2 hover:no-underline">
-                  Reload latest
-                </button>
-              )}
-            </div>
+            <Hint tip={saveError}>
+              <div className="delta-comment-ui flex max-w-md items-center gap-2 truncate rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-[12px] text-destructive">
+                <span className="truncate">{saveError}</span>
+                {isStaleWriteError(saveError) && (
+                  <button type="button" onClick={reloadLatest} className="shrink-0 whitespace-nowrap underline underline-offset-2 hover:no-underline">
+                    Reload latest
+                  </button>
+                )}
+              </div>
+            </Hint>
           )}
           <Button size="sm" onClick={() => void trySave()} disabled={saving || !dirty} className="gap-1.5">
             {saving ? <Loader2 className="size-3.5 animate-spin" /> : null}

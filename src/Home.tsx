@@ -10,6 +10,7 @@ import { addRepo } from "./picker/pickerActions";
 import { openTarget } from "./lib/openTarget";
 import { usePickerData } from "./picker/usePickerData";
 import { DeltaMark } from "@/components/DeltaMark";
+import { Hint } from "@/components/Hint";
 import { Settings } from "lucide-react";
 import type { PickerWorktree, ReviewEntry } from "./types";
 
@@ -46,15 +47,16 @@ export function Home({ onOpenSettings }: { onOpenSettings?: () => void }) {
       <div data-tauri-drag-region className="relative h-11 shrink-0" />
 
       {/* Settings has no header to live in, so float it top-right. (#5/#8) */}
-      <button
-        type="button"
-        onClick={onOpenSettings}
-        title="Settings (⌘,)"
-        aria-label="Settings"
-        className="absolute right-3 top-2.5 z-10 inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-      >
-        <Settings className="size-4" />
-      </button>
+      <Hint tip="Settings" kbd="⌘,">
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          aria-label="Settings"
+          className="absolute right-3 top-2.5 z-10 inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <Settings className="size-4" />
+        </button>
+      </Hint>
 
       <main className="relative flex min-h-0 flex-1 flex-col items-center justify-center overflow-hidden px-6 pb-10">
         <div className="flex w-full max-w-lg flex-col items-center">
