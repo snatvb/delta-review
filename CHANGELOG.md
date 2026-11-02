@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.25.0 — 2026-11-02
+
+### 🐛 Fixes
+
+- **Blank diff cards under fs-watcher storms** — a tool rewriting files inside a nested-ignored directory every second (Godot's `.godot/` cache is the known case) starved per-file diff loads until cards sat empty. Three layers were at play, all fixed: the watcher now applies every ignore rule git does (nested `.gitignore`s, `.git/info/exclude`, the global excludes file) via libgit2, so ignored churn never fires; concurrent fetches that pile onto a snapshot build invalidated mid-flight now share that build's result instead of each rebuilding the whole repo one at a time; and switching the compare base (`vs dev` → `vs main`) now refetches — the pane kept asking the old base, so files only in the new diff failed as "not in diff".
+- **Failed diff cards show the error + Retry** — a fetch that rejected used to leave its card blank forever with no message and no retry. It now renders a fixed-height error row (the message, in the app log too) with a Retry button; Refresh and scrolling away-and-back retry as well.
+
+### 🚀 New Features
+
+- **Persistent app log** — the app writes `delta-review.log` to the OS log directory (`~/Library/Logs/com.snatvb.delta-review/` on macOS) with a `started vX.Y.Z` line at launch. Snapshot rebuilds, failed or slow per-file diff fetches (>2s), and frontend-only failures land there together, so "the card is empty again" is diagnosable after the fact.
+
 ## 0.24.0 — 2026-10-24
 
 ### 🚀 New Features
