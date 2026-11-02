@@ -90,6 +90,10 @@ export const api = {
   // auto-refresh follows the new repo. (#replace)
   rewatchWindow: (repoPath: string): Promise<void> =>
     invokeImpl("rewatch_window", { repoPath }),
+  // Append a line to the persistent app log (see src-tauri/src/applog.rs) — how
+  // frontend-only failures (a diff that never loaded) end up next to the backend's.
+  logClient: (level: "info" | "warn" | "error", message: string): Promise<void> =>
+    invokeImpl("log_client", { level, message }),
   getSettings: (): Promise<AppSettings> => invokeImpl("get_settings"),
   setSettings: (settings: AppSettings): Promise<void> => invokeImpl("set_settings", { settings }),
   // Delta Ignore sources (Settings): global rules apply to every repo on this

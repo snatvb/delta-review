@@ -1,6 +1,7 @@
 // src/diff/useFileDiffCache.ts
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { logClient } from "../log";
 import type { FileDiff, Target } from "../types";
 
 // Per-file diff store. Each FileSection subscribes to its OWN path, so a file
@@ -10,6 +11,10 @@ import type { FileDiff, Target } from "../types";
 // loader and causing visible pop-in on scroll.)
 export interface FileDiffStore {
   get(path: string): FileDiff | undefined;
+  /** The last load's failure for `path` (cleared when a retry starts or the store
+   *  resets). A failed load used to leave its card blank forever — no fd, no
+   *  retry, no message — so the section renders this with a Retry instead. */
+  error(path: string): string | undefined;
   load(path: string): Promise<void>;
   subscribe(path: string, cb: () => void): () => void;
   clear(): void;
@@ -26,8 +31,13 @@ interface InternalStore extends FileDiffStore {
   reset(target: Target | null): void;
 }
 
+// A load slower than this is logged — a stalled backend (snapshot rebuild storm)
+// otherwise only shows up as cards that stay blank for a long time.
+const SLOW_LOAD_MS = 3000;
+
 function createStore(): InternalStore {
   const cache = new Map<string, FileDiff>();
+  const errors = new Map<string, string>();
   const inflight = new Set<string>();
   const listeners = new Map<string, Set<() => void>>();
   // Resolved the moment `inflight` empties, so a caller that just kicked off a
@@ -57,11 +67,23 @@ function createStore(): InternalStore {
     const gen = generation;
     const t = target;
     inflight.add(path);
+    if (errors.delete(path)) notify(path); // a retry: error → loading
+    const started = performance.now();
     try {
       const fd = await api.getFileDiff(t, path);
       if (gen !== generation) return; // store was reset mid-flight — drop the stale result
       cache.set(path, fd);
       notify(path); // wake only this path's subscriber
+      const ms = performance.now() - started;
+      if (ms > SLOW_LOAD_MS) logClient("warn", `diff: slow load ${path} ${Math.round(ms)}ms (mode=${t.mode} base=${t.base ?? "-"})`);
+    } catch (e) {
+      // Swallowed (callers `void` this): record it so the card can show it, and log
+      // it so a blank card is diagnosable after the fact.
+      if (gen !== generation) return;
+      const msg = e instanceof Error ? e.message : String(e);
+      errors.set(path, msg);
+      notify(path);
+      logClient("error", `diff: load failed ${path} after ${Math.round(performance.now() - started)}ms (mode=${t.mode} base=${t.base ?? "-"}): ${msg}`);
     } finally {
       if (gen === generation) inflight.delete(path); // a newer generation owns its own inflight entry
       // A stale load's entry was already dropped by the reset itself, which
@@ -75,8 +97,9 @@ function createStore(): InternalStore {
   // stale/blank render. Off-screen ones just clear and reload lazily on scroll.
   function invalidate(paths: string[]) {
     for (const p of paths) {
-      if (!cache.has(p) && !listeners.has(p)) continue;
+      if (!cache.has(p) && !listeners.has(p) && !errors.has(p)) continue;
       cache.delete(p);
+      errors.delete(p);
       inflight.delete(p);
       notify(p);
       if (listeners.has(p)) void load(p);
@@ -91,6 +114,7 @@ function createStore(): InternalStore {
   function reload() {
     generation++;
     cache.clear();
+    errors.clear();
     inflight.clear();
     notifyAll();
     for (const p of listeners.keys()) void load(p);
@@ -99,6 +123,7 @@ function createStore(): InternalStore {
 
   return {
     get: (path) => cache.get(path),
+    error: (path) => errors.get(path),
     subscribe(path, cb) {
       let set = listeners.get(path);
       if (!set) listeners.set(path, (set = new Set()));
@@ -114,6 +139,7 @@ function createStore(): InternalStore {
     clear() {
       generation++;
       cache.clear();
+      errors.clear();
       inflight.clear();
       notifyAll();
       notifyIdle(); // everything this store was loading is cancelled
@@ -152,7 +178,10 @@ export function useFileDiffCache(target: Target | null): FileDiffStore {
     // it the store would keep the previous commit's target and fetch every new file
     // against the wrong diff (→ "file not in diff" → blank sections). (#commit-by-commit)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, target?.repoPath, target?.worktree, target?.mode, target?.commit]);
+    // `base` too: switching the compare base ("vs dev" → "vs main") keeps the pane
+    // mounted, so without it the store kept fetching against the OLD base — stale
+    // diffs, and files only in the new diff failed "not in diff" → blank cards.
+  }, [store, target?.repoPath, target?.worktree, target?.mode, target?.commit, target?.base]);
 
   return store;
 }

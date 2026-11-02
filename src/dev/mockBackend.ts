@@ -855,6 +855,10 @@ export function installMockBackend(): void {
       case "telemetry_allowed":
         // Mock/browser mode is never a real, permitted client.
         return false as T;
+      case "log_client":
+        // No log file in the browser — the console is the log.
+        console.info(`[applog:${String(args?.level)}] ${String(args?.message)}`);
+        return undefined as T;
       default:
         throw new Error(`mockBackend: unhandled command "${cmd}"`);
     }

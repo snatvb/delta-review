@@ -404,9 +404,48 @@ pub async fn get_file_diff(
     // not once per file (the large-review perf fix). (#perf)
     let target = with_base_strategy(&app, target);
     let cache = cache.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || cache.file(&target, &path))
-        .await
-        .map_err(|e| format!("get_file_diff task: {e}"))?
+    let started = std::time::Instant::now();
+    tauri::async_runtime::spawn_blocking(move || {
+        let res = cache.file(&target, &path);
+        // A failed or slow fetch is a blank/late card in the UI — leave a trace.
+        let ms = started.elapsed().as_millis();
+        match &res {
+            Err(e) => crate::applog::error(
+                "diff",
+                &format!(
+                    "get_file_diff {path} mode={:?} base={:?} failed after {ms}ms: {e}",
+                    target.mode, target.base
+                ),
+            ),
+            Ok(_) if ms > SLOW_FILE_DIFF_MS => crate::applog::warn(
+                "diff",
+                &format!(
+                    "get_file_diff {path} mode={:?} base={:?} slow: {ms}ms",
+                    target.mode, target.base
+                ),
+            ),
+            Ok(_) => {}
+        }
+        res
+    })
+    .await
+    .map_err(|e| format!("get_file_diff task: {e}"))?
+}
+
+/// A per-file fetch is a map read on a warm snapshot; anything this slow means it
+/// queued behind whole-repo rebuilds — worth a log line. (#perf)
+const SLOW_FILE_DIFF_MS: u128 = 2000;
+
+/// Frontend → app log (see `applog`): failures only the webview sees, such as a
+/// diff load that rejected, so they land in the same file as the backend's.
+#[tauri::command]
+pub fn log_client(level: String, message: String) {
+    let level = match level.as_str() {
+        "error" => crate::applog::Level::Error,
+        "warn" => crate::applog::Level::Warn,
+        _ => crate::applog::Level::Info,
+    };
+    crate::applog::write(level, "ui", &message);
 }
 
 /// Binary card data (#binary): exact byte sizes per side, resolved from the snapshot.

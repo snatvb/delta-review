@@ -22,6 +22,7 @@ function makeStore(): FileDiffStore {
   const listeners = new Map<string, Set<() => void>>();
   return {
     get: () => undefined,
+    error: () => undefined,
     load: () => Promise.resolve(),
     subscribe: (p, cb) => {
       let s = listeners.get(p);

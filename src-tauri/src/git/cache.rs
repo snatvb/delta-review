@@ -54,6 +54,8 @@ fn key_of(target: &Target) -> SnapshotKey {
 
 struct Snapshot {
     key: SnapshotKey,
+    /// Id of the build that produced it (see `Inner::building`).
+    build_id: u64,
     diff: FullDiff,
 }
 
@@ -65,10 +67,11 @@ struct Inner {
     /// The last snapshot served per key — never dropped by `invalidate`. This is
     /// the "what the user is looking at" record; see the module doc.
     served: Vec<Arc<Snapshot>>,
-    /// Keys with a whole-repo build in flight (see `snapshot`): dedups concurrent
-    /// first-fetches onto one build and parks later arrivals on the condvar
-    /// instead of the mutex.
-    building: std::collections::HashSet<SnapshotKey>,
+    /// Keys with a whole-repo build in flight → that build's id (see `snapshot`):
+    /// dedups concurrent first-fetches onto one build and parks later arrivals on
+    /// the condvar instead of the mutex.
+    building: std::collections::HashMap<SnapshotKey, u64>,
+    next_build_id: u64,
     /// Bumped by every `invalidate`. A snapshot built across an invalidate is
     /// handed to its caller but NOT cached hot, preserving invalidate's "the
     /// next fetch rebuilds against current disk" contract for the in-flight
@@ -82,6 +85,9 @@ struct State {
     /// Signalled when an in-flight build settles (success or failure) so waiters
     /// re-check the hot map.
     built: Condvar,
+    /// Test hook: runs once on the builder thread mid-build (lock released).
+    #[cfg(test)]
+    mid_build: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// Bounded LRU of recent diff snapshots. Cloning the handle is cheap (shared `Arc`)
@@ -126,13 +132,19 @@ impl DiffCache {
     /// behind it (the blob convoy) — then installs the result and wakes the
     /// joiners on the condvar. An `invalidate` that fires mid-build bumps
     /// `epoch`, so the finished snapshot is served to its caller but not cached
-    /// hot: the next fetch rebuilds, exactly as `invalidate` promises.
+    /// hot: the next fetch rebuilds, exactly as `invalidate` promises. Joiners
+    /// of such a build still take its result (from `served`) — they asked while
+    /// it ran, same as its builder. Without that, every joiner woke to an empty
+    /// hot map and rebuilt the whole repo ONE AT A TIME: an fs-watcher storm
+    /// (a tool rewriting files every second) turned N visible cards into N
+    /// serial full rebuilds, and the cards sat blank.
     fn snapshot(&self, target: &Target) -> Result<Arc<Snapshot>, GitError> {
         let key = key_of(target);
         let t0 = std::time::Instant::now();
         let mut cache = self.lock();
         let lock_wait = t0.elapsed();
-        loop {
+        let mut joined: Option<u64> = None;
+        let build_id = loop {
             if let Some(pos) = cache.hot.iter().position(|s| s.key == key) {
                 let hit = cache.hot.remove(pos);
                 cache.hot.push(hit.clone()); // most-recently-used at the back
@@ -151,26 +163,64 @@ impl DiffCache {
                 }
                 return Ok(hit);
             }
-            if !cache.building.contains(&key) {
-                cache.building.insert(key.clone());
-                break;
+            if let Some(id) = joined {
+                // The build we waited on settled without landing hot (stale): take
+                // its result — or anything newer — from `served`. A failed build
+                // leaves nothing there, so we fall through and build ourselves.
+                if let Some(s) = cache
+                    .served
+                    .iter()
+                    .rev()
+                    .find(|s| s.key == key && s.build_id >= id)
+                {
+                    return Ok(s.clone());
+                }
+            }
+            match cache.building.get(&key) {
+                Some(&id) => joined = Some(id),
+                None => {
+                    let id = cache.next_build_id;
+                    cache.next_build_id += 1;
+                    cache.building.insert(key.clone(), id);
+                    break id;
+                }
             }
             // Another thread is building this target: sleep until it settles —
             // the lock stays free for everyone else the whole time.
             cache = self.0.built.wait(cache).unwrap_or_else(|e| e.into_inner());
-        }
+        };
         let epoch = cache.epoch;
         drop(cache); // build with the lock released
 
+        #[cfg(test)]
+        if let Some(hook) = self.0.mid_build.lock().unwrap().take() {
+            hook();
+        }
         let build = std::time::Instant::now();
         let diff = Repo::open(&target.repo_path).and_then(|repo| repo.compute_diff_full(target));
         let build_ms = build.elapsed().as_secs_f64() * 1e3;
+        let repo_name = target
+            .repo_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&target.repo_path);
         let mut cache = self.lock();
         cache.building.remove(&key);
-        self.0.built.notify_all();
-        let diff = diff?; // wake waiters first — they must not sleep through the failure
+        let diff = match diff {
+            Ok(d) => d,
+            Err(e) => {
+                self.0.built.notify_all(); // waiters must not sleep through the failure
+                drop(cache);
+                crate::applog::error(
+                    "cache",
+                    &format!("snapshot build {repo_name}/{:?} base={:?} failed after {build_ms:.0}ms: {e}", target.mode, target.base),
+                );
+                return Err(e);
+            }
+        };
         let snap = Arc::new(Snapshot {
             key: key.clone(),
+            build_id,
             diff,
         });
         let stale = cache.epoch != epoch; // an invalidate landed mid-build
@@ -181,25 +231,21 @@ impl DiffCache {
             }
         }
         upsert_served(&mut cache.served, &snap);
-        if crate::perf::enabled() {
-            let n = snap.diff.summary.files.len();
-            eprintln!(
-                "[perf] snapshot MISS {}/{:?} files={n} lock_wait={:.1}ms build={:.1}ms{}",
-                target
-                    .repo_path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&target.repo_path),
+        // Wake joiners only now: `served` holds this build for them to take.
+        self.0.built.notify_all();
+        drop(cache);
+        // Every whole-repo rebuild is logged: a burst of them (each one "stale")
+        // is the signature of an invalidation storm from the fs watcher.
+        crate::applog::info(
+            "cache",
+            &format!(
+                "snapshot build {repo_name}/{:?} files={} build={build_ms:.0}ms lock_wait={:.0}ms{}",
                 target.mode,
+                snap.diff.summary.files.len(),
                 lock_wait.as_secs_f64() * 1e3,
-                build_ms,
-                if stale {
-                    " (not cached: invalidated mid-build)"
-                } else {
-                    ""
-                },
-            );
-        }
+                if stale { " stale (invalidated mid-build, not cached)" } else { "" },
+            ),
+        );
         Ok(snap)
     }
 
@@ -654,6 +700,42 @@ mod tests {
         // fetch rebuilds and must see BBB — not the stale AAA.
         let fd = cache.file(&t, "file.txt").unwrap();
         assert_eq!(fd.new_content.as_deref(), Some("line1\nBBB\nline2\n"));
+    }
+
+    /// Joiners of a build that an invalidate made stale take its result instead
+    /// of each rebuilding the whole repo in turn (the watcher-storm convoy).
+    #[test]
+    fn joiners_of_a_stale_build_share_it_instead_of_rebuilding() {
+        let (dir, _repo) = repo_with_commit();
+        write(dir.path(), "file.txt", "line1\nAAA\nline2\n");
+        let repo_path = dir.path().to_str().unwrap().to_string();
+        let t = target(&repo_path, DiffMode::Uncommitted);
+        let cache = DiffCache::default();
+
+        // Mid-build: invalidate (→ the build is stale), then hold the build open
+        // long enough for every other fetcher to park as a joiner.
+        let (c2, rp) = (cache.clone(), repo_path.clone());
+        *cache.0.mid_build.lock().unwrap() = Some(Box::new(move || {
+            c2.invalidate(&rp);
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }));
+        std::thread::scope(|sc| {
+            for _ in 0..8 {
+                let (c, tt) = (&cache, &t);
+                sc.spawn(move || {
+                    let fd = c.file(tt, "file.txt").unwrap();
+                    assert_eq!(fd.new_content.as_deref(), Some("line1\nAAA\nline2\n"));
+                });
+            }
+        });
+        assert_eq!(
+            cache.lock().next_build_id,
+            1,
+            "joiners rebuilt instead of sharing the build"
+        );
+        // Still not cached hot: the next fetch rebuilds, as invalidate promises.
+        cache.file(&t, "file.txt").unwrap();
+        assert_eq!(cache.lock().next_build_id, 2);
     }
 
     #[test]

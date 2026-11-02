@@ -1,4 +1,5 @@
 mod anchor;
+mod applog;
 mod blob_scheme;
 #[cfg(unix)]
 mod cli;
@@ -138,9 +139,13 @@ pub fn run() {
             updater::updater_check,
             updater::updater_download,
             updater::updater_status,
-            commands::telemetry_allowed
+            commands::telemetry_allowed,
+            commands::log_client
         ])
         .setup(|app| {
+            if let Ok(dir) = app.path().app_log_dir() {
+                crate::applog::init(&dir, &app.package_info().version.to_string());
+            }
             // The global Delta Ignore file is read on the diff hot path where
             // no AppHandle exists, so hand its path to the ignore engine once.
             if let Ok(path) = crate::commands::global_deltaignore_path(app.handle()) {

@@ -18,7 +18,7 @@
 // jump-to-comment, and the viewed toggle.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { track } from "@/analytics";
-import { ArrowLeftRight, BookOpen, Check, ChevronDown, ChevronRight, ChevronUp, Code as CodeIcon, Copy, ExternalLink, Eye, EyeOff, FileQuestion, FileText, FileX, Maximize2, MessageSquarePlus, Pencil, Plus, WrapText } from "lucide-react";
+import { ArrowLeftRight, BookOpen, Check, ChevronDown, ChevronRight, ChevronUp, Code as CodeIcon, Copy, ExternalLink, Eye, EyeOff, FileQuestion, FileText, FileX, Maximize2, MessageSquarePlus, Pencil, Plus, RotateCw, TriangleAlert, WrapText } from "lucide-react";
 import { getSyntaxLineTemplate } from "@git-diff-view/file";
 import { SplitSide } from "@git-diff-view/react";
 import { Button } from "@/components/ui/button";
@@ -628,8 +628,11 @@ const VFileSection = memo(function VFileSection({
   // every searchable file contributes matches even while off-screen/collapsed — but a
   // hidden giant only builds under forceModel, so scrolling past it stays cheap. (#11)
   const wantModel = !isBinary && !ignoredHidden && (!isDeleted || revealed) && (!isRenameOnly(entry) || revealed) && (forceModel || (!bigHidden && view != null && !collapsed));
-  const fd = useFileDiffCacheEntry(cache, entry.path, wantModel || previewing);
+  const { fd, error: loadError } = useFileDiffCacheEntry(cache, entry.path, wantModel || previewing);
   const model = useMemo(() => (fd && wantModel ? buildModel(fd, theme, layout) : null), [fd, theme, layout, wantModel]);
+  // The diff fetch failed (and no older copy is cached): a fixed-height error body
+  // with Retry, instead of a zero-height body that reads as "still loading" forever.
+  const loadFailed = !fd && loadError != null && (wantModel || previewing);
   const rowCount = model ? rowCountOf(model, layout) : 0;
 
   // Switch between the raw diff and the rendered preview. Turning preview on for a
@@ -900,10 +903,12 @@ const VFileSection = memo(function VFileSection({
       ? (previewH || EST_PREVIEW_H)
       : showPlaceholder
         ? isBinary ? fixedBodyH + binaryCommentsH : PLACEHOLDER_BODY_H
-        : rowTops[visualCount] + totalCommentH;
+        : loadFailed
+          ? PLACEHOLDER_BODY_H
+          : rowTops[visualCount] + totalCommentH;
   // Report a definite height once it's known — model built, or a fixed-height
   // placeholder shown — so the parent's offsets are exact. (#10/#11)
-  useEffect(() => { if (model || showPlaceholder || previewing) reportBodyHeight(entry.path, bodyH); }, [model, showPlaceholder, previewing, isBinary, entry.path, bodyH, reportBodyHeight]);
+  useEffect(() => { if (model || showPlaceholder || previewing || loadFailed) reportBodyHeight(entry.path, bodyH); }, [model, showPlaceholder, previewing, loadFailed, isBinary, entry.path, bodyH, reportBodyHeight]);
 
   // Create a line/range anchor and add an (empty) comment, mirroring the classic renderer.
   // A line that already carries a thread (same block key as `blocks`) never gets a
@@ -1233,6 +1238,8 @@ const VFileSection = memo(function VFileSection({
           {previewing ? (
             fd?.newContent != null ? (
               <PreviewBody content={fd.newContent} onHeight={onPreviewHeight} />
+            ) : loadFailed ? (
+              <LoadFailedBody error={loadError} onRetry={() => void cache.load(entry.path)} />
             ) : (
               <div className="delta-ui-font flex h-full items-center gap-3 pl-5 pr-3 text-[13px] text-muted-foreground">
                 <BookOpen className="size-4 shrink-0 opacity-70" />
@@ -1347,6 +1354,8 @@ const VFileSection = memo(function VFileSection({
                 <Eye className="size-4" /> {isGiantBySize(entry) ? "Open anyway" : "Show diff"}
               </button>
             </div>
+          ) : loadFailed ? (
+            <LoadFailedBody error={loadError} onRetry={() => void cache.load(entry.path)} />
           ) : isRenameOnly(entry) && !revealed ? (
             <div className="delta-ui-font flex h-full items-center gap-3 pl-5 pr-3 text-[13px] text-muted-foreground">
               <ArrowLeftRight className="size-4 shrink-0 text-sky-500/80" />
@@ -1427,11 +1436,33 @@ const VFileSection = memo(function VFileSection({
   );
 });
 
+// Body of a card whose diff fetch failed: the error (also in the app log) + Retry.
+function LoadFailedBody({ error, onRetry }: { error: string; onRetry: () => void }) {
+  return (
+    <div className="delta-ui-font flex h-full items-center gap-3 pl-5 pr-3 text-[13px] text-muted-foreground">
+      <TriangleAlert className="size-4 shrink-0 text-amber-500/80" />
+      <Hint tip={error}>
+        <span className="min-w-0 truncate">Couldn't load diff — {error}</span>
+      </Hint>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+      >
+        <RotateCw className="size-4" /> Retry
+      </button>
+    </div>
+  );
+}
+
 function useFileDiffCacheEntry(cache: ReturnType<typeof useFileDiffCache>, path: string, want: boolean) {
   const subscribe = useCallback((cb: () => void) => cache.subscribe(path, cb), [cache, path]);
   const fd = useSyncExternalStore(subscribe, () => cache.get(path));
+  const error = useSyncExternalStore(subscribe, () => cache.error(path));
+  // A failure doesn't change these deps, so it isn't retried in a loop — only on
+  // remount (scrolled away and back), Refresh, or the card's Retry button.
   useEffect(() => { if (want && !fd) void cache.load(path); }, [cache, path, want, fd]);
-  return fd;
+  return { fd, error };
 }
 
 export function VirtualDiffPane({

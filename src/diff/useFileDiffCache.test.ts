@@ -99,4 +99,32 @@ describe("useFileDiffCache", () => {
     expect(settled).toBe(true);
     expect(resolved).toBe(true);
   });
+
+  it("records a failed load as an error (no unhandled rejection) and clears it on retry", async () => {
+    getFileDiff.mockRejectedValueOnce(new Error("file not in diff: x.ts"));
+    const { result } = renderHook(() => useFileDiffCache(target));
+    await act(async () => { await result.current.load("x.ts"); });
+    expect(result.current.get("x.ts")).toBeUndefined();
+    expect(result.current.error("x.ts")).toBe("file not in diff: x.ts");
+
+    getFileDiff.mockResolvedValueOnce({ status: "modified", binary: false });
+    await act(async () => { await result.current.load("x.ts"); }); // Retry
+    expect(result.current.error("x.ts")).toBeUndefined();
+    expect(result.current.get("x.ts")).toBeTruthy();
+  });
+
+  it("re-points + clears when the compare base changes", async () => {
+    getFileDiff.mockResolvedValue({ status: "modified", binary: false });
+    const tA: Target = { repoPath: "/r", worktree: "main", mode: "branch-vs-base", base: "dev" };
+    const { result, rerender } = renderHook(({ t }) => useFileDiffCache(t), { initialProps: { t: tA } });
+    await act(async () => { await result.current.load("x.ts"); });
+
+    // "vs dev" → "vs main" keeps the pane mounted; the store must fetch against the
+    // new base, not keep serving (or failing on) the old one.
+    const tB: Target = { ...tA, base: "main" };
+    rerender({ t: tB });
+    expect(result.current.get("x.ts")).toBeUndefined();
+    await act(async () => { await result.current.load("x.ts"); });
+    expect(getFileDiff).toHaveBeenLastCalledWith(tB, "x.ts");
+  });
 });

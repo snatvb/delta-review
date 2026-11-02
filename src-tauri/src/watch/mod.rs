@@ -3,7 +3,7 @@
 //! to that window so the frontend can auto-refresh the diff. (#9)
 //!
 //! "Relevant" excludes gitignored paths (so `node_modules`/`target` churn never
-//! fires) and `.git` object/lock noise, while still catching commits, checkouts
+//! fires — by every rule git applies, see `Ignores`) and `.git` object/lock noise, while still catching commits, checkouts
 //! and staging via `.git/HEAD`, `.git/refs/*` and `.git/index`.
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -39,10 +39,46 @@ fn build_ignore(root: &Path) -> Gitignore {
     b.build().unwrap_or_else(|_| Gitignore::empty())
 }
 
+/// The ignore rules a watched root's events are filtered by. A git worktree asks
+/// libgit2, which applies every source git does: nested `.gitignore`s,
+/// `.git/info/exclude` and the global `core.excludesFile`. Reading only the root
+/// `.gitignore` let churn in a nested-ignored dir (an editor cache such as
+/// `godot/.godot/` under `godot/.gitignore`) count as a working-tree change —
+/// every write invalidated the diff snapshot and refreshed the review, which
+/// starved per-file diff loads. Non-git roots (SVN) keep the root `.gitignore`.
+enum Ignores {
+    Git(git2::Repository),
+    Root(Gitignore),
+}
+
+impl Ignores {
+    /// Opened per debounced batch (cheap), so edits to any ignore file apply on
+    /// the next batch without caching concerns.
+    fn load(root: &Path) -> Self {
+        match git2::Repository::open(root) {
+            Ok(repo) if !repo.is_bare() => Ignores::Git(repo),
+            _ => Ignores::Root(build_ignore(root)),
+        }
+    }
+
+    fn is_ignored(&self, path: &Path, rel: &str) -> bool {
+        match self {
+            // libgit2 also checks the parent dirs, so a file inside an ignored
+            // directory is caught, not just the directory entry.
+            Ignores::Git(repo) => repo.is_path_ignored(rel).unwrap_or(false),
+            // `matched_path_or_any_parents` (not `matched`) for the same reason
+            // (e.g. node_modules/x.js).
+            Ignores::Root(ig) => ig
+                .matched_path_or_any_parents(path, path.is_dir())
+                .is_ignore(),
+        }
+    }
+}
+
 /// Classify a changed path: `Some(Some(rel))` for a relevant working-tree file,
 /// `Some(None)` for a relevant repo-meta change (`.git` refs / SVN `wc.db`),
 /// `None` to ignore.
-fn classify(path: &Path, root: &Path, ig: &Gitignore) -> Option<Option<String>> {
+fn classify(path: &Path, root: &Path, ig: &Ignores) -> Option<Option<String>> {
     let rel = path.strip_prefix(root).unwrap_or(path);
     let rel_str = rel.to_string_lossy().replace('\\', "/");
     let first = rel
@@ -68,12 +104,7 @@ fn classify(path: &Path, root: &Path, ig: &Gitignore) -> Option<Option<String>> 
             || rel_str.starts_with(".svn/wc.db-");
         return if meta { Some(None) } else { None };
     }
-    // `matched_path_or_any_parents` (not `matched`) so a file *inside* an ignored
-    // directory (e.g. node_modules/x.js) is caught, not just the directory entry.
-    if ig
-        .matched_path_or_any_parents(path, path.is_dir())
-        .is_ignore()
-    {
+    if ig.is_ignored(path, &rel_str) {
         return None;
     }
     Some(Some(rel_str))
@@ -100,7 +131,6 @@ pub fn start(app: &AppHandle, label: &str, worktree: &Path) {
         return;
     };
     let root = worktree.to_path_buf();
-    let ig = build_ignore(&root);
     let (tx, rx) = channel::<notify::Result<notify::Event>>();
     let mut watcher =
         match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -143,6 +173,7 @@ pub fn start(app: &AppHandle, label: &str, worktree: &Path) {
                     .filter_map(|p| svn_changed_path(p, &root));
                 crate::vcs::svn::status::record_changes(&root, changed, overflowed);
             }
+            let ig = Ignores::load(&root);
             let mut paths: Vec<String> = Vec::new();
             let mut git_meta = false;
             for ev in batch.iter().flatten() {
@@ -159,6 +190,23 @@ pub fn start(app: &AppHandle, label: &str, worktree: &Path) {
                 }
             }
             if git_meta || !paths.is_empty() {
+                // Each of these drops the diff snapshot and re-diffs the review, so
+                // a steady stream of them is worth seeing — and which paths fired.
+                let sample: Vec<&str> = paths.iter().take(5).map(String::as_str).collect();
+                crate::applog::info(
+                    "watch",
+                    &format!(
+                        "{} changed{} → invalidate: {}{}",
+                        paths.len(),
+                        if git_meta { " + git meta" } else { "" },
+                        sample.join(", "),
+                        if paths.len() > sample.len() {
+                            ", …"
+                        } else {
+                            ""
+                        },
+                    ),
+                );
                 // Drop the cached diff snapshot for this worktree before telling the
                 // window to refresh, so the refetch rebuilds against the new content
                 // instead of serving the memoized (now-stale) working-tree diff. (#perf)
@@ -256,7 +304,7 @@ mod tests {
         let root = Path::new("/repo");
         let mut b = GitignoreBuilder::new(root);
         b.add_line(None, "node_modules/").unwrap();
-        let ig = b.build().unwrap();
+        let ig = Ignores::Root(b.build().unwrap());
 
         // gitignored → ignored
         assert_eq!(
@@ -286,6 +334,37 @@ mod tests {
         assert_eq!(
             classify(Path::new("/repo/.git/info/deltaignore"), root, &ig),
             Some(None)
+        );
+    }
+
+    /// Git roots honor every ignore source, not just the root `.gitignore`: a
+    /// nested `.gitignore` (godot/.gitignore → `.godot/`) and `.git/info/exclude`.
+    #[test]
+    fn classify_honors_nested_gitignore_and_info_exclude() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git2::Repository::init(root).unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        std::fs::create_dir_all(root.join("godot/.godot/editor")).unwrap();
+        std::fs::write(root.join("godot/.gitignore"), ".godot/\n").unwrap();
+        std::fs::write(root.join("godot/.godot/editor/layout.cfg"), "x").unwrap();
+        std::fs::write(root.join(".git/info/exclude"), "scratch/\n").unwrap();
+        let ig = Ignores::load(root);
+
+        // nested .gitignore → ignored (file inside the ignored dir, and the dir)
+        assert_eq!(
+            classify(&root.join("godot/.godot/editor/layout.cfg"), root, &ig),
+            None
+        );
+        assert_eq!(classify(&root.join("godot/.godot"), root, &ig), None);
+        // .git/info/exclude → ignored, even for a path that doesn't exist yet
+        assert_eq!(classify(&root.join("scratch/notes.md"), root, &ig), None);
+        // root .gitignore still applies
+        assert_eq!(classify(&root.join("target/debug/x"), root, &ig), None);
+        // a tracked-looking file next to them → relevant
+        assert_eq!(
+            classify(&root.join("godot/project.godot"), root, &ig),
+            Some(Some("godot/project.godot".to_string()))
         );
     }
 }
