@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.27.0 — 2026-11-08
+
+### 🚀 New Features
+
+- **Only test files** — choose All files, Exclude tests, or Only tests from one shared file-type filter in the toolbar and Settings → General. The choice applies to both panes, search, file counts, folder actions, and totals without changing saved viewed marks. Existing Hide tests preferences carry over automatically.
+
+### 🔧 Changes
+
+- **Compact, responsive review toolbar** — comparison mode and base-branch selection share one menu. File type stays visible; secondary actions, layout selection, editor, and Settings live under More actions. Refresh and Copy remain directly accessible, with existing keyboard shortcuts preserved.
+- **Content-sized repository picker** — short repository names no longer stretch into a wide empty field. Branch names and Copy for agents remain visible at the minimum review-window width instead of hiding while space is available.
+
+### 🐛 Fixes
+
+- Opening Settings from More actions keeps keyboard focus inside the dialog. CLI installation actions support keyboard navigation and retain pending results and manual-install instructions when the menu closes.
+- Empty filtered reviews explain what is hidden and offer a reset. Jumping from a comment reveals its file when the current file-type filter excludes it.
+
+**Installation:** platform certificates/notarization are not included. If macOS blocks the downloaded app, use **System Settings → Privacy & Security → Open Anyway** after the first launch attempt. Windows may show SmartScreen; use **More info → Run anyway** if you trust this release. In-app updater packages are separately signed and verified.
+
 ## 0.26.0 — 2026-11-07
 
 ### 🚀 New Features

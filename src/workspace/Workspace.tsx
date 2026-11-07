@@ -2,10 +2,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from "react";
 import { track } from "@/analytics";
 import { Button } from "@/components/ui/button";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Kbd } from "@/components/ui/kbd";
 import { DeltaMark } from "@/components/DeltaMark";
-import { CliInstallButton } from "./CliInstallButton";
+import { WorkspaceToolbar } from "./WorkspaceToolbar";
 import { BasePicker } from "./BasePicker";
 import { NothingToReview } from "./NothingToReview";
 import { listen } from "@tauri-apps/api/event";
@@ -27,14 +25,13 @@ import { Hint } from "@/components/Hint";
 import { CommitMetaBody } from "@/components/CommitMetaTip";
 import { useDiffLayout } from "../diff/useDiffLayout";
 import { useResizableWidth, usePaneResize, PaneResizer, FILE_PANE } from "../lib/resizablePane";
-import { Check, CheckCheck, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Columns2, Copy, ExternalLink, Eye, EyeOff, FlaskConical, FlaskConicalOff, GitBranch, Loader2, MessageSquare, RefreshCw, Rows2, Search, Settings } from "lucide-react";
+import { CheckCheck, ChevronDown, CircleAlert, Eye, EyeOff, FlaskConical } from "lucide-react";
 import { getEditorPref } from "../editor";
 import { getHideViewedFiles, useHideViewedFiles } from "../hideViewedFilesPref";
-import { setHideTestFiles, useHideTestFiles } from "../hideTestFilesPref";
+import { getFileTypeFilter, matchesFileType, setFileTypeFilter, useFileTypeFilter } from "../fileTypeFilterPref";
 import { useUnreviewableLast } from "../unreviewableLastPref";
 import { useHideIgnoredFiles } from "../ignoredFilesPref";
 import { worktreeName } from "../lib/utils";
-import { isMac } from "../lib/platform";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuCheck,
@@ -42,9 +39,6 @@ import {
 import type { Anchor, BaseStrategy, Comment, CommitMeta, DiffMode, DiffSummary, FileEntry, Review, ReviewSession, Target, VcsKind } from "../types";
 
 const COMMIT_PAGE = 100;
-
-const ICON_BUTTON =
-  "inline-flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-muted hover:text-foreground active:bg-muted/60 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 dark:bg-transparent dark:hover:bg-input/60 dark:active:bg-input/90";
 
 // Bucketed for analytics — never the raw file count/list. (#analytics)
 function fileCountBucket(n: number): string {
@@ -108,8 +102,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // every row with its checkbox, so unmarking stays possible.
   const [hideViewedPref, setHideViewedPref] = useHideViewedFiles();
   const hideViewed = hideViewedPref === "on";
-  const [hideTestsPref, setHideTestsPref] = useHideTestFiles();
-  const hideTests = hideTestsPref === "on";
+  const [fileTypeFilter, setFileTypeFilterPref] = useFileTypeFilter();
   // Opt-in: keep binaries/giant diffs at the end of the pane (reviewOrder).
   // Off = plain tree order — no reshuffle-driven scroll jumps.
   const [unreviewableLastPref] = useUnreviewableLast();
@@ -647,8 +640,8 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     if (getHideViewedFiles() === "on" && reviewRef.current?.viewed.some((v) => v.file === file)) {
       toggleViewed(file, "");
     }
-    if (isTestFile(file)) {
-      setHideTestFiles("off");
+    if (!matchesFileType(file, getFileTypeFilter())) {
+      setFileTypeFilter("all");
     }
     const present = orderedFilesRef.current.some((f) => f.path === file);
     heldJumpRef.current = null; // latest intent wins
@@ -761,7 +754,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // the active row mid-scroll. (#jump-preload)
   const orderedFiles = useMemo(() => reviewOrder(viewSummary?.files ?? [], unreviewableLast), [viewSummary?.files, unreviewableLast]);
 
-  // Tests leave both panes, so the tree, search, folder actions, and totals all
+  // File types filter both panes, so the tree, search, folder actions, and totals all
   // use the same list. Viewed/ignored filters remain pane-only: their tree rows
   // keep the controls needed to unmark/reveal them.
   const { listedFiles, diffFiles, hiddenFiles } = useMemo(() => {
@@ -769,7 +762,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     const visible: FileEntry[] = [];
     const hidden = new Set<string>();
     for (const f of orderedFiles) {
-      const testHidden = hideTests && isTestFile(f.path);
+      const testHidden = !matchesFileType(f.path, fileTypeFilter);
       if (!testHidden) {
         listed.push(f);
       }
@@ -786,15 +779,18 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
       diffFiles: hidden.size === 0 ? orderedFiles : visible,
       hiddenFiles: hidden,
     };
-  }, [orderedFiles, hideIgnored, hideViewed, viewedFiles, hideTests]);
+  }, [orderedFiles, hideIgnored, hideViewed, viewedFiles, fileTypeFilter]);
   const ignoredCount = useMemo(() => listedFiles.reduce((n, f) => n + (f.ignored ? 1 : 0), 0), [listedFiles]);
-  // Hidden tests no longer contribute to review progress or other filter counts.
+  // Excluded file types no longer contribute to progress or other filter counts.
   // The viewed set itself stays intact, including paths outside the current diff.
   const viewedInDiff = useMemo(
     () => listedFiles.reduce((n, f) => n + (viewedFiles.has(f.path) ? 1 : 0), 0),
     [listedFiles, viewedFiles],
   );
   const testFileCount = orderedFiles.reduce((n, file) => n + (isTestFile(file.path) ? 1 : 0), 0);
+  const comparingWithBase = !inCommitMode && profile.basePicker && (diffMode === "all-changes" || diffMode === "branch-vs-base");
+  const modeLabel = profile.modes.find((mode) => mode.id === diffMode)?.label ?? diffMode;
+  const comparisonTip = `${modeLabel}${comparingWithBase ? ` → ${baseOverride ?? summary?.baseLabel}` : ""}`;
 
   // Keep the mirror current, and release a held jump once its file is in view —
   // the diff pane's jump effect can't wait for the file itself.
@@ -844,71 +840,51 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
 
   return (
     <div data-testid="app-root" className="flex h-screen flex-col overflow-hidden bg-background text-[13px] text-foreground">
-      {/* Overlay titlebar (macOS only): the traffic lights float over the top-left, so
-          inset the controls past them and make the bar a drag region. */}
-      <header
-        data-tauri-drag-region
-        className={`flex h-12 shrink-0 items-center gap-2.5 border-b border-border bg-card pr-3 ${isMac ? "pl-24" : "pl-3"}`}
-      >
-        <Hint tip="Open command palette" kbd="⌘P">
-          <button
-            type="button"
-            onClick={onOpenPalette}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-input bg-muted/40 px-2.5 text-[13px] font-medium text-foreground transition-colors hover:bg-muted focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-          <Search className="size-3.5 shrink-0 text-muted-foreground" />
-          {(() => {
-            const wt = worktreeName(target.repoPath);
-            const isMain = !!repoName && wt === repoName;
-            return (
-              <span className="flex min-w-0 items-center">
-                {repoName && !isMain && (
-                  <span className="flex shrink-0 items-center font-normal text-muted-foreground">
-                    <span className="max-w-[14ch] truncate">{repoName}</span>
-                    <span>&nbsp;/&nbsp;</span>
-                  </span>
-                )}
-                <span className="max-w-[20ch] truncate">{isMain ? repoName : wt}</span>
-              </span>
-            );
-          })()}
-          {review?.target.worktree ? (
-            <span className="ml-1 flex min-w-0 items-center gap-1 border-l border-border/70 pl-2 font-normal text-muted-foreground">
-              <GitBranch className="size-3 shrink-0" />
-              <span className="max-w-[20ch] truncate">{review.target.worktree}</span>
-            </span>
-          ) : null}
-          <Kbd keys="⌘P" className="ml-1" />
-          </button>
-        </Hint>
-        {summary && (
-          <>
+      <WorkspaceToolbar
+        repoPath={target.repoPath}
+        repoName={repoName}
+        worktree={review?.target.worktree}
+        onOpenPalette={onOpenPalette}
+        onOpenSettings={onOpenSettings}
+        loaded={summary !== null}
+        busy={busy}
+        fileCount={listedFiles.length}
+        viewedCount={viewedInDiff}
+        layout={layout}
+        onLayoutChange={setLayout}
+        pendingRefresh={pendingRefresh}
+        refreshing={refreshing}
+        onRefresh={() => { void (pendingRefresh ? applyRefresh() : forceRefresh()); }}
+        commentCount={commentCount}
+        indexOpen={indexOpen}
+        onToggleComments={() => setIndexOpen((open) => !open)}
+        copyCount={copyCount}
+        copyState={copyState}
+        onCopy={() => { void copyForClaude(); }}
+        onOpenEditor={() => { void api.openInEditor(getEditorPref(), target.repoPath).catch((e) => setError(String(e))); }}
+        commitNavigation={stepperVisible ? {
+          position: `${stepIndex + 1}/${commits.length}${commitsHasMore ? "+" : ""}`,
+          previousDisabled: stepIndex <= 0,
+          nextDisabled: stepIndex < 0 || (stepIndex >= commits.length - 1 && !commitsHasMore),
+          onPrevious: () => { void stepCommit(-1); },
+          onNext: () => { void stepCommit(1); },
+        } : undefined}
+        comparison={summary && (
             <DropdownMenu>
-              <Hint
-                disabled={!inCommitMode}
-                tip={<CommitMetaBody meta={commits[commitIndex]} oid={commitOid ?? ""} />}
-              >
+              <Hint tip={inCommitMode ? <CommitMetaBody meta={commits[commitIndex]} oid={commitOid ?? ""} /> : comparisonTip}>
                 <DropdownMenuTrigger
                   aria-label="Diff mode"
-                  className="ml-1 inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-input bg-muted/40 pl-2.5 pr-2 text-[12px] font-medium text-foreground outline-none transition-colors hover:bg-muted data-[state=open]:bg-muted"
+                  className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-md border border-input bg-muted/40 px-2 text-[12px] font-medium text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:bg-muted"
                 >
-                  {/* Hidden reservers size the trigger to the widest possible label, so
-                      its width is constant across every mode; the visible label overlays,
-                      left-aligned (the chevron stays put → the stepper never shifts).
-                      The commit reserver renders only when the VCS has history, so an
-                      SVN trigger isn't sized for commit labels it can never show. */}
-                  <span className="grid justify-items-start">
-                    {profile.modes.map((m) => (
-                      <span key={m.id} aria-hidden className="invisible col-start-1 row-start-1 whitespace-nowrap">{m.label}</span>
-                    ))}
-                    {profile.history && (
-                      <span aria-hidden className="invisible col-start-1 row-start-1 whitespace-nowrap">Commit <span className="font-mono">0000000</span></span>
+                  <span className="min-w-0 truncate">
+                    {inCommitMode ? (
+                      <>Commit <span className="font-mono font-normal text-muted-foreground">{commits[commitIndex]?.shortOid ?? "…"}</span></>
+                    ) : (
+                      <>
+                        {diffMode === "branch-vs-base" ? "Branch" : modeLabel}
+                        {comparingWithBase && <span className="font-normal text-muted-foreground"> → {baseOverride ?? summary.baseLabel}</span>}
+                      </>
                     )}
-                    <span className="col-start-1 row-start-1 whitespace-nowrap">
-                      {inCommitMode
-                        ? <>Commit <span className="font-mono font-normal text-muted-foreground">{commits[commitIndex]?.shortOid ?? "…"}</span></>
-                        : (profile.modes.find((m) => m.id === diffMode)?.label ?? diffMode)}
-                    </span>
                   </span>
                   <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
                 </DropdownMenuTrigger>
@@ -920,6 +896,22 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                     {m.label}
                   </DropdownMenuItem>
                 ))}
+                {comparingWithBase && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <BasePicker
+                      submenu
+                      repoPath={target.repoPath}
+                      headOid={review?.snapshot.headCommit ?? undefined}
+                      override={baseOverride}
+                      strategy={baseStrategy}
+                      resolvedLabel={summary.baseLabel}
+                      onPick={pickBase}
+                      onAuto={() => { void resetBaseToAuto(); }}
+                      onPin={(name) => { void pinBase(name); }}
+                    />
+                  </>
+                )}
                 {/* The whole commit subtree (picker + its separator) exists only when
                     the VCS has history — SVN's menu is just its single mode. */}
                 {profile.history && (
@@ -946,175 +938,8 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
-            {profile.basePicker && (diffMode === "all-changes" || diffMode === "branch-vs-base") && (
-              <BasePicker
-                repoPath={target.repoPath}
-                headOid={review?.snapshot.headCommit ?? undefined}
-                override={baseOverride}
-                strategy={baseStrategy}
-                resolvedLabel={summary.baseLabel}
-                onPick={pickBase}
-                onAuto={() => void resetBaseToAuto()}
-                onPin={(name) => void pinBase(name)}
-              />
-            )}
-            {stepperVisible && (
-              <div className="ml-1 flex items-center" data-testid="commit-stepper">
-                <div className="inline-flex h-7 items-center rounded-md border border-input bg-muted/40">
-                  <Hint tip="Previous commit" kbd="[">
-                    <button
-                      type="button" aria-label="Previous commit" disabled={stepIndex <= 0}
-                      onClick={() => void stepCommit(-1)}
-                      className="flex h-full w-7 items-center justify-center rounded-l-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-                    >
-                      <ChevronLeft className="size-3.5" />
-                    </button>
-                  </Hint>
-                  <span className="h-3.5 w-px bg-border" />
-                  <Hint tip="Next commit" kbd="]">
-                    <button
-                      type="button" aria-label="Next commit" disabled={stepIndex < 0 || (stepIndex >= commits.length - 1 && !commitsHasMore)}
-                      onClick={() => void stepCommit(1)}
-                      className="flex h-full w-7 items-center justify-center rounded-r-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-                    >
-                      <ChevronRight className="size-3.5" />
-                    </button>
-                  </Hint>
-                </div>
-                <span className="ml-2 font-mono tabular-nums text-[11px] text-muted-foreground">{stepIndex + 1}/{commits.length}{commitsHasMore ? "+" : ""}</span>
-              </div>
-            )}
-            {busy && (
-              <span role="status" className="ml-1 inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" /> Computing delta…
-              </span>
-            )}
-            <div className="ml-auto flex items-center gap-3">
-              <CliInstallButton />
-              {pendingRefresh ? (
-                <Hint tip="The diff changed on disk — click to update" kbd="⌘R">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void applyRefresh()}
-                    className="h-7 gap-1.5 px-2.5 text-[13px] border-amber-500/40 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 hover:text-amber-700 dark:border-amber-400/40 dark:bg-amber-400/10 dark:text-amber-400 dark:hover:text-amber-300"
-                  >
-                    <RefreshCw className={`size-3.5 ${refreshing ? "animate-spin will-change-transform" : ""}`} /> Refresh
-                  </Button>
-                </Hint>
-              ) : (
-                <Hint tip={refreshing ? "Re-diffing…" : "Re-diff now"} kbd={refreshing ? undefined : "⌘R"}>
-                  <button
-                    type="button"
-                    onClick={() => void forceRefresh()}
-                    disabled={refreshing}
-                    aria-label="Re-diff now"
-                    className={ICON_BUTTON}
-                  >
-                    {/* will-change promotes the spin to its own compositor layer, so it
-                        keeps rotating through the reload's main-thread jank instead of
-                        freezing with it. (#refresh-feedback) */}
-                    <RefreshCw className={`size-4 ${refreshing ? "animate-spin will-change-transform" : ""}`} />
-                  </button>
-                </Hint>
-              )}
-              {/* Hide-viewed toggle for the diff pane: while on, a card leaves
-                  the pane the moment its file is marked viewed. Always armed —
-                  enabling it before reviewing is the intended flow. The count
-                  mirrors the tree's "N / M viewed" chip. */}
-              <Hint tip={hideViewed ? `Show viewed files (${viewedInDiff})` : `Hide viewed files (${viewedInDiff})`}>
-                <button
-                  type="button"
-                  aria-pressed={hideViewed}
-                  aria-label={hideViewed ? `Show viewed files (${viewedInDiff})` : `Hide viewed files (${viewedInDiff})`}
-                  onClick={() => setHideViewedPref(hideViewed ? "off" : "on")}
-                  className={`${ICON_BUTTON} aria-pressed:border-primary/40 aria-pressed:bg-primary/10 aria-pressed:text-primary`}
-                >
-                  <CheckCheck className="size-4" />
-                </button>
-              </Hint>
-              <Hint tip={hideTests ? `Show test files (${testFileCount})` : `Hide test files (${testFileCount})`}>
-                <button
-                  type="button"
-                  aria-pressed={hideTests}
-                  aria-label={hideTests ? `Show test files (${testFileCount})` : `Hide test files (${testFileCount})`}
-                  onClick={() => setHideTestsPref(hideTests ? "off" : "on")}
-                  className={`${ICON_BUTTON} aria-pressed:border-primary/40 aria-pressed:bg-primary/10 aria-pressed:text-primary`}
-                >
-                  {hideTests ? <FlaskConicalOff className="size-4" /> : <FlaskConical className="size-4" />}
-                </button>
-              </Hint>
-              <ToggleGroup
-                type="single"
-                size="sm"
-                value={layout}
-                onValueChange={(v) => v && setLayout(v as "unified" | "split")}
-                className="gap-0.5 rounded-md bg-muted/70 p-0.5"
-              >
-                <Hint tip="Unified view">
-                  <ToggleGroupItem value="unified" aria-label="Unified" className="size-6 rounded-[5px] border-0 p-0 text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm"><Rows2 className="size-3.5" /></ToggleGroupItem>
-                </Hint>
-                <Hint tip="Split view">
-                  <ToggleGroupItem value="split" aria-label="Split" className="size-6 rounded-[5px] border-0 p-0 text-muted-foreground hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm"><Columns2 className="size-3.5" /></ToggleGroupItem>
-                </Hint>
-              </ToggleGroup>
-              <Button size="sm" variant="outline" aria-label={`Comments (${commentCount})`} aria-pressed={indexOpen} className="h-7 gap-1.5 px-2.5 text-[13px] text-muted-foreground hover:text-foreground aria-pressed:border-primary/40 aria-pressed:bg-primary/10 aria-pressed:text-primary dark:aria-pressed:bg-primary/10" onClick={() => setIndexOpen((o) => !o)}>
-                <MessageSquare className="size-4" /> {commentCount}
-              </Button>
-              {/* The span carries the tooltip because the button itself goes
-                  disabled (pointer-events off) exactly when the tip matters. */}
-              <Hint tip="No open comments in this view to copy" disabled={copyCount !== 0}>
-                <span className="inline-flex">
-                  <Button
-                    size="sm"
-                    className="h-7 min-w-[11.75rem] justify-center gap-1.5 px-2.5 text-[13px] transition-colors"
-                    style={
-                      copyState === "ok"
-                        ? { backgroundColor: "#059669", color: "#fff" }
-                        : copyState === "err"
-                          ? { backgroundColor: "var(--destructive)", color: "#fff" }
-                          : undefined
-                    }
-                    onClick={copyForClaude}
-                    disabled={copyCount === 0}
-                  >
-                    {copyState === "ok" ? (
-                      <><Check className="size-3.5" /> Copied</>
-                    ) : copyState === "err" ? (
-                      <><Copy className="size-3.5" /> Failed</>
-                    ) : (
-                      <><Copy className="size-3.5" /> Copy for agents<Kbd keys="⌘⇧C" className="border-primary-foreground/30 bg-primary-foreground/15 text-primary-foreground/90" /></>
-                    )}
-                  </Button>
-                </span>
-              </Hint>
-            </div>
-          </>
         )}
-        {/* Settings sits last on the right; the spacer keeps it edge-aligned even
-            before the summary (and its toolbar) has loaded. (#5) */}
-        {!summary && <div className="ml-auto" />}
-        <Hint tip="Open repository in editor">
-          <button
-            type="button"
-            onClick={() => { void api.openInEditor(getEditorPref(), target.repoPath).catch((e) => setError(String(e))); }}
-            aria-label="Open repository in editor"
-            className={ICON_BUTTON}
-          >
-            <ExternalLink className="size-4" />
-          </button>
-        </Hint>
-        <Hint tip="Settings" kbd="⌘,">
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            aria-label="Settings"
-            className={ICON_BUTTON}
-          >
-            <Settings className="size-4" />
-          </button>
-        </Hint>
-      </header>
+      />
       {error && (
         <div className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[12px] text-destructive">{error}</div>
       )}
@@ -1143,7 +968,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                 <aside style={{ width: sidebarWidth }} className="relative flex min-h-0 shrink-0 flex-col">
                   <FilesPanel
                     files={listedFiles}
-                    emptyMessage={hideTests ? "Test files are hidden." : undefined}
+                    emptyMessage={fileTypeFilter === "exclude-tests" ? "Test files are hidden." : fileTypeFilter === "only-tests" ? "No test files in this review." : undefined}
                     selected={visibleFile}
                     onSelect={onSelectFile}
                     onPrefetch={onPrefetchFile}
@@ -1160,17 +985,18 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                         back, without claiming every file shares one reason. */
                     <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
                       <ReloadSettler invalidate={diffInval} onSettled={() => setRefreshing(false)} />
-                      {hideTests && testFileCount > 0 ? <FlaskConical className="size-5" /> : hideViewed && viewedInDiff > 0 ? <CheckCheck className="size-5" /> : <EyeOff className="size-5" />}
+                      {fileTypeFilter !== "all" ? <FlaskConical className="size-5" /> : hideViewed && viewedInDiff > 0 ? <CheckCheck className="size-5" /> : <EyeOff className="size-5" />}
                       <p className="text-[13px]">
-                        {hideTests && testFileCount === orderedFiles.length ? "Every file in this review is a test file."
-                          : hideViewed && viewedInDiff === orderedFiles.length ? "Every file in this review is viewed."
-                          : hideIgnored && ignoredCount === orderedFiles.length ? "Every file in this review is ignored."
+                        {fileTypeFilter === "exclude-tests" && testFileCount === orderedFiles.length ? "Every file in this review is a test file."
+                          : fileTypeFilter === "only-tests" && testFileCount === 0 ? "This review has no test files."
+                          : hideViewed && viewedInDiff === listedFiles.length && listedFiles.length > 0 ? "Every file in this view is viewed."
+                          : hideIgnored && ignoredCount === listedFiles.length && listedFiles.length > 0 ? "Every file in this view is ignored."
                           : "All files are hidden by the current filters."}
                       </p>
                       <div className="flex flex-wrap justify-center gap-2">
-                        {hideTests && testFileCount > 0 && (
-                          <Button size="sm" variant="outline" className="h-7 text-[13px]" onClick={() => setHideTestsPref("off")}>
-                            <Eye className="size-3.5" /> Show test files
+                        {fileTypeFilter !== "all" && (
+                          <Button size="sm" variant="outline" className="h-7 text-[13px]" onClick={() => setFileTypeFilterPref("all")}>
+                            <Eye className="size-3.5" /> Show all files
                           </Button>
                         )}
                         {hideViewed && viewedInDiff > 0 && (

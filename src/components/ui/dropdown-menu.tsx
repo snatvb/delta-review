@@ -8,6 +8,7 @@ const DropdownMenu = DropdownMenuPrimitive.Root
 const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger
 const DropdownMenuGroup = DropdownMenuPrimitive.Group
 const DropdownMenuSub = DropdownMenuPrimitive.Sub
+const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup
 
 const DropdownMenuContent = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.Content>,
@@ -37,6 +38,32 @@ const DropdownMenuItem = React.forwardRef<
   <DropdownMenuPrimitive.Item ref={ref} className={cn(itemCls, className)} {...props} />
 ))
 DropdownMenuItem.displayName = "DropdownMenuItem"
+
+const DropdownMenuRadioItem = React.forwardRef<
+  React.ElementRef<typeof DropdownMenuPrimitive.RadioItem>,
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.RadioItem>
+>(({ className, children, ...props }, ref) => (
+  <DropdownMenuPrimitive.RadioItem ref={ref} className={cn(itemCls, className)} {...props}>
+    <span className="inline-flex size-3.5 shrink-0 items-center justify-center">
+      <DropdownMenuPrimitive.ItemIndicator><Check className="size-3.5" /></DropdownMenuPrimitive.ItemIndicator>
+    </span>
+    {children}
+  </DropdownMenuPrimitive.RadioItem>
+))
+DropdownMenuRadioItem.displayName = "DropdownMenuRadioItem"
+
+const DropdownMenuCheckboxItem = React.forwardRef<
+  React.ElementRef<typeof DropdownMenuPrimitive.CheckboxItem>,
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.CheckboxItem>
+>(({ className, children, ...props }, ref) => (
+  <DropdownMenuPrimitive.CheckboxItem ref={ref} className={cn(itemCls, className)} {...props}>
+    <span className="inline-flex size-3.5 shrink-0 items-center justify-center">
+      <DropdownMenuPrimitive.ItemIndicator><Check className="size-3.5" /></DropdownMenuPrimitive.ItemIndicator>
+    </span>
+    {children}
+  </DropdownMenuPrimitive.CheckboxItem>
+))
+DropdownMenuCheckboxItem.displayName = "DropdownMenuCheckboxItem"
 
 const DropdownMenuSubTrigger = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.SubTrigger>,
@@ -79,4 +106,5 @@ export {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuGroup, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger,
   DropdownMenuSubContent, DropdownMenuCheck,
+  DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuCheckboxItem,
 }

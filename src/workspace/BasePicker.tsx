@@ -11,10 +11,13 @@ import { ChevronDown, GitBranch, Pin } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuSeparator, DropdownMenuCheck,
+  DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
 } from "@/components/ui/dropdown-menu";
 import { Hint } from "@/components/Hint";
 
 interface BasePickerProps {
+  /** Keep base controls inside the combined comparison menu. */
+  submenu?: boolean;
   repoPath: string;
   /** Refetch key — new commits move the fork point. */
   headOid?: string | null;
@@ -63,7 +66,7 @@ function BranchRow({
   );
 }
 
-export function BasePicker({ repoPath, headOid, override, strategy, resolvedLabel, onPick, onAuto, onPin }: BasePickerProps) {
+export function BasePicker({ submenu, repoPath, headOid, override, strategy, resolvedLabel, onPick, onAuto, onPin }: BasePickerProps) {
   const [data, setData] = useState<BranchList | null>(null);
   const [failed, setFailed] = useState(false);
   const [query, setQuery] = useState("");
@@ -117,22 +120,8 @@ export function BasePicker({ repoPath, headOid, override, strategy, resolvedLabe
     </DropdownMenuItem>
   );
 
-  return (
-    <DropdownMenu>
-      <Hint tip={title}>
-        <DropdownMenuTrigger aria-label="Base branch" className={CHIP}>
-          <GitBranch className="size-3 shrink-0 text-muted-foreground" />
-          <span className="text-muted-foreground">vs</span>
-          <span className="max-w-[16ch] truncate">{label}</span>
-          {strategy !== undefined && !explicit && (
-            <span className="text-[11px] font-normal text-muted-foreground">
-              ({pinned ? "pinned" : "auto"})
-            </span>
-          )}
-          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
-        </DropdownMenuTrigger>
-      </Hint>
-      <DropdownMenuContent align="start" className="min-w-[18rem]">
+  const content = (
+    <>
         {/* Radix menu owns arrow keys for item navigation; the filter input must
             keep its keystrokes to itself. */}
         <div className="flex items-center gap-1.5 border-b border-border/60 px-2 py-1">
@@ -174,7 +163,34 @@ export function BasePicker({ repoPath, headOid, override, strategy, resolvedLabe
           {pinned ? <DropdownMenuCheck checked /> : <Pin className="size-3.5 shrink-0" />}
           <span className="flex-1 truncate">Always use “{effectiveBase ?? "…"}” in this repo</span>
         </DropdownMenuItem>
-      </DropdownMenuContent>
+    </>
+  );
+
+  if (submenu) {
+    return (
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger aria-label="Base branch">
+          <GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 max-w-[20ch] truncate">Base: {label}</span>
+          {strategy !== undefined && !explicit && <span className="text-[11px] text-muted-foreground">({pinned ? "pinned" : "auto"})</span>}
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="min-w-[18rem]">{content}</DropdownMenuSubContent>
+      </DropdownMenuSub>
+    );
+  }
+
+  return (
+    <DropdownMenu>
+      <Hint tip={title}>
+        <DropdownMenuTrigger aria-label="Base branch" className={CHIP}>
+          <GitBranch className="size-3 shrink-0 text-muted-foreground" />
+          <span className="text-muted-foreground">vs</span>
+          <span className="max-w-[16ch] truncate">{label}</span>
+          {strategy !== undefined && !explicit && <span className="text-[11px] font-normal text-muted-foreground">({pinned ? "pinned" : "auto"})</span>}
+          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+        </DropdownMenuTrigger>
+      </Hint>
+      <DropdownMenuContent align="start" className="min-w-[18rem]">{content}</DropdownMenuContent>
     </DropdownMenu>
   );
 }

@@ -51,6 +51,7 @@ import { setChangeDetection } from "../changeDetection";
 import { setHideIgnoredFiles } from "../ignoredFilesPref";
 import { setHideViewedFiles } from "../hideViewedFilesPref";
 import { setViewedStatsExclude } from "../viewedStatsPref";
+import { setFileTypeFilter } from "../fileTypeFilterPref";
 import type { FileDiff, Target } from "../types";
 
 const target: Target = { repoPath: "/r", mode: "all-changes" };
@@ -82,6 +83,20 @@ const COMMITS = [
 ];
 const commitTarget: Target = { repoPath: "/r", mode: "commit", commit: "o1" };
 
+function openFileFilters() {
+  fireEvent.pointerDown(screen.getByRole("button", { name: /^File filters:/ }), { button: 0, pointerType: "mouse" });
+}
+
+function selectFileType(label: "All files" | "Exclude tests" | "Only tests") {
+  openFileFilters();
+  fireEvent.click(screen.getByRole("menuitemradio", { name: label }));
+}
+
+function toggleHideViewed() {
+  openFileFilters();
+  fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /^Hide viewed files/ }));
+}
+
 describe("Workspace", () => {
   beforeEach(() => {
     openReview.mockReset();
@@ -94,6 +109,7 @@ describe("Workspace", () => {
     setMode = null;
     reopen = null;
     setChangeDetection("on");
+    setFileTypeFilter("all");
   });
 
   it("opens the review for its target on mount", async () => {
@@ -128,16 +144,17 @@ describe("Workspace", () => {
     openReview.mockResolvedValue({ ...minimalSession, summary: { ...minimalSession.summary, baseLabel: "dev" } });
     getBaseStrategy.mockResolvedValue(null); // auto
     render(<Workspace target={target} />); // all-changes → base participates
-    const chip = await screen.findByRole("button", { name: /base branch/i });
-    expect(chip).toHaveTextContent("vs");
+    const chip = await screen.findByRole("button", { name: /diff mode/i });
     expect(chip).toHaveTextContent("dev");
-    expect(chip).toHaveTextContent("(auto)");
+    fireEvent.pointerDown(chip, { button: 0, pointerType: "mouse" });
+    expect(screen.getByRole("menuitem", { name: "Base branch" })).toHaveTextContent("(auto)");
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
 
     // Switching to a mode without a base hides the chip.
     openReview.mockClear();
     act(() => setMode?.({ payload: "uncommitted" }));
     await waitFor(() => expect(openReview).toHaveBeenCalledWith({ repoPath: "/r", mode: "uncommitted", base: undefined }));
-    expect(screen.queryByRole("button", { name: /base branch/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /diff mode/i })).not.toHaveTextContent("dev");
   });
 
   it("a pinned repo strategy badges the chip and the URL carries an explicit base (#base)", async () => {
@@ -145,7 +162,7 @@ describe("Workspace", () => {
     // The persisted review echoes the injected base back, like the real backend.
     openReview.mockResolvedValue({ ...minimalSession, review: { ...minimalSession.review, target: { repoPath: "/r", worktree: "main", mode: "all-changes", base: "dev" } } });
     render(<Workspace target={{ ...target, base: "dev" }} />);
-    const chip = await screen.findByRole("button", { name: /base branch/i });
+    const chip = await screen.findByRole("button", { name: /diff mode/i });
     expect(chip).toHaveTextContent("dev");
     expect(chip).not.toHaveTextContent("(auto)"); // explicit override → no badge
     expect(openReview).toHaveBeenCalledWith({ repoPath: "/r", mode: "all-changes", base: "dev" });
@@ -250,7 +267,7 @@ describe("Workspace", () => {
     });
 
     const refresh = await screen.findByRole("button", { name: "Refresh" });
-    expect(refresh).toHaveTextContent(/^Refresh$/);
+    expect(refresh).toHaveTextContent("");
     fireEvent.keyDown(window, { key: "r", metaKey: true });
     await waitFor(() => expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument());
     expect(screen.getByText("b.ts")).toBeInTheDocument();
@@ -487,7 +504,7 @@ describe("Workspace", () => {
         summary: { files: [{ path: "src/gen.ts", status: "modified", additions: 0, deletions: 0, binary: false, ignored: true }], baseLabel: "main", headLabel: "wt" },
       });
       render(<Workspace target={target} />);
-      expect(await screen.findByText("Every file in this review is ignored.")).toBeInTheDocument();
+      expect(await screen.findByText("Every file in this view is ignored.")).toBeInTheDocument();
 
       fireEvent.click(screen.getByRole("button", { name: "Show ignored files" }));
       const pane = await screen.findByTestId("diff-pane");
@@ -495,7 +512,7 @@ describe("Workspace", () => {
     });
   });
 
-  describe("test-files toggle", () => {
+  describe("file-type filter", () => {
     let clientHeightDesc: PropertyDescriptor | undefined;
     const testSession = {
       ...fileSession,
@@ -524,6 +541,7 @@ describe("Workspace", () => {
       setViewedStatsExclude("off");
       vi.mocked(api.saveReview).mockClear();
       localStorage.removeItem("delta.hideTestFiles");
+      localStorage.removeItem("delta.fileTypeFilter");
       window.dispatchEvent(new StorageEvent("storage", { key: "delta.hideTestFiles", newValue: null }));
       openReview.mockResolvedValue(testSession);
       vi.mocked(api.getFileDiff).mockResolvedValue({ status: "modified", binary: false, oldContent: "a\n", newContent: "b\n" } as FileDiff);
@@ -533,21 +551,16 @@ describe("Workspace", () => {
       render(<Workspace target={target} />);
       const pane = await screen.findByTestId("diff-pane");
       await waitFor(() => expect(within(pane).getByText("a.test.ts")).toBeInTheDocument());
-      const toggle = screen.getByRole("button", { name: "Hide test files (2)" });
-      expect(toggle).toHaveAttribute("aria-pressed", "false");
-      const toggleColors = toggle.className;
-      expect(toggle.querySelector(".lucide-flask-conical")).not.toBeNull();
-      expect(toggle.querySelector(".lucide-flask-conical-off")).toBeNull();
+      const toggle = screen.getByRole("button", { name: "File filters: All files" });
+      expect(toggle).toHaveAttribute("data-active", "false");
       expect(screen.getByLabelText("Files viewed")).toHaveTextContent("0 / 3 viewed");
       const totals = screen.getByRole("button", { name: "Toggle unviewed-only totals" });
       expect(totals).toHaveTextContent("+30 −12");
       expect(screen.getByLabelText("+10 / −4 under src")).toBeInTheDocument();
 
-      fireEvent.click(toggle);
-      expect(toggle).toHaveAttribute("aria-pressed", "true");
-      expect(toggle.className).toBe(toggleColors);
-      expect(toggle.querySelector(".lucide-flask-conical-off")).not.toBeNull();
-      expect(toggle.querySelector(".lucide-flask-conical")).toBeNull();
+      selectFileType("Exclude tests");
+      expect(toggle).toHaveAttribute("data-active", "true");
+      expect(toggle).toHaveTextContent("No tests");
       expect(within(pane).queryByText("a.test.ts")).not.toBeInTheDocument();
       expect(within(pane).queryByText("setup.ts")).not.toBeInTheDocument();
       expect(within(pane).getByText("a.ts")).toBeInTheDocument();
@@ -559,19 +572,17 @@ describe("Workspace", () => {
       expect(totals).toHaveTextContent("+1");
       expect(totals).not.toHaveTextContent("−12");
       expect(screen.getByLabelText("+1 / −0 under src")).toBeInTheDocument();
-      expect(localStorage.getItem("delta.hideTestFiles")).toBe("on");
+      expect(localStorage.getItem("delta.fileTypeFilter")).toBe("exclude-tests");
 
-      fireEvent.click(screen.getByRole("button", { name: "Show test files (2)" }));
-      expect(toggle.className).toBe(toggleColors);
-      expect(toggle.querySelector(".lucide-flask-conical")).not.toBeNull();
-      expect(toggle.querySelector(".lucide-flask-conical-off")).toBeNull();
+      selectFileType("All files");
+      expect(toggle).toHaveAttribute("data-active", "false");
       await waitFor(() => expect(within(pane).getByText("a.test.ts")).toBeInTheDocument());
       expect(within(pane).getByText("setup.ts")).toBeInTheDocument();
       const treeCheckbox = within(tree).getByRole("button", { name: "viewed src/a.test.ts" });
       expect(treeCheckbox.querySelector(".lucide-check")).toBeNull();
       expect(screen.getByLabelText("Files viewed")).toHaveTextContent("0 / 3 viewed");
       expect(totals).toHaveTextContent("+30 −12");
-      expect(localStorage.getItem("delta.hideTestFiles")).toBe("off");
+      expect(localStorage.getItem("delta.fileTypeFilter")).toBe("all");
     });
 
     it("syncs changes from another window", async () => {
@@ -579,21 +590,97 @@ describe("Workspace", () => {
       const pane = await screen.findByTestId("diff-pane");
       await waitFor(() => expect(within(pane).getByText("a.test.ts")).toBeInTheDocument());
       act(() => {
-        localStorage.setItem("delta.hideTestFiles", "on");
-        window.dispatchEvent(new StorageEvent("storage", { key: "delta.hideTestFiles", newValue: "on" }));
+        localStorage.setItem("delta.fileTypeFilter", "exclude-tests");
+        window.dispatchEvent(new StorageEvent("storage", { key: "delta.fileTypeFilter", newValue: "exclude-tests" }));
       });
       expect(within(pane).queryByText("a.test.ts")).not.toBeInTheDocument();
       expect(within(screen.getByTestId("files-tree")).queryByText("a.test.ts")).not.toBeInTheDocument();
       expect(screen.getByLabelText("Files viewed")).toHaveTextContent("0 / 1 viewed");
-      expect(screen.getByRole("button", { name: "Show test files (2)" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: "File filters: No tests" })).toHaveAttribute("data-active", "true");
+    });
+
+    it("shows only tests in both panes, search, folder actions and totals", async () => {
+      render(<Workspace target={target} />);
+      const pane = await screen.findByTestId("diff-pane");
+      selectFileType("Only tests");
+      await waitFor(() => expect(within(pane).getByText("a.test.ts")).toBeInTheDocument());
+      expect(within(pane).getByText("setup.ts")).toBeInTheDocument();
+      expect(within(pane).queryByText("a.ts")).not.toBeInTheDocument();
+      const tree = screen.getByTestId("files-tree");
+      expect(within(tree).queryByText("a.ts")).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Files viewed")).toHaveTextContent("0 / 2 viewed");
+      expect(screen.getByRole("button", { name: "Toggle unviewed-only totals" })).toHaveTextContent("+29 −12");
+      fireEvent.click(screen.getByRole("button", { name: "viewed folder src" }));
+      await waitFor(() => expect(api.saveReview).toHaveBeenCalled());
+      const saves = vi.mocked(api.saveReview).mock.calls;
+      expect(saves[saves.length - 1][0].viewed).toEqual([{ file: "src/a.test.ts", diffHash: "" }]);
+      fireEvent.change(screen.getByRole("textbox", { name: "Search files" }), { target: { value: "a.ts" } });
+      expect(within(tree).getByText("No files match “a.ts”.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "File filters: Only tests" })).toHaveTextContent("Only tests");
+    });
+
+    it("explains Only tests with no matches and offers a reset", async () => {
+      openReview.mockResolvedValue(fileSession);
+      render(<Workspace target={target} />);
+      await screen.findByTestId("diff-pane");
+      selectFileType("Only tests");
+      expect(screen.getByText("This review has no test files.")).toBeInTheDocument();
+      expect(screen.getByText("No test files in this review.")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Show all files" }));
+      expect(await screen.findByTestId("diff-pane")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "File filters: All files" })).toBeInTheDocument();
+    });
+
+    it("combines Only tests with viewed and ignored filters and preserves marks", async () => {
+      openReview.mockResolvedValue({
+        ...testSession,
+        review: { ...testSession.review, viewed: [{ file: "src/a.test.ts", diffHash: "test-hash" }] },
+        summary: { ...testSession.summary, files: testSession.summary.files.map((file) => ({ ...file, ignored: file.path === "tests/setup.ts" })) },
+      });
+      render(<Workspace target={target} />);
+      await screen.findByTestId("diff-pane");
+      selectFileType("Only tests");
+      toggleHideViewed();
+      fireEvent.click(screen.getByRole("button", { name: "Hide ignored files (1)" }));
+      expect(screen.getByText("All files are hidden by the current filters.")).toBeInTheDocument();
+      expect(screen.getByLabelText("Files viewed")).toHaveTextContent("1 / 1 viewed");
+      expect(api.saveReview).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Show ignored files" }));
+      const pane = await screen.findByTestId("diff-pane");
+      await waitFor(() => expect(within(pane).getByText("setup.ts")).toBeInTheDocument());
+      expect(within(pane).queryByText("a.test.ts")).not.toBeInTheDocument();
+      expect(within(pane).queryByText("a.ts")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "File filters: Only tests; viewed hidden" })).toBeInTheDocument();
+    });
+
+    it("reveals a source file hidden by Only tests when jumping to its comment", async () => {
+      openReview.mockResolvedValue({
+        ...testSession,
+        review: {
+          ...testSession.review,
+          comments: [{
+            id: "source", scope: "line", body: "check source",
+            anchor: { file: "src/a.ts", side: "new", startLine: 1, endLine: null, snippet: null },
+            stale: false, resolved: false, createdAt: "t", updatedAt: "t",
+          }],
+        },
+      });
+      render(<Workspace target={target} />);
+      const pane = await screen.findByTestId("diff-pane");
+      selectFileType("Only tests");
+      expect(within(pane).queryByText("a.ts")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Comments (1)" }));
+      fireEvent.click(screen.getByRole("button", { name: "Jump to comment on src/a.ts" }));
+      await waitFor(() => expect(within(pane).getByText("a.ts")).toBeInTheDocument());
+      expect(screen.getByRole("button", { name: "File filters: All files" })).toBeInTheDocument();
     });
 
     it("can be armed before the review has tests", async () => {
       openReview.mockResolvedValue(fileSession);
       render(<Workspace target={target} />);
       await screen.findByTestId("diff-pane");
-      fireEvent.click(screen.getByRole("button", { name: "Hide test files (0)" }));
-      expect(screen.getByRole("button", { name: "Show test files (0)" })).toHaveAttribute("aria-pressed", "true");
+      selectFileType("Exclude tests");
+      expect(screen.getByRole("button", { name: "File filters: No tests" })).toHaveAttribute("data-active", "true");
     });
 
     it("offers a way back when every file is a hidden test", async () => {
@@ -603,12 +690,12 @@ describe("Workspace", () => {
       });
       render(<Workspace target={target} />);
       await screen.findByTestId("diff-pane");
-      fireEvent.click(screen.getByRole("button", { name: "Hide test files (2)" }));
+      selectFileType("Exclude tests");
       expect(screen.getByText("Every file in this review is a test file.")).toBeInTheDocument();
       expect(screen.getByText("Test files are hidden.")).toBeInTheDocument();
       expect(screen.getByLabelText("Files viewed")).toHaveTextContent("0 / 0 viewed");
       expect(screen.getByRole("textbox", { name: "Search files" })).toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: "Show test files" }));
+      fireEvent.click(screen.getByRole("button", { name: "Show all files" }));
       const pane = await screen.findByTestId("diff-pane");
       await waitFor(() => expect(within(pane).getByText("a.test.ts")).toBeInTheDocument());
     });
@@ -624,11 +711,11 @@ describe("Workspace", () => {
       });
       render(<Workspace target={target} />);
       await screen.findByTestId("diff-pane");
-      fireEvent.click(screen.getByRole("button", { name: "Hide viewed files (1)" }));
+      toggleHideViewed();
       fireEvent.click(screen.getByRole("button", { name: "Hide ignored files (1)" }));
-      fireEvent.click(screen.getByRole("button", { name: "Hide test files (2)" }));
+      selectFileType("Exclude tests");
       expect(screen.getByText("All files are hidden by the current filters.")).toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: "Show test files" }));
+      fireEvent.click(screen.getByRole("button", { name: "Show all files" }));
       const pane = await screen.findByTestId("diff-pane");
       await waitFor(() => expect(within(pane).getByText("a.test.ts")).toBeInTheDocument());
       expect(within(pane).queryByText("a.ts")).not.toBeInTheDocument();
@@ -643,7 +730,7 @@ describe("Workspace", () => {
       const tree = screen.getByTestId("files-tree");
       fireEvent.change(search, { target: { value: "a.test" } });
       expect(within(tree).getByText("a.test.ts")).toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: "Hide test files (2)" }));
+      selectFileType("Exclude tests");
       expect(within(pane).queryByText("a.test.ts")).not.toBeInTheDocument();
       expect(within(tree).getByText("No files match “a.test”.")).toBeInTheDocument();
 
@@ -651,9 +738,9 @@ describe("Workspace", () => {
       expect(within(tree).queryByText("src/a.test.ts")).not.toBeInTheDocument();
       fireEvent.change(search, { target: { value: "a.ts" } });
       fireEvent.click(within(tree).getByText("src/a.ts"));
-      expect(screen.getByRole("button", { name: "Show test files (2)" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: "File filters: No tests" })).toHaveAttribute("data-active", "true");
 
-      fireEvent.click(screen.getByRole("button", { name: "Show test files (2)" }));
+      selectFileType("All files");
       fireEvent.change(search, { target: { value: "a.test" } });
       expect(within(tree).getByText("src/a.test.ts")).toBeInTheDocument();
     });
@@ -667,9 +754,9 @@ describe("Workspace", () => {
       await screen.findByTestId("diff-pane");
       expect(screen.getByLabelText("Files viewed")).toHaveTextContent("1 / 3 viewed");
 
-      fireEvent.click(screen.getByRole("button", { name: "Hide test files (2)" }));
+      selectFileType("Exclude tests");
       expect(screen.getByLabelText("Files viewed")).toHaveTextContent("0 / 1 viewed");
-      expect(screen.getByRole("button", { name: "Hide viewed files (0)" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "File filters: No tests" })).toBeInTheDocument();
       expect(api.saveReview).not.toHaveBeenCalled();
 
       fireEvent.click(screen.getByRole("button", { name: "viewed folder src" }));
@@ -681,7 +768,7 @@ describe("Workspace", () => {
         { file: "src/a.ts", diffHash: "" },
       ]);
 
-      fireEvent.click(screen.getByRole("button", { name: "Show test files (2)" }));
+      selectFileType("All files");
       expect(screen.getByLabelText("Files viewed")).toHaveTextContent("2 / 3 viewed");
       const tree = screen.getByTestId("files-tree");
       expect(within(tree).getByRole("button", { name: "viewed src/a.test.ts" }).querySelector(".lucide-check")).not.toBeNull();
@@ -702,16 +789,16 @@ describe("Workspace", () => {
       });
       render(<Workspace target={target} />);
       const pane = await screen.findByTestId("diff-pane");
-      fireEvent.click(screen.getByRole("button", { name: "Hide test files (2)" }));
+      selectFileType("Exclude tests");
       expect(within(pane).queryByText("a.test.ts")).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Comments (1)" }));
       fireEvent.click(screen.getByRole("button", { name: "Jump to comment on src/a.test.ts" }));
       await waitFor(() => expect(within(pane).getByText("a.test.ts")).toBeInTheDocument());
-      expect(screen.getByRole("button", { name: "Hide test files (2)" })).toHaveAttribute("aria-pressed", "false");
+      expect(screen.getByRole("button", { name: "File filters: All files" })).toHaveAttribute("data-active", "false");
     });
   });
 
-  // The CheckCheck toggle in the workspace toolbar hides viewed files' cards
+  // The checkbox in the toolbar's filter menu hides viewed files' cards
   // from the diff pane (Settings → General exposes the same pref). The choice
   // persists (localStorage) and syncs across open review windows; the tree
   // keeps every row, so unmarking stays possible.
@@ -757,8 +844,8 @@ describe("Workspace", () => {
       await waitFor(() => expect(within(pane).getByText("a.ts")).toBeInTheDocument());
 
       // Arm the mode first (the count is 0 — nothing viewed yet)…
-      fireEvent.click(screen.getByRole("button", { name: "Hide viewed files (0)" }));
-      expect(screen.getByRole("button", { name: "Show viewed files (0)" })).toHaveAttribute("aria-pressed", "true");
+      toggleHideViewed();
+      expect(screen.getByRole("button", { name: "File filters: All files; viewed hidden" })).toHaveAttribute("data-active", "true");
       expect(localStorage.getItem("delta.hideViewedFiles")).toBe("on");
       // …then review: marking viewed from the card itself drops it right away.
       fireEvent.click(within(pane).getByRole("button", { name: "viewed src/a.ts" }));
@@ -770,10 +857,9 @@ describe("Workspace", () => {
       // show); turning it off is one click.
       fireEvent.click(screen.getByRole("button", { name: "viewed src/a.ts" }));
       await waitFor(() => expect(within(pane).getByText("a.ts")).toBeInTheDocument());
-      const armed = screen.getByRole("button", { name: "Show viewed files (0)" });
-      expect(armed).toHaveAttribute("aria-pressed", "true");
-      fireEvent.click(armed);
-      expect(screen.getByRole("button", { name: "Hide viewed files (0)" })).toHaveAttribute("aria-pressed", "false");
+      expect(screen.getByRole("button", { name: "File filters: All files; viewed hidden" })).toHaveAttribute("data-active", "true");
+      toggleHideViewed();
+      expect(screen.getByRole("button", { name: "File filters: All files" })).toHaveAttribute("data-active", "false");
       expect(localStorage.getItem("delta.hideViewedFiles")).toBe("off");
     });
 
@@ -794,7 +880,7 @@ describe("Workspace", () => {
       const pane = await screen.findByTestId("diff-pane");
       await waitFor(() => expect(within(pane).getByText("a.ts")).toBeInTheDocument());
 
-      fireEvent.click(screen.getByRole("button", { name: "Hide viewed files (1)" }));
+      toggleHideViewed();
       await waitFor(() => expect(within(pane).queryByText("a.ts")).not.toBeInTheDocument());
       // The unviewed file's card is untouched.
       expect(within(pane).getByText("b.ts")).toBeInTheDocument();
@@ -804,7 +890,7 @@ describe("Workspace", () => {
       expect(localStorage.getItem("delta.hideViewedFiles")).toBe("on");
 
       // And back: the card returns.
-      fireEvent.click(screen.getByRole("button", { name: "Show viewed files (1)" }));
+      toggleHideViewed();
       await waitFor(() => expect(within(pane).getByText("a.ts")).toBeInTheDocument());
       expect(localStorage.getItem("delta.hideViewedFiles")).toBe("off");
     });
@@ -823,7 +909,7 @@ describe("Workspace", () => {
         window.dispatchEvent(new StorageEvent("storage", { key: "delta.hideViewedFiles", newValue: "on" }));
       });
       await waitFor(() => expect(within(pane).queryByText("a.ts")).not.toBeInTheDocument());
-      expect(screen.getByRole("button", { name: "Show viewed files (1)" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: "File filters: All files; viewed hidden" })).toHaveAttribute("data-active", "true");
     });
 
     it("shows an empty state with a way back when every file is viewed and hidden", async () => {
@@ -833,7 +919,7 @@ describe("Workspace", () => {
         review: { ...fileSession.review, viewed: [{ file: "src/a.ts", diffHash: "" }] },
       });
       render(<Workspace target={target} />);
-      expect(await screen.findByText("Every file in this review is viewed.")).toBeInTheDocument();
+      expect(await screen.findByText("Every file in this view is viewed.")).toBeInTheDocument();
 
       fireEvent.click(screen.getByRole("button", { name: "Show viewed files" }));
       const pane = await screen.findByTestId("diff-pane");
@@ -866,14 +952,14 @@ describe("Workspace", () => {
       await waitFor(() => expect(within(pane).getByText("a.ts")).toBeInTheDocument());
 
       // Hide the viewed file, then jump to its comment from the index.
-      fireEvent.click(screen.getByRole("button", { name: "Hide viewed files (1)" }));
+      toggleHideViewed();
       await waitFor(() => expect(within(pane).queryByText("a.ts")).not.toBeInTheDocument());
       fireEvent.click(screen.getByRole("button", { name: "Comments (1)" }));
       fireEvent.click(screen.getByRole("button", { name: "Jump to comment on src/a.ts" }));
 
       // The mark came off and the card returned — the jump has somewhere to land.
       await waitFor(() => expect(within(pane).getByText("a.ts")).toBeInTheDocument());
-      expect(screen.getByRole("button", { name: "Show viewed files (0)" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "File filters: All files; viewed hidden" })).toBeInTheDocument();
     });
   });
 });

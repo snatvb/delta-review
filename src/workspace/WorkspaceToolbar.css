@@ -1,0 +1,60 @@
+/* Query the toolbar's actual space, not the window: native titlebar insets and
+   any future embedding must not push a secondary action over the edge. */
+.workspace-toolbar {
+  container: workspace-toolbar / inline-size;
+}
+
+.toolbar-repo {
+  /* A picker, not a search input: keep its natural width, shrink only on demand. */
+  flex: 0 1 auto;
+  min-width: 1.75rem;
+  max-width: 28rem;
+}
+
+.toolbar-comparison {
+  flex: 0 1 auto;
+  min-width: 5rem;
+  max-width: 22rem;
+}
+
+.toolbar-comments,
+.toolbar-commit-stepper {
+  display: none;
+}
+
+/* Menus are portaled outside the query container. Keep their entries available
+   at every width, including when a toolbar shortcut is also visible. */
+.toolbar-comments-overflow {
+  display: flex;
+}
+
+@container workspace-toolbar (max-width: 40rem) {
+  .toolbar-filter-icon,
+  .toolbar-file-count,
+  .toolbar-copy-label,
+  .toolbar-palette-shortcut,
+  .toolbar-copy-shortcut {
+    display: none;
+  }
+
+  .toolbar-copy {
+    width: 1.75rem;
+    padding-inline: 0;
+  }
+
+  .toolbar-comparison {
+    max-width: 35%;
+  }
+}
+
+@container workspace-toolbar (min-width: 52rem) {
+  .toolbar-comments {
+    display: inline-flex;
+  }
+}
+
+@container workspace-toolbar (min-width: 64rem) {
+  .toolbar-commit-stepper {
+    display: flex;
+  }
+}

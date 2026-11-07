@@ -5,7 +5,7 @@ import type { DiffMode, VcsKind } from "./types";
 
 export interface VcsProfile {
   vcs: VcsKind;
-  /** Modes the mode-switcher offers (drives the dropdown AND its width-reserving hidden labels). */
+  /** Modes offered by the comparison dropdown. */
   modes: { id: DiffMode; label: string }[];
   /** Whether commit history features exist (stepper, commit picker, commit mode, pagination, [ / ] keys). */
   history: boolean;
