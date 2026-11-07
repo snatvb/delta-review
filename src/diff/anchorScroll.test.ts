@@ -1,43 +1,94 @@
-// Scroll-anchoring math for collapsing a file in the diff pane (#viewed-anchor).
-import { describe, it, expect } from "vitest";
-import { anchorScrollTopOnCollapse } from "./anchorScroll";
+import { describe, expect, it } from "vitest";
+import { anchorScrollTopAfterReview, type FileScrollGeometry } from "./anchorScroll";
 
-// VirtualDiffPane's layout constants. A file whose header sits at document offset
-// `headerTop` with a `bodyHeight`-tall body spans [headerTop, headerTop+HEADER_H+body].
 const HEADER_H = 40;
+const GAP = 10;
 const PAD = 14;
-const anchor = (scrollTop: number, headerTop: number, body: number) =>
-  anchorScrollTopOnCollapse(scrollTop, headerTop, body, HEADER_H, PAD);
+const previous: FileScrollGeometry[] = [
+  { path: "before.ts", top: PAD, bodyHeight: 900, collapsed: false },
+  { path: "large.ts", top: 964, bodyHeight: 5000, collapsed: false },
+  { path: "next.ts", top: 6014, bodyHeight: 3000, collapsed: false },
+];
+const collapsed = [
+  previous[0],
+  { ...previous[1], bodyHeight: 0, collapsed: true },
+  { ...previous[2], top: 1014 },
+];
+const hidden = [previous[0], { ...previous[2], top: 964 }];
+const anchor = (top: number, current: FileScrollGeometry[], viewed = ["large.ts"]) =>
+  anchorScrollTopAfterReview(top, previous, current, new Set(viewed), HEADER_H, GAP, PAD);
 
-describe("anchorScrollTopOnCollapse", () => {
-  const headerTop = 1000;
-  const body = 500; // body spans [1040, 1540]
-
-  it("leaves scroll untouched when the file starts at or below the viewport top", () => {
-    // File entirely below the fold (collapsing happens off-screen).
-    expect(anchor(200, headerTop, body)).toBeNull();
-    // Header exactly at the viewport top — body folds away beneath it, nothing above moves.
-    expect(anchor(headerTop, headerTop, body)).toBeNull();
+describe("anchorScrollTopAfterReview", () => {
+  it("leaves scroll alone for loading, expansion, and unrelated removals", () => {
+    expect(anchor(2000, previous)).toBeNull();
+    expect(anchor(2000, [{ ...previous[0], bodyHeight: 1000 }, ...previous.slice(1)])).toBeNull();
+    expect(anchor(2000, hidden, [])).toBeNull();
+    expect(anchorScrollTopAfterReview(950, collapsed, previous, new Set(), HEADER_H, GAP, PAD)).toBeNull();
   });
 
-  it("snaps the collapsed header to the top when you're reviewing the file", () => {
-    // Viewport top sits inside the file (header sticky above) → header to top (offset - PAD).
-    expect(anchor(1200, headerTop, body)).toBe(headerTop - PAD);
-    // Boundary: viewport top at the very bottom of the body still counts as "on it".
-    expect(anchor(1540, headerTop, body)).toBe(headerTop - PAD);
+  it("keeps the original position when the changed file is below the viewport top", () => {
+    expect(anchor(200, collapsed)).toBe(200);
+    expect(anchor(previous[1].top, collapsed)).toBe(previous[1].top);
+    expect(anchor(200, hidden)).toBe(200);
   });
 
-  it("subtracts the removed body when the file is scrolled off above you", () => {
-    // Reading a later file; the collapsing one is fully above the fold → keep view fixed.
-    expect(anchor(2000, headerTop, body)).toBe(2000 - body);
-    // Just past the body bottom is already the "behind you" case.
-    expect(anchor(1541, headerTop, body)).toBe(1541 - body);
+  it("snaps a collapsed file's header to the top while reviewing it", () => {
+    expect(anchor(3000, collapsed)).toBe(950);
+    expect(anchor(6004, collapsed)).toBe(950); // Body's bottom edge still belongs to it.
   });
 
-  it("never returns a negative scroll position", () => {
-    // First file (header at PAD) collapsed while reviewing it → clamps to 0, not -PAD.
-    expect(anchor(50, PAD, 300)).toBe(0);
-    // Removed body larger than the scroll offset.
-    expect(anchor(20, 0, 1000)).toBe(0);
+  it("shows the next surviving file from its start when the current file disappears", () => {
+    expect(anchor(3000, hidden)).toBe(950);
+    expect(anchor(6004, hidden)).toBe(950);
+  });
+
+  it("preserves later content when a file above it collapses or disappears", () => {
+    expect(anchor(6500, collapsed)).toBe(1500);
+    expect(anchor(6500, hidden)).toBe(1450); // Hidden header + gap also leave.
+    expect(anchor(6005, collapsed)).toBe(1005); // Just past the old body's bottom.
+  });
+
+  it("preserves the reader's offset when an earlier measurement changes in the same commit", () => {
+    const measuredBefore = { ...previous[0], bodyHeight: 100 };
+    const currentCollapsed = [
+      measuredBefore,
+      { ...collapsed[1], top: 164 },
+      { ...collapsed[2], top: 214 },
+    ];
+    const currentHidden = [measuredBefore, { ...hidden[1], top: 164 }];
+    expect(anchor(6500, currentCollapsed)).toBe(700);
+    expect(anchor(6500, currentHidden)).toBe(650);
+  });
+
+  it("handles several hidden files, using the old order to find the next survivor", () => {
+    const current = [{ ...previous[2], top: PAD }];
+    expect(anchor(3000, current, ["before.ts", "large.ts"])).toBe(0);
+    expect(anchor(6500, current, ["before.ts", "large.ts"])).toBe(500);
+  });
+
+  it("handles several collapsed files without skipping the next file", () => {
+    const current = [
+      { ...previous[0], bodyHeight: 0, collapsed: true },
+      { ...previous[1], top: 64, bodyHeight: 0, collapsed: true },
+      { ...previous[2], top: 114 },
+    ];
+    expect(anchor(3000, current)).toBe(50);
+    expect(anchor(6500, current)).toBe(600);
+  });
+
+  it("anchors manual collapse too, without requiring a viewed mark", () => {
+    expect(anchor(3000, collapsed, [])).toBe(950);
+  });
+
+  it("ignores newly added collapsed files", () => {
+    const current = [...previous, { path: "new.ts", top: 9064, bodyHeight: 0, collapsed: true }];
+    expect(anchor(3000, current)).toBeNull();
+  });
+
+  it("falls back to the end when the last file disappears, without negative positions", () => {
+    const current = [previous[0]];
+    expect(anchor(6500, current, ["large.ts", "next.ts"])).toBe(950);
+    expect(anchor(500, [{ ...previous[1], top: PAD }, { ...previous[2], top: 5064 }], ["before.ts"])).toBe(0);
+    expect(anchor(3000, [], ["before.ts", "large.ts", "next.ts"])).toBe(0);
   });
 });
