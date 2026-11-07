@@ -15,6 +15,8 @@
 - **Keep the next changes visible after marking a file Viewed** — collapsing a large card keeps its header at the top with the next file below; hiding it reveals the next surviving file from its start. Scroll is captured before the browser clamps the shrinking pane, and virtualization updates immediately instead of leaving a blank area. Reviewing later code keeps its position, including when async measurements change other card heights at the same time.
 - **Filtering a deeply scrolled file tree no longer leaves it blank** — the virtual window is clamped to the remaining rows immediately. Filtering every file keeps the sidebar header and search visible, with a clear empty state and a way to show tests again.
 
+**Installation:** platform certificates/notarization are not included. If macOS blocks the downloaded app, use **System Settings → Privacy & Security → Open Anyway** after the first launch attempt. Windows may show SmartScreen; use **More info → Run anyway** if you trust this release. In-app updater packages are separately signed and verified.
+
 ## 0.25.0 — 2026-11-02
 
 ### 🐛 Fixes
