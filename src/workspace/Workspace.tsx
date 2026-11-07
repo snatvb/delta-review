@@ -15,6 +15,7 @@ import { api } from "../api";
 import { getChangeDetection } from "../changeDetection";
 import { FilesPanel } from "../files/FilesPanel";
 import { reviewOrder } from "../files/buildTree";
+import { isTestFile } from "../files/isTestFile";
 import { VirtualDiffPane } from "../diff/VirtualDiffPane";
 import { CommentIndex } from "../review/CommentIndex";
 import { prefetchPicker } from "../picker/pickerData";
@@ -26,9 +27,10 @@ import { Hint } from "@/components/Hint";
 import { CommitMetaBody } from "@/components/CommitMetaTip";
 import { useDiffLayout } from "../diff/useDiffLayout";
 import { useResizableWidth, usePaneResize, PaneResizer, FILE_PANE } from "../lib/resizablePane";
-import { Check, CheckCheck, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Columns2, Copy, ExternalLink, Eye, EyeOff, GitBranch, Loader2, MessageSquare, RefreshCw, Rows2, Search, Settings } from "lucide-react";
+import { Check, CheckCheck, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Columns2, Copy, ExternalLink, Eye, EyeOff, FlaskConical, FlaskConicalOff, GitBranch, Loader2, MessageSquare, RefreshCw, Rows2, Search, Settings } from "lucide-react";
 import { getEditorPref } from "../editor";
 import { getHideViewedFiles, useHideViewedFiles } from "../hideViewedFilesPref";
+import { setHideTestFiles, useHideTestFiles } from "../hideTestFilesPref";
 import { useUnreviewableLast } from "../unreviewableLastPref";
 import { useHideIgnoredFiles } from "../ignoredFilesPref";
 import { worktreeName } from "../lib/utils";
@@ -37,7 +39,7 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuCheck,
 } from "@/components/ui/dropdown-menu";
-import type { Anchor, BaseStrategy, Comment, CommitMeta, DiffMode, DiffSummary, Review, ReviewSession, Target, VcsKind } from "../types";
+import type { Anchor, BaseStrategy, Comment, CommitMeta, DiffMode, DiffSummary, FileEntry, Review, ReviewSession, Target, VcsKind } from "../types";
 
 const COMMIT_PAGE = 100;
 
@@ -106,6 +108,8 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // every row with its checkbox, so unmarking stays possible.
   const [hideViewedPref, setHideViewedPref] = useHideViewedFiles();
   const hideViewed = hideViewedPref === "on";
+  const [hideTestsPref, setHideTestsPref] = useHideTestFiles();
+  const hideTests = hideTestsPref === "on";
   // Opt-in: keep binaries/giant diffs at the end of the pane (reviewOrder).
   // Off = plain tree order — no reshuffle-driven scroll jumps.
   const [unreviewableLastPref] = useUnreviewableLast();
@@ -643,6 +647,9 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     if (getHideViewedFiles() === "on" && reviewRef.current?.viewed.some((v) => v.file === file)) {
       toggleViewed(file, "");
     }
+    if (isTestFile(file)) {
+      setHideTestFiles("off");
+    }
     const present = orderedFilesRef.current.some((f) => f.path === file);
     heldJumpRef.current = null; // latest intent wins
     if (present) setJump({ file, commentId, n: Date.now() });
@@ -754,27 +761,40 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   // the active row mid-scroll. (#jump-preload)
   const orderedFiles = useMemo(() => reviewOrder(viewSummary?.files ?? [], unreviewableLast), [viewSummary?.files, unreviewableLast]);
 
-  // The diff pane renders the review minus its ignored entries while the tree's
-  // Ignored-group eye-toggle is on, and minus viewed entries while the
-  // toolbar's hide-viewed toggle is on. The tree keeps the full list (ignored
-  // files stay in their group, viewed ones stay dimmed with their checkboxes),
-  // so what's hidden remains discoverable — and unmarkable.
-  const ignoredCount = useMemo(() => orderedFiles.reduce((n, f) => n + (f.ignored ? 1 : 0), 0), [orderedFiles]);
-  // Counted against the review's files, not viewedFiles.size — the set can
-  // carry paths the latest diff no longer has.
+  // Tests leave both panes, so the tree, search, folder actions, and totals all
+  // use the same list. Viewed/ignored filters remain pane-only: their tree rows
+  // keep the controls needed to unmark/reveal them.
+  const { listedFiles, diffFiles, hiddenFiles } = useMemo(() => {
+    const listed: FileEntry[] = [];
+    const visible: FileEntry[] = [];
+    const hidden = new Set<string>();
+    for (const f of orderedFiles) {
+      const testHidden = hideTests && isTestFile(f.path);
+      if (!testHidden) {
+        listed.push(f);
+      }
+      if (testHidden || (hideIgnored && f.ignored) || (hideViewed && viewedFiles.has(f.path))) {
+        hidden.add(f.path);
+      } else {
+        visible.push(f);
+      }
+    }
+    // Retain the canonical array when nothing is dropped. Excluded paths still
+    // identify removed cards for pre-mutation scroll anchoring.
+    return {
+      listedFiles: listed.length === orderedFiles.length ? orderedFiles : listed,
+      diffFiles: hidden.size === 0 ? orderedFiles : visible,
+      hiddenFiles: hidden,
+    };
+  }, [orderedFiles, hideIgnored, hideViewed, viewedFiles, hideTests]);
+  const ignoredCount = useMemo(() => listedFiles.reduce((n, f) => n + (f.ignored ? 1 : 0), 0), [listedFiles]);
+  // Hidden tests no longer contribute to review progress or other filter counts.
+  // The viewed set itself stays intact, including paths outside the current diff.
   const viewedInDiff = useMemo(
-    () => orderedFiles.reduce((n, f) => n + (viewedFiles.has(f.path) ? 1 : 0), 0),
-    [orderedFiles, viewedFiles],
+    () => listedFiles.reduce((n, f) => n + (viewedFiles.has(f.path) ? 1 : 0), 0),
+    [listedFiles, viewedFiles],
   );
-  // Returns orderedFiles itself when nothing is dropped, keeping the identity
-  // stable for the tree's `visible` memo (see the #jump-preload note above).
-  const diffFiles = useMemo(
-    () =>
-      (hideIgnored && ignoredCount > 0) || (hideViewed && viewedInDiff > 0)
-        ? orderedFiles.filter((f) => !(hideIgnored && f.ignored) && !(hideViewed && viewedFiles.has(f.path)))
-        : orderedFiles,
-    [orderedFiles, hideIgnored, ignoredCount, hideViewed, viewedFiles, viewedInDiff],
-  );
+  const testFileCount = orderedFiles.reduce((n, file) => n + (isTestFile(file.path) ? 1 : 0), 0);
 
   // Keep the mirror current, and release a held jump once its file is in view —
   // the diff pane's jump effect can't wait for the file itself.
@@ -980,7 +1000,6 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                     className="h-7 gap-1.5 px-2.5 text-[13px] border-amber-500/40 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 hover:text-amber-700 dark:border-amber-400/40 dark:bg-amber-400/10 dark:text-amber-400 dark:hover:text-amber-300"
                   >
                     <RefreshCw className={`size-3.5 ${refreshing ? "animate-spin will-change-transform" : ""}`} /> Refresh
-                    <Kbd keys="⌘R" className="border-amber-600/30 bg-amber-500/15 text-amber-700 dark:border-amber-400/30 dark:text-amber-300" />
                   </Button>
                 </Hint>
               ) : (
@@ -1012,6 +1031,17 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                   className={`${ICON_BUTTON} aria-pressed:border-primary/40 aria-pressed:bg-primary/10 aria-pressed:text-primary`}
                 >
                   <CheckCheck className="size-4" />
+                </button>
+              </Hint>
+              <Hint tip={hideTests ? `Show test files (${testFileCount})` : `Hide test files (${testFileCount})`}>
+                <button
+                  type="button"
+                  aria-pressed={hideTests}
+                  aria-label={hideTests ? `Show test files (${testFileCount})` : `Hide test files (${testFileCount})`}
+                  onClick={() => setHideTestsPref(hideTests ? "off" : "on")}
+                  className={`${ICON_BUTTON} aria-pressed:border-primary/40 aria-pressed:bg-primary/10 aria-pressed:text-primary`}
+                >
+                  {hideTests ? <FlaskConicalOff className="size-4" /> : <FlaskConical className="size-4" />}
                 </button>
               </Hint>
               <ToggleGroup
@@ -1112,7 +1142,8 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
               <>
                 <aside style={{ width: sidebarWidth }} className="relative flex min-h-0 shrink-0 flex-col">
                   <FilesPanel
-                    files={orderedFiles}
+                    files={listedFiles}
+                    emptyMessage={hideTests ? "Test files are hidden." : undefined}
                     selected={visibleFile}
                     onSelect={onSelectFile}
                     onPrefetch={onPrefetchFile}
@@ -1125,29 +1156,34 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                 </aside>
                 <main aria-busy={busy} className="min-h-0 min-w-0 flex-1 -ml-1.5 transition-opacity aria-busy:pointer-events-none aria-busy:opacity-50">
                   {diffFiles.length === 0 ? (
-                    /* Every file was dropped by a hide toggle — ignored or
-                        viewed — so the pane would render nothing. Say which and
-                        offer the way back; viewed wins the wording when both
-                        contributed. */
+                    /* Filters may combine to hide everything. Offer each way
+                        back, without claiming every file shares one reason. */
                     <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
                       <ReloadSettler invalidate={diffInval} onSettled={() => setRefreshing(false)} />
-                      {hideViewed && viewedInDiff > 0 ? (
-                        <>
-                          <CheckCheck className="size-5" />
-                          <p className="text-[13px]">Every file in this review is viewed.</p>
+                      {hideTests && testFileCount > 0 ? <FlaskConical className="size-5" /> : hideViewed && viewedInDiff > 0 ? <CheckCheck className="size-5" /> : <EyeOff className="size-5" />}
+                      <p className="text-[13px]">
+                        {hideTests && testFileCount === orderedFiles.length ? "Every file in this review is a test file."
+                          : hideViewed && viewedInDiff === orderedFiles.length ? "Every file in this review is viewed."
+                          : hideIgnored && ignoredCount === orderedFiles.length ? "Every file in this review is ignored."
+                          : "All files are hidden by the current filters."}
+                      </p>
+                      <div className="flex flex-wrap justify-center gap-2">
+                        {hideTests && testFileCount > 0 && (
+                          <Button size="sm" variant="outline" className="h-7 text-[13px]" onClick={() => setHideTestsPref("off")}>
+                            <Eye className="size-3.5" /> Show test files
+                          </Button>
+                        )}
+                        {hideViewed && viewedInDiff > 0 && (
                           <Button size="sm" variant="outline" className="h-7 text-[13px]" onClick={() => setHideViewedPref("off")}>
                             <Eye className="size-3.5" /> Show viewed files
                           </Button>
-                        </>
-                      ) : (
-                        <>
-                          <EyeOff className="size-5" />
-                          <p className="text-[13px]">Every file in this review is ignored.</p>
+                        )}
+                        {hideIgnored && ignoredCount > 0 && (
                           <Button size="sm" variant="outline" className="h-7 text-[13px]" onClick={() => setHideIgnoredPref("off")}>
                             <Eye className="size-3.5" /> Show ignored files
                           </Button>
-                        </>
-                      )}
+                        )}
+                      </div>
                     </div>
                   ) : (
                   <VirtualDiffPane
@@ -1156,6 +1192,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                     theme={theme}
                     layout={layout}
                     viewedFiles={viewedFiles}
+                    hiddenFiles={hiddenFiles}
                     comments={comments}
                     jump={jump}
                     prefetch={prefetch}

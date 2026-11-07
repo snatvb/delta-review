@@ -4,7 +4,7 @@ import { anchorScrollTopAfterReview, type FileScrollGeometry } from "./anchorScr
 type Props = {
   paneRef: RefObject<HTMLDivElement | null>;
   files: readonly FileScrollGeometry[];
-  viewedFiles: ReadonlySet<string>;
+  hiddenFiles: ReadonlySet<string>;
   headerH: number;
   gap: number;
   pad: number;
@@ -17,12 +17,12 @@ type Props = {
 // This boundary adds no DOM and keeps that lifecycle out of the virtual renderer.
 export class DiffScrollAnchor extends Component<Props, Record<string, never>, number | null> {
   getSnapshotBeforeUpdate(previous: Props): number | null {
-    const { paneRef, files, viewedFiles, headerH, gap, pad } = this.props;
+    const { paneRef, files, hiddenFiles, headerH, gap, pad } = this.props;
     const pane = paneRef.current;
     if (!pane || previous.files === files) {
       return null;
     }
-    return anchorScrollTopAfterReview(pane.scrollTop, previous.files, files, viewedFiles, headerH, gap, pad);
+    return anchorScrollTopAfterReview(pane.scrollTop, previous.files, files, hiddenFiles, headerH, gap, pad);
   }
 
   componentDidUpdate(_previous: Props, _state: Record<string, never>, top: number | null) {

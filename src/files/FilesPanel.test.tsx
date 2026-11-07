@@ -1,6 +1,6 @@
 // src/files/FilesPanel.test.tsx
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 import { FilesPanel } from "./FilesPanel";
 import { setViewedStatsExclude } from "../viewedStatsPref";
 import type { FileEntry } from "../types";
@@ -20,6 +20,7 @@ describe("FilesPanel", () => {
   it("shows the empty state when there are no files", () => {
     render(<FilesPanel files={[]} selected={null} onSelect={() => {}} viewedFiles={new Set()} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
     expect(screen.getByText(/nothing to review/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Files viewed")).toHaveTextContent("0 / 0 viewed");
   });
 
   it("renders the header, viewed count, toggle, and tree container", () => {
@@ -190,6 +191,23 @@ describe("FilesPanel", () => {
     } finally {
       scrollSpy.mockRestore();
     }
+  });
+
+  it("renders the remaining rows immediately when a filter shrinks a deeply scrolled tree", async () => {
+    const many = Array.from({ length: 200 }, (_, i) => ({ ...files[0], path: `src/file${i}.ts` }));
+    const props = { selected: null, onSelect: () => {}, viewedFiles: new Set<string>(), onToggleViewed: () => {}, onSetViewedBulk: () => {} };
+    const c = render(<FilesPanel {...props} files={many} />);
+    const tree = screen.getByTestId("files-tree");
+    await act(async () => {
+      tree.scrollTop = 4000;
+      fireEvent.scroll(tree);
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    });
+    expect(screen.queryByText("file0.ts")).not.toBeInTheDocument();
+
+    c.rerender(<FilesPanel {...props} files={[many[0]]} />);
+
+    expect(screen.getByText("file0.ts")).toBeInTheDocument();
   });
 
   it("prefetches a file's diff after the pointer rests on its row (debounced)", () => {

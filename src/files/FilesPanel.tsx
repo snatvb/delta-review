@@ -248,7 +248,7 @@ function Row({ node, depth, top, h }: { node: TreeNode; depth: number; top: numb
 }
 
 export function FilesPanel({
-  files, selected, onSelect, onPrefetch, viewedFiles, onToggleViewed, onSetViewedBulk, commentCounts,
+  files, selected, onSelect, onPrefetch, viewedFiles, onToggleViewed, onSetViewedBulk, commentCounts, emptyMessage = "Nothing to review",
 }: {
   files: FileEntry[];
   selected: string | null;
@@ -261,6 +261,7 @@ export function FilesPanel({
   onSetViewedBulk: (files: string[], viewed: boolean) => void;
   // Per-file comment counts → a small badge on rows that have any. (#1)
   commentCounts?: Map<string, number>;
+  emptyMessage?: string;
 }) {
   const [mode, setMode] = useState<"tree" | "list">("tree");
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set([IGNORED_GROUP]));
@@ -459,11 +460,6 @@ export function FilesPanel({
   const viewedCount = reviewable.filter((f) => viewedFiles.has(f.path)).length;
   const allViewed = reviewable.length > 0 && viewedCount >= reviewable.length;
 
-  // All hooks must run unconditionally — keep the empty-state return below them.
-  if (files.length === 0) {
-    return <div className="files-empty flex flex-1 items-center justify-center p-6 text-[13px] text-muted-foreground">Nothing to review</div>;
-  }
-
   const toggleDir = (path: string) =>
     setCollapsed((s) => { const n = new Set(s); if (n.has(path)) n.delete(path); else n.add(path); return n; });
   const toggleAll = () => setCollapsed(anyDirOpen ? new Set(treeDirPaths) : new Set());
@@ -547,9 +543,12 @@ export function FilesPanel({
   // trees render fully on first paint; totalH sizes the spacer that preserves scroll. (#virtual)
   const winH = viewportH || 1200;
   const rowCount = visible.length;
-  const firstRow = Math.max(0, Math.floor((scrollTop - TREE_PAD_Y) / ROW_H) - OVERSCAN_ROWS);
-  const lastRow = Math.min(rowCount, Math.ceil((scrollTop - TREE_PAD_Y + winH) / ROW_H) + OVERSCAN_ROWS);
   const totalH = rowCount * ROW_H + TREE_PAD_Y * 2;
+  // A filter can shrink the tree before the browser's rAF-gated scroll event
+  // arrives. Render its clamped window immediately rather than an empty old slice.
+  const windowTop = Math.min(scrollTop, Math.max(0, totalH - winH));
+  const firstRow = Math.max(0, Math.floor((windowTop - TREE_PAD_Y) / ROW_H) - OVERSCAN_ROWS);
+  const lastRow = Math.min(rowCount, Math.ceil((windowTop - TREE_PAD_Y + winH) / ROW_H) + OVERSCAN_ROWS);
 
   return (
     // Top + left padding mirrors the diff pane's card inset (PAD) so the three
@@ -663,7 +662,9 @@ export function FilesPanel({
         onKeyDown={onKeyDown}
         className="min-h-0 flex-1 overflow-auto pl-2 pr-1.5 outline-none"
       >
-        {searching && roots.length === 0 ? (
+        {files.length === 0 ? (
+          <div className="files-empty px-3 py-6 text-center text-[13px] text-muted-foreground">{emptyMessage}</div>
+        ) : searching && roots.length === 0 ? (
           <div className="px-3 py-6 text-center text-[12px] text-muted-foreground">No files match “{query}”.</div>
         ) : (
           <div className="relative" style={{ height: totalH }}>

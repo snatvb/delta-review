@@ -16,10 +16,10 @@ const entry = (path: string, additions: number): FileEntry => ({
 });
 const files = [entry("before.ts", 40), entry("large.ts", 400), entry("next.ts", 400)];
 
-function pane(files: FileEntry[], viewedFiles = new Set<string>(), layout: DiffLayout = "unified") {
+function pane(files: FileEntry[], viewedFiles = new Set<string>(), layout: DiffLayout = "unified", hiddenFiles?: ReadonlySet<string>) {
   return (
     <VirtualDiffPane
-      target={target} files={files} viewedFiles={viewedFiles} layout={layout} theme="light"
+      target={target} files={files} viewedFiles={viewedFiles} hiddenFiles={hiddenFiles} layout={layout} theme="light"
       comments={[]} onToggleViewed={noop} onAddComment={noop} onAddFileComment={noop}
       onEditComment={noop} onDeleteComment={noop} onToggleResolvedComment={noop}
     />
@@ -88,6 +88,19 @@ describe("VirtualDiffPane viewed scroll anchoring", () => {
     expect(el.scrollTop).toBe(top - 14);
     expect(screen.getByRole("button", { name: "expand large.ts" })).toBeInTheDocument();
     expect(sectionTop("next.ts") - el.scrollTop).toBe(14 + 40 + 10);
+  });
+
+  it("reveals the next file when an unviewed test card is filtered out", async () => {
+    const withTest = [files[0], entry("large.test.ts", 400), files[2]];
+    const c = render(pane(withTest));
+    const el = screen.getByTestId("diff-pane");
+    const top = sectionTop("large.test.ts");
+    await scrollTo(el, top + 3000);
+
+    c.rerender(pane([files[0], files[2]], new Set(), "unified", new Set(["large.test.ts"])));
+
+    expect(el.scrollTop).toBe(top - 14);
+    expect(sectionTop("next.ts") - el.scrollTop).toBe(14);
   });
 
   it("preserves the code being read when a viewed file above it disappears", async () => {

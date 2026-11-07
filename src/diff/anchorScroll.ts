@@ -1,4 +1,4 @@
-// Geometry from the last committed layout survives even when a viewed file has
+// Geometry from the last committed layout survives even when a hidden file has
 // already been filtered out of the pane. No DOM lookup for that file is needed.
 export type FileScrollGeometry = {
   path: string;
@@ -14,7 +14,7 @@ export function anchorScrollTopAfterReview(
   scrollTop: number,
   previous: readonly FileScrollGeometry[],
   current: readonly FileScrollGeometry[],
-  viewedFiles: ReadonlySet<string>,
+  hiddenFiles: ReadonlySet<string>,
   headerH: number,
   gap: number,
   pad: number,
@@ -26,7 +26,7 @@ export function anchorScrollTopAfterReview(
   for (let i = 0; i < previous.length; i++) {
     const file = previous[i];
     const next = byPath.get(file.path);
-    const hidden = !next && viewedFiles.has(file.path);
+    const hidden = !next && hiddenFiles.has(file.path);
     const collapsed = next?.collapsed && !file.collapsed;
     if (!hidden && !collapsed) {
       continue;

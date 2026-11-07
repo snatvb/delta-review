@@ -4,6 +4,7 @@ import { useWindowPerBranch } from "../windowPerBranch";
 import { useChangeDetection } from "../changeDetection";
 import { useViewedStatsExclude } from "../viewedStatsPref";
 import { useHideViewedFiles } from "../hideViewedFilesPref";
+import { useHideTestFiles } from "../hideTestFilesPref";
 import { useUnreviewableLast } from "../unreviewableLastPref";
 import { useUpdateCheck } from "../updater/updateCheckPref";
 import { useAutoDownload } from "../updater/autoDownloadPref";
@@ -19,6 +20,7 @@ export function GeneralSection() {
   const [changeDetection, setChangeDetection] = useChangeDetection();
   const [excludeViewed, setExcludeViewed] = useViewedStatsExclude();
   const [hideViewed, setHideViewed] = useHideViewedFiles();
+  const [hideTests, setHideTests] = useHideTestFiles();
   const [unreviewableLast, setUnreviewableLast] = useUnreviewableLast();
   const [updateCheck, setUpdateCheck] = useUpdateCheck();
   const [autoDownload, setAutoDownload] = useAutoDownload();
@@ -126,6 +128,22 @@ export function GeneralSection() {
             onChange={setHideViewed}
             onTitle="Marking a file viewed removes its card from the pane"
             offTitle="Keep viewed files' cards in the pane"
+          />
+        }
+      />
+
+      <Divider />
+
+      <Row
+        label="Hide test files"
+        hint="Hide tests from the diff, file tree, and totals without changing viewed marks."
+        control={
+          <OnOffToggle
+            label="Hide test files"
+            value={hideTests}
+            onChange={setHideTests}
+            onTitle="Hide files in test folders and with standard test names"
+            offTitle="Include test files in the diff, tree, and totals"
           />
         }
       />

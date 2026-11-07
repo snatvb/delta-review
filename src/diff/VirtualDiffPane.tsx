@@ -1467,10 +1467,12 @@ function useFileDiffCacheEntry(cache: ReturnType<typeof useFileDiffCache>, path:
 }
 
 export function VirtualDiffPane({
-  target, files, theme, layout, viewedFiles, comments, jump, prefetch, invalidate, onReloadSettled, onVisibleFileChange, onToggleViewed, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, onFileEdited,
+  target, files, theme, layout, viewedFiles, hiddenFiles = viewedFiles, comments, jump, prefetch, invalidate, onReloadSettled, onVisibleFileChange, onToggleViewed, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, onFileEdited,
 }: {
   target: Target; files: FileEntry[]; theme: "light" | "dark"; layout: DiffLayout;
   viewedFiles: Set<string>; comments: Comment[];
+  // Paths removed by pane filters, used to keep scroll anchored across removals.
+  hiddenFiles?: ReadonlySet<string>;
   jump?: { file: string; commentId?: string; n: number } | null;
   // Hover-prefetch signal from the files tree: warm this file's diff (load only, no
   // scroll) so a subsequent click paints instantly. The nonce re-fires it. (#jump-preload)
@@ -1964,7 +1966,7 @@ export function VirtualDiffPane({
       )}
       {/* Snapshot the old scroll before cards collapse or disappear (#viewed-anchor). */}
       <DiffScrollAnchor
-        paneRef={paneRef} files={scrollGeometry} viewedFiles={viewedFiles}
+        paneRef={paneRef} files={scrollGeometry} hiddenFiles={hiddenFiles}
         headerH={HEADER_H} gap={GAP} pad={PAD} onScrollTopChange={setScrollTop}
       >
       <div ref={paneRef} className="h-full overflow-auto [overflow-anchor:none]" data-testid="diff-pane">

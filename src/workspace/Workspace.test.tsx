@@ -50,6 +50,7 @@ import { api } from "../api";
 import { setChangeDetection } from "../changeDetection";
 import { setHideIgnoredFiles } from "../ignoredFilesPref";
 import { setHideViewedFiles } from "../hideViewedFilesPref";
+import { setViewedStatsExclude } from "../viewedStatsPref";
 import type { FileDiff, Target } from "../types";
 
 const target: Target = { repoPath: "/r", mode: "all-changes" };
@@ -236,6 +237,29 @@ describe("Workspace", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /re-diff now/i })).toBeEnabled());
   });
 
+  it("keeps compact Refresh clickable and its keyboard shortcut working", async () => {
+    openReview.mockResolvedValue(fileSession);
+    refreshReview.mockResolvedValue({
+      ...fileSession,
+      summary: { ...fileSession.summary, files: [{ ...fileSession.summary.files[0], path: "src/b.ts" }] },
+    });
+    render(<Workspace target={target} />);
+    await screen.findByTestId("diff-pane");
+    await act(async () => {
+      fsChanged?.({ payload: { paths: ["src/a.ts"], gitMeta: false } });
+    });
+
+    const refresh = await screen.findByRole("button", { name: "Refresh" });
+    expect(refresh).toHaveTextContent(/^Refresh$/);
+    fireEvent.keyDown(window, { key: "r", metaKey: true });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument());
+    expect(screen.getByText("b.ts")).toBeInTheDocument();
+
+    refreshReview.mockClear();
+    fireEvent.keyDown(window, { key: "r", ctrlKey: true });
+    await waitFor(() => expect(refreshReview).toHaveBeenCalledOnce());
+  });
+
   it("keeps the Refresh spinner up until the pane's reload lands, not just the re-diff IPC (#refresh-feedback)", async () => {
     openReview.mockResolvedValue(fileSession);
     refreshReview.mockResolvedValue(fileSession);
@@ -295,9 +319,7 @@ describe("Workspace", () => {
       await Promise.resolve();
     });
     expect(refreshReview).toHaveBeenCalled(); // the re-diff ran…
-    // …and found nothing to show. (Substring, not /^refresh$/ — the button's
-    // accessible name is "Refresh ⌘R", so an anchored matcher would spuriously
-    // pass by never matching even when the button is present.)
+    // …and found nothing to show.
     expect(screen.queryByRole("button", { name: /refresh/i })).toBeNull();
     await waitFor(() => expect(screen.getByRole("button", { name: /re-diff now/i })).toBeEnabled());
   });
@@ -470,6 +492,222 @@ describe("Workspace", () => {
       fireEvent.click(screen.getByRole("button", { name: "Show ignored files" }));
       const pane = await screen.findByTestId("diff-pane");
       await waitFor(() => expect(within(pane).getByText("ignored")).toBeInTheDocument());
+    });
+  });
+
+  describe("test-files toggle", () => {
+    let clientHeightDesc: PropertyDescriptor | undefined;
+    const testSession = {
+      ...fileSession,
+      summary: {
+        ...fileSession.summary,
+        files: [
+          fileSession.summary.files[0],
+          { ...fileSession.summary.files[0], path: "src/a.test.ts", additions: 9, deletions: 4 },
+          { ...fileSession.summary.files[0], path: "tests/setup.ts", additions: 20, deletions: 8 },
+        ],
+      },
+    };
+
+    beforeAll(() => {
+      clientHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 900 });
+    });
+    afterAll(() => {
+      if (clientHeightDesc) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDesc);
+      }
+    });
+    beforeEach(() => {
+      setHideIgnoredFiles("off");
+      setHideViewedFiles("off");
+      setViewedStatsExclude("off");
+      vi.mocked(api.saveReview).mockClear();
+      localStorage.removeItem("delta.hideTestFiles");
+      window.dispatchEvent(new StorageEvent("storage", { key: "delta.hideTestFiles", newValue: null }));
+      openReview.mockResolvedValue(testSession);
+      vi.mocked(api.getFileDiff).mockResolvedValue({ status: "modified", binary: false, oldContent: "a\n", newContent: "b\n" } as FileDiff);
+    });
+
+    it("hides tests from both panes and all file stats, persists and restores", async () => {
+      render(<Workspace target={target} />);
+      const pane = await screen.findByTestId("diff-pane");
+      await waitFor(() => expect(within(pane).getByText("a.test.ts")).toBeInTheDocument());
+      const toggle = screen.getByRole("button", { name: "Hide test files (2)" });
+      expect(toggle).toHaveAttribute("aria-pressed", "false");
+      const toggleColors = toggle.className;
+      expect(toggle.querySelector(".lucide-flask-conical")).not.toBeNull();
+      expect(toggle.querySelector(".lucide-flask-conical-off")).toBeNull();
+      expect(screen.getByLabelText("Files viewed")).toHaveTextContent("0 / 3 viewed");
+      const totals = screen.getByRole("button", { name: "Toggle unviewed-only totals" });
+      expect(totals).toHaveTextContent("+30 −12");
+      expect(screen.getByLabelText("+10 / −4 under src")).toBeInTheDocument();
+
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute("aria-pressed", "true");
+      expect(toggle.className).toBe(toggleColors);
+      expect(toggle.querySelector(".lucide-flask-conical-off")).not.toBeNull();
+      expect(toggle.querySelector(".lucide-flask-conical")).toBeNull();
+      expect(within(pane).queryByText("a.test.ts")).not.toBeInTheDocument();
+      expect(within(pane).queryByText("setup.ts")).not.toBeInTheDocument();
+      expect(within(pane).getByText("a.ts")).toBeInTheDocument();
+      const tree = screen.getByTestId("files-tree");
+      expect(within(tree).queryByText("a.test.ts")).not.toBeInTheDocument();
+      expect(within(tree).queryByText("tests")).not.toBeInTheDocument();
+      expect(within(tree).getByText("a.ts")).toBeInTheDocument();
+      expect(screen.getByLabelText("Files viewed")).toHaveTextContent("0 / 1 viewed");
+      expect(totals).toHaveTextContent("+1");
+      expect(totals).not.toHaveTextContent("−12");
+      expect(screen.getByLabelText("+1 / −0 under src")).toBeInTheDocument();
+      expect(localStorage.getItem("delta.hideTestFiles")).toBe("on");
+
+      fireEvent.click(screen.getByRole("button", { name: "Show test files (2)" }));
+      expect(toggle.className).toBe(toggleColors);
+      expect(toggle.querySelector(".lucide-flask-conical")).not.toBeNull();
+      expect(toggle.querySelector(".lucide-flask-conical-off")).toBeNull();
+      await waitFor(() => expect(within(pane).getByText("a.test.ts")).toBeInTheDocument());
+      expect(within(pane).getByText("setup.ts")).toBeInTheDocument();
+      const treeCheckbox = within(tree).getByRole("button", { name: "viewed src/a.test.ts" });
+      expect(treeCheckbox.querySelector(".lucide-check")).toBeNull();
+      expect(screen.getByLabelText("Files viewed")).toHaveTextContent("0 / 3 viewed");
+      expect(totals).toHaveTextContent("+30 −12");
+      expect(localStorage.getItem("delta.hideTestFiles")).toBe("off");
+    });
+
+    it("syncs changes from another window", async () => {
+      render(<Workspace target={target} />);
+      const pane = await screen.findByTestId("diff-pane");
+      await waitFor(() => expect(within(pane).getByText("a.test.ts")).toBeInTheDocument());
+      act(() => {
+        localStorage.setItem("delta.hideTestFiles", "on");
+        window.dispatchEvent(new StorageEvent("storage", { key: "delta.hideTestFiles", newValue: "on" }));
+      });
+      expect(within(pane).queryByText("a.test.ts")).not.toBeInTheDocument();
+      expect(within(screen.getByTestId("files-tree")).queryByText("a.test.ts")).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Files viewed")).toHaveTextContent("0 / 1 viewed");
+      expect(screen.getByRole("button", { name: "Show test files (2)" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("can be armed before the review has tests", async () => {
+      openReview.mockResolvedValue(fileSession);
+      render(<Workspace target={target} />);
+      await screen.findByTestId("diff-pane");
+      fireEvent.click(screen.getByRole("button", { name: "Hide test files (0)" }));
+      expect(screen.getByRole("button", { name: "Show test files (0)" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("offers a way back when every file is a hidden test", async () => {
+      openReview.mockResolvedValue({
+        ...testSession,
+        summary: { ...testSession.summary, files: testSession.summary.files.slice(1) },
+      });
+      render(<Workspace target={target} />);
+      await screen.findByTestId("diff-pane");
+      fireEvent.click(screen.getByRole("button", { name: "Hide test files (2)" }));
+      expect(screen.getByText("Every file in this review is a test file.")).toBeInTheDocument();
+      expect(screen.getByText("Test files are hidden.")).toBeInTheDocument();
+      expect(screen.getByLabelText("Files viewed")).toHaveTextContent("0 / 0 viewed");
+      expect(screen.getByRole("textbox", { name: "Search files" })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Show test files" }));
+      const pane = await screen.findByTestId("diff-pane");
+      await waitFor(() => expect(within(pane).getByText("a.test.ts")).toBeInTheDocument());
+    });
+
+    it("combines with viewed and ignored filters without marking tests viewed", async () => {
+      openReview.mockResolvedValue({
+        ...testSession,
+        review: { ...testSession.review, viewed: [{ file: "src/a.ts", diffHash: "" }] },
+        summary: {
+          ...testSession.summary,
+          files: [...testSession.summary.files, { ...fileSession.summary.files[0], path: "src/gen.ts", ignored: true }],
+        },
+      });
+      render(<Workspace target={target} />);
+      await screen.findByTestId("diff-pane");
+      fireEvent.click(screen.getByRole("button", { name: "Hide viewed files (1)" }));
+      fireEvent.click(screen.getByRole("button", { name: "Hide ignored files (1)" }));
+      fireEvent.click(screen.getByRole("button", { name: "Hide test files (2)" }));
+      expect(screen.getByText("All files are hidden by the current filters.")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Show test files" }));
+      const pane = await screen.findByTestId("diff-pane");
+      await waitFor(() => expect(within(pane).getByText("a.test.ts")).toBeInTheDocument());
+      expect(within(pane).queryByText("a.ts")).not.toBeInTheDocument();
+      expect(within(pane).queryByText("gen.ts")).not.toBeInTheDocument();
+      expect(within(pane).getByRole("button", { name: "viewed src/a.test.ts" })).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("filters search and list mode too, without clearing the filter on source navigation", async () => {
+      render(<Workspace target={target} />);
+      const pane = await screen.findByTestId("diff-pane");
+      const search = screen.getByRole("textbox", { name: "Search files" });
+      const tree = screen.getByTestId("files-tree");
+      fireEvent.change(search, { target: { value: "a.test" } });
+      expect(within(tree).getByText("a.test.ts")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Hide test files (2)" }));
+      expect(within(pane).queryByText("a.test.ts")).not.toBeInTheDocument();
+      expect(within(tree).getByText("No files match “a.test”.")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("radio", { name: "List" }));
+      expect(within(tree).queryByText("src/a.test.ts")).not.toBeInTheDocument();
+      fireEvent.change(search, { target: { value: "a.ts" } });
+      fireEvent.click(within(tree).getByText("src/a.ts"));
+      expect(screen.getByRole("button", { name: "Show test files (2)" })).toHaveAttribute("aria-pressed", "true");
+
+      fireEvent.click(screen.getByRole("button", { name: "Show test files (2)" }));
+      fireEvent.change(search, { target: { value: "a.test" } });
+      expect(within(tree).getByText("src/a.test.ts")).toBeInTheDocument();
+    });
+
+    it("preserves hidden viewed marks and excludes tests from folder checkboxes", async () => {
+      openReview.mockResolvedValue({
+        ...testSession,
+        review: { ...testSession.review, viewed: [{ file: "src/a.test.ts", diffHash: "test-hash" }] },
+      });
+      render(<Workspace target={target} />);
+      await screen.findByTestId("diff-pane");
+      expect(screen.getByLabelText("Files viewed")).toHaveTextContent("1 / 3 viewed");
+
+      fireEvent.click(screen.getByRole("button", { name: "Hide test files (2)" }));
+      expect(screen.getByLabelText("Files viewed")).toHaveTextContent("0 / 1 viewed");
+      expect(screen.getByRole("button", { name: "Hide viewed files (0)" })).toBeInTheDocument();
+      expect(api.saveReview).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "viewed folder src" }));
+      expect(screen.getByLabelText("Files viewed")).toHaveTextContent("1 / 1 viewed");
+      await waitFor(() => expect(api.saveReview).toHaveBeenCalled());
+      const saves = vi.mocked(api.saveReview).mock.calls;
+      expect(saves[saves.length - 1][0].viewed).toEqual([
+        { file: "src/a.test.ts", diffHash: "test-hash" },
+        { file: "src/a.ts", diffHash: "" },
+      ]);
+
+      fireEvent.click(screen.getByRole("button", { name: "Show test files (2)" }));
+      expect(screen.getByLabelText("Files viewed")).toHaveTextContent("2 / 3 viewed");
+      const tree = screen.getByTestId("files-tree");
+      expect(within(tree).getByRole("button", { name: "viewed src/a.test.ts" }).querySelector(".lucide-check")).not.toBeNull();
+      expect(within(tree).getByRole("button", { name: "viewed tests/setup.ts" }).querySelector(".lucide-check")).toBeNull();
+    });
+
+    it("reveals a hidden test when jumping to its comment", async () => {
+      openReview.mockResolvedValue({
+        ...testSession,
+        review: {
+          ...testSession.review,
+          comments: [{
+            id: "ct", scope: "line", body: "check test",
+            anchor: { file: "src/a.test.ts", side: "new", startLine: 1, endLine: null, snippet: null },
+            stale: false, resolved: false, createdAt: "t", updatedAt: "t",
+          }],
+        },
+      });
+      render(<Workspace target={target} />);
+      const pane = await screen.findByTestId("diff-pane");
+      fireEvent.click(screen.getByRole("button", { name: "Hide test files (2)" }));
+      expect(within(pane).queryByText("a.test.ts")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Comments (1)" }));
+      fireEvent.click(screen.getByRole("button", { name: "Jump to comment on src/a.test.ts" }));
+      await waitFor(() => expect(within(pane).getByText("a.test.ts")).toBeInTheDocument());
+      expect(screen.getByRole("button", { name: "Hide test files (2)" })).toHaveAttribute("aria-pressed", "false");
     });
   });
 

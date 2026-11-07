@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.26.0 — 2026-11-07
+
+### 🚀 New Features
+
+- **Hide test files** — a flask toggle in the review toolbar (also in Settings → General) hides conventional test filenames and files under `test/`, `tests/`, and `__tests__/`. Both panes, tree/list search, file and viewed counts, folder totals, and +/− totals update together; folder checkboxes act only on visible files. Viewed marks stay saved and return when tests are shown again. The choice persists and syncs between windows; a crossed-out flask indicates hidden tests without changing the existing active/inactive colors.
+
+### 🔧 Changes
+
+- **More compact Refresh button** — the pending-changes button no longer displays its shortcut badge. The tooltip and Cmd/Ctrl+R shortcuts still work.
+
+### 🐛 Fixes
+
+- **Keep the next changes visible after marking a file Viewed** — collapsing a large card keeps its header at the top with the next file below; hiding it reveals the next surviving file from its start. Scroll is captured before the browser clamps the shrinking pane, and virtualization updates immediately instead of leaving a blank area. Reviewing later code keeps its position, including when async measurements change other card heights at the same time.
+- **Filtering a deeply scrolled file tree no longer leaves it blank** — the virtual window is clamped to the remaining rows immediately. Filtering every file keeps the sidebar header and search visible, with a clear empty state and a way to show tests again.
+
 ## 0.25.0 — 2026-11-02
 
 ### 🐛 Fixes
