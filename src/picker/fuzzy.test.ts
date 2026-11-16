@@ -84,4 +84,11 @@ describe("rankWorktrees", () => {
     expect(rankWorktrees([w], "acme")).toHaveLength(1); // repo
     expect(rankWorktrees([w], "zzz")).toHaveLength(0);
   });
+  it("needs every word to match, in any field and any order", () => {
+    const menu: PickerWorktree = { path: "/wt/context_menu", branch: "feat/context_menu", isMain: false, repoName: "wotdev", repoId: "r1" };
+    const other: PickerWorktree = { path: "/wt/op-ctx", branch: "fork-main", isMain: false, repoName: "open-pencil", repoId: "r2" };
+    expect(rankWorktrees([menu, other], "wot ctx")).toEqual([menu]);
+    expect(rankWorktrees([menu, other], "ctx wot")).toEqual([menu]);
+    expect(rankWorktrees([menu, other], "  ctx  ")).toHaveLength(2);
+  });
 });

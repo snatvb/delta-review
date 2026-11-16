@@ -6,7 +6,7 @@
 // refresh_review, save_review, export_review) extend the switch + fixtures here.
 import { __setBlobUrlForDev, __setInvokeForDev } from "../api";
 import { sameFolder } from "../lib/sameFolder";
-import type { AppSettings, BaseStrategy, DiffSummary, FileDiff, PickerData, Registry, Review, ReviewSession } from "../types";
+import type { AppSettings, BaseStrategy, DiffSummary, FileDiff, PickerData, PickerWorktree, Registry, Review, ReviewSession } from "../types";
 
 // Canvas-drawn PNG data URL so an image compare card shows something in browser dev.
 function mockPng(w: number, h: number, color: string): string {
@@ -609,6 +609,22 @@ function replaceLine(content: string, line: number, expected: string, replacemen
 }
 
 export function installMockBackend(): void {
+  // `?repos=N` → N extra repos with up to 15 worktrees each, for the grouped launcher.
+  const genPickerRepos = (count: number): PickerWorktree[] =>
+    Array.from({ length: count }, (_, r) => {
+      const repoName = ["wotdev", "open-pencil-pr", "trankitate", "atlas", "nimbus"][r % 5] + (r >= 5 ? `-${r}` : "");
+      const day = (n: number) => new Date(Date.UTC(2026, 5, 26 - n, 12 - r)).toISOString();
+      return Array.from({ length: 1 + ((r * 7) % 15) }, (_, i): PickerWorktree => ({
+        path: i === 0 ? `/Users/me/work/${repoName}` : `/Users/me/work/wt/${repoName}-feat-${i}`,
+        branch: i === 0 ? "main" : `feat/task-${r}-${i}`,
+        isMain: i === 0,
+        lastCommitAt: day(i * 2 + r),
+        dirty: i === 1,
+        repoName,
+        repoId: `extra-${r}`,
+        review: null,
+      }));
+    }).flat();
   const params = typeof location !== "undefined" ? new URLSearchParams(location.search) : new URLSearchParams();
   const largeParam = params.get("large");
   // `?empty=1` → a review with no changed files, to exercise the empty state (which
@@ -617,6 +633,7 @@ export function installMockBackend(): void {
   // shows instead. `?empty=many` → many siblings, to exercise the 5-row scroll cap.
   const emptyKind = params.get("empty"); // "1" | "solo" | "many" | null
   const emptyParam = emptyKind === "1" || emptyKind === "solo" || emptyKind === "many";
+  const extraRepos = Math.max(0, Math.min(40, parseInt(params.get("repos") ?? "", 10) || 0));
   const ds = emptyParam
     ? { summary: { ...SUMMARY, files: [] }, files: {}, review: { ...REVIEW, comments: [], viewed: [] } }
     : largeParam
@@ -781,6 +798,7 @@ export function installMockBackend(): void {
                 { path: "/Users/me/projects/demo", branch: "main", isMain: true, lastCommitAt: "2026-06-26T12:00:00Z", dirty: false, repoName: "demo", repoId: "r1", review: joined("/Users/me/projects/demo", "main") },
                 { path: "/Users/me/projects/demo/.worktrees/feat-auth-wt", branch: "feat/auth", isMain: false, lastCommitAt: "2026-06-26T10:00:00Z", dirty: false, repoName: "demo", repoId: "r1", review: joined("/Users/me/projects/demo/.worktrees/feat-auth-wt", "feat/auth") },
                 { path: "/Users/me/projects/demo/.worktrees/spike", branch: "spike/new-idea", isMain: false, lastCommitAt: "2026-06-26T15:45:00Z", dirty: false, repoName: "demo", repoId: "r1", review: null },
+                ...genPickerRepos(extraRepos),
               ],
             };
         return structuredClone(data) as T;

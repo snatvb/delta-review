@@ -27,11 +27,24 @@ export function worktreeActivity(w: PickerWorktree): string {
   return w.review?.lastOpenedAt ?? w.lastCommitAt ?? "";
 }
 
+/** Every whitespace-separated word must match somewhere; scores add up. */
+function matchAllWords(query: string, haystack: string): number | null {
+  let total = 0;
+  for (const word of query.split(/\s+/).filter(Boolean)) {
+    const score = fuzzyMatch(word, haystack);
+    if (score === null) {
+      return null;
+    }
+    total += score;
+  }
+  return total;
+}
+
 /** Filter + rank worktree folders against a query (branch + repo name haystack). */
 export function rankWorktrees(worktrees: PickerWorktree[], query: string): PickerWorktree[] {
   const scored: { w: PickerWorktree; score: number }[] = [];
   for (const w of worktrees) {
-    const score = fuzzyMatch(query, `${worktreeName(w.path)} ${w.branch} ${w.repoName}`);
+    const score = matchAllWords(query, `${worktreeName(w.path)} ${w.branch} ${w.repoName}`);
     if (score !== null) scored.push({ w, score });
   }
   scored.sort((a, b) => b.score - a.score || worktreeActivity(b.w).localeCompare(worktreeActivity(a.w)));

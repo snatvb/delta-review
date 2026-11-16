@@ -1,18 +1,27 @@
-// The shared "open a review" picker: one flat, searchable list of folders —
-// known repositories (their main working copy) and their linked worktrees — with
-// an "Add a repo…" action at the right of the search box. A row's identity is
-// its FOLDER: the branch shown is the one checked out right now, and the row
-// carries the review that opening it would resume. There are deliberately no
-// "recent branches" here — picking a branch you can't check out from the picker
-// was a fiction (every row of one folder opens the same place), and remembered
-// branches outlive their merges. Mounted in two frames — the Home window and
-// the ⌘K overlay — which supply their own chrome.
+// The shared "open a review" picker: known repositories and their linked
+// worktrees, grouped by repo, searchable, with an "Add a repo…" action at the
+// right of the search box. A row's identity is its FOLDER: the branch shown is
+// the one checked out right now, and the row carries the review that opening it
+// would resume. There are deliberately no "recent branches" here — picking a
+// branch you can't check out from the picker was a fiction (every row of one
+// folder opens the same place), and remembered branches outlive their merges.
+// Mounted in two frames — the Home window and the ⌘K overlay — which supply
+// their own chrome.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { rankWorktrees } from "./fuzzy";
 import { usePickerData } from "./usePickerData";
-import { worktreeIdentity, worktreeMeta } from "./pickerUi";
+import { relTime, worktreeIdentity, worktreeMeta } from "./pickerUi";
+import {
+  buildPickerItems,
+  itemRepoId,
+  loadCollapsedRepos,
+  saveCollapsedRepos,
+  scopeFromQuery,
+  type PickerItem,
+  type RepoScope,
+} from "./pickerGroups";
 import { sameFolder } from "../lib/sameFolder";
-import { Trash2, FolderPlus } from "lucide-react";
+import { Trash2, FolderPlus, ChevronRight, ListFilter, X } from "lucide-react";
 import { Kbd } from "@/components/ui/kbd";
 import { Hint } from "@/components/Hint";
 import type { PickerWorktree, ReviewEntry, Target } from "../types";
@@ -25,34 +34,56 @@ export interface ReviewPickerProps {
   onDeleteReview: (r: ReviewEntry) => Promise<boolean>;
 }
 
-type Group = "repo" | "worktree";
-type Row = { key: string; group: Group; node: ReactNode; onActivate: () => void; onDelete?: () => void };
-
-/** Section label shown on the first row of each "repo"/"worktree" run. */
-function groupLabel(g: Group): string {
-  return g === "repo" ? "Repositories" : "Worktrees";
-}
+type Row = {
+  key: string;
+  height: number;
+  repoId: string;
+  node: ReactNode;
+  onActivate: () => void;
+  onDelete?: () => void;
+  onScope?: () => void;
+};
 
 // Virtualized list metrics (px). A repo can have dozens of worktrees, so mounting
 // every row is the picker's open cost — we render only the rows in the viewport.
-const ROW_H = 50;
-const LABEL_H = 24;
+const WORKTREE_H = 50;
+const REPO_H = 34;
+const MORE_H = 28;
 const PAD = 6;
 const OVERSCAN = 220;
 const DEFAULT_VIEWPORT = 420;
 
-type Cell = { top: number; height: number; key: string } & (
-  | { kind: "label"; text: string }
-  | { kind: "row"; i: number }
-);
+type Cell = { top: number; height: number; key: string; i: number };
 
-function worktreeNode(w: PickerWorktree): ReactNode {
+function worktreeNode(w: PickerWorktree, nested: boolean): ReactNode {
   return (
-    <>
-      {worktreeIdentity(w.repoName, w.path, w.branch)}
+    <div className={`flex min-w-0 flex-1 items-center gap-2.5 ${nested ? "pl-5" : ""}`}>
+      {worktreeIdentity(w.repoName, w.path, w.branch, { inRepoGroup: true })}
       {worktreeMeta(w)}
-    </>
+    </div>
   );
+}
+
+function repoNode(item: Extract<PickerItem, { kind: "repo" }>): ReactNode {
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+      <ChevronRight className={`size-3.5 shrink-0 text-muted-foreground transition-transform ${item.collapsed ? "" : "rotate-90"}`} />
+      <span className="truncate text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">{item.repoName}</span>
+      <span className="shrink-0 rounded-full bg-muted px-1.5 text-[10px] tabular-nums text-muted-foreground">{item.total}</span>
+      {item.lastActivity && <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{relTime(item.lastActivity)}</span>}
+    </div>
+  );
+}
+
+function moreNode(hidden: number): ReactNode {
+  return <span className="pl-5 text-[11px] text-muted-foreground">+ {hidden} more</span>;
+}
+
+function rowHeight(item: PickerItem): number {
+  if (item.kind === "repo") {
+    return REPO_H;
+  }
+  return item.kind === "more" ? MORE_H : WORKTREE_H;
 }
 
 export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteReview }: ReviewPickerProps) {
@@ -60,6 +91,9 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
   // whenever the window regains focus, so freshly-created worktrees show up. (#refresh)
   const data = usePickerData();
   const [query, setQuery] = useState("");
+  const [scope, setScope] = useState<RepoScope | null>(null);
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(loadCollapsedRepos);
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const [sel, setSel] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(DEFAULT_VIEWPORT);
@@ -95,15 +129,65 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
   const visible = (w: PickerWorktree): PickerWorktree =>
     w.review && deletedIds.has(w.review.id) ? { ...w, review: null } : w;
 
-  const ranked = data
-    ? rankWorktrees(data.worktrees.filter((w) => !isCurrentWorktree(w.path)).map(visible), query)
-    : [];
-  // Repositories first, then linked worktrees — the two things the picker offers.
-  const rows: Row[] = [
-    ...ranked.filter((w) => w.isMain).map((w): Row => ({ key: `wt-${w.path}`, group: "repo", node: worktreeNode(w), onActivate: () => onOpenWorktree(w), onDelete: w.review ? () => void deleteReviewOf(w) : undefined })),
-    ...ranked.filter((w) => !w.isMain).map((w): Row => ({ key: `wt-${w.path}`, group: "worktree", node: worktreeNode(w), onActivate: () => onOpenWorktree(w), onDelete: w.review ? () => void deleteReviewOf(w) : undefined })),
-  ];
-  const labels = rows.map((row, i) => (i === 0 || rows[i - 1].group !== row.group ? groupLabel(row.group) : null));
+  const all = data?.worktrees ?? [];
+  const currentRepoId = all.find((w) => isCurrentWorktree(w.path))?.repoId;
+  const ranked = rankWorktrees(all.filter((w) => !isCurrentWorktree(w.path)).map(visible), query);
+  const searching = query.trim() !== "";
+  const itemsFor = (forScope: RepoScope | null) =>
+    buildPickerItems({ ranked, scope: forScope, collapsed, expanded, searching, pinnedRepoId: currentRepoId });
+  const items = itemsFor(scope);
+
+  function persistCollapsed(next: ReadonlySet<string>) {
+    setCollapsed(next);
+    saveCollapsedRepos(next);
+  }
+
+  function setRepoCollapsed(repoId: string, isCollapsed: boolean) {
+    const next = new Set(collapsed);
+    if (isCollapsed) {
+      next.add(repoId);
+    } else {
+      next.delete(repoId);
+    }
+    persistCollapsed(next);
+  }
+
+  function enterScope(repoId: string) {
+    const repo = all.find((w) => w.repoId === repoId);
+    if (!repo) return;
+    setScope({ repoId, repoName: repo.repoName });
+    setQuery("");
+    setSel(0);
+    inputRef.current?.focus();
+  }
+
+  function exitScope() {
+    const left = scope;
+    setScope(null);
+    setQuery("");
+    const header = left ? itemsFor(null).findIndex((it) => it.kind === "repo" && it.repoId === left.repoId) : -1;
+    setSel(Math.max(0, header));
+    inputRef.current?.focus();
+  }
+
+  const rows: Row[] = items.map((item): Row => {
+    const repoId = itemRepoId(item);
+    const base = { height: rowHeight(item), repoId, onScope: () => enterScope(repoId) };
+    if (item.kind === "repo") {
+      return { ...base, key: `repo-${repoId}`, node: repoNode(item), onActivate: () => setRepoCollapsed(repoId, !item.collapsed) };
+    }
+    if (item.kind === "more") {
+      return { ...base, key: `more-${repoId}`, node: moreNode(item.hidden), onActivate: () => setExpanded((prev) => new Set(prev).add(repoId)) };
+    }
+    const w = item.w;
+    return {
+      ...base,
+      key: `wt-${w.path}`,
+      node: worktreeNode(w, item.nested),
+      onActivate: () => onOpenWorktree(w),
+      onDelete: w.review ? () => void deleteReviewOf(w) : undefined,
+    };
+  });
 
   const clampedSel = rows.length === 0 ? 0 : Math.min(sel, rows.length - 1);
 
@@ -114,16 +198,11 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
     if (h > 0) setViewportH(h);
   }, [data]);
 
-  // Lay rows + group labels out as absolutely-positioned cells with known offsets.
   const cells: Cell[] = [];
   let y = PAD;
   for (let i = 0; i < rows.length; i++) {
-    if (labels[i]) {
-      cells.push({ kind: "label", text: labels[i]!, top: y, height: LABEL_H, key: `label-${i}` });
-      y += LABEL_H;
-    }
-    cells.push({ kind: "row", i, top: y, height: ROW_H, key: rows[i].key });
-    y += ROW_H;
+    cells.push({ i, top: y, height: rows[i].height, key: rows[i].key });
+    y += rows[i].height;
   }
   const totalHeight = y + PAD;
   const visibleCells = cells.filter((c) => c.top + c.height >= scrollTop - OVERSCAN && c.top <= scrollTop + viewportH + OVERSCAN);
@@ -132,12 +211,26 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
   // by computed offset rather than scrollIntoView.
   useEffect(() => {
     const el = listRef.current;
-    const cell = cells.find((c) => c.kind === "row" && c.i === clampedSel);
+    const cell = cells[clampedSel];
     if (!el || !cell) return;
     if (cell.top < el.scrollTop) el.scrollTop = cell.top - PAD;
     else if (cell.top + cell.height > el.scrollTop + el.clientHeight) el.scrollTop = cell.top + cell.height - el.clientHeight + PAD;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clampedSel]);
+
+  function foldSelected(key: "ArrowLeft" | "ArrowRight"): boolean {
+    const item = items[clampedSel];
+    if (!item || scope || searching) return false;
+    if (item.kind === "repo") {
+      setRepoCollapsed(item.repoId, key === "ArrowLeft");
+      return true;
+    }
+    if (key === "ArrowLeft") {
+      setSel(items.findIndex((it) => it.kind === "repo" && it.repoId === itemRepoId(item)));
+      return true;
+    }
+    return false;
+  }
 
   function onKey(e: React.KeyboardEvent) {
     if (e.key === "ArrowDown") {
@@ -152,7 +245,27 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
     } else if (e.key === "Backspace" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       rows[clampedSel]?.onDelete?.();
+    } else if (e.key === "Tab" && !e.shiftKey && !scope && rows[clampedSel]) {
+      e.preventDefault();
+      rows[clampedSel].onScope?.();
+    } else if ((e.key === "Backspace" && query === "" && scope) || (e.key === "Escape" && scope)) {
+      e.preventDefault();
+      e.stopPropagation();
+      exitScope();
+    } else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && query === "" && foldSelected(e.key)) {
+      e.preventDefault();
     }
+  }
+
+  function onQueryChange(value: string) {
+    const scoped = scope ? null : scopeFromQuery(value, all);
+    if (scoped) {
+      setScope(scoped.scope);
+      setQuery(scoped.rest);
+    } else {
+      setQuery(value);
+    }
+    setSel(0);
   }
 
   function onItemMouseMove(e: React.MouseEvent, i: number) {
@@ -167,6 +280,19 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
   return (
     <div className="flex min-h-0 flex-1 flex-col" onKeyDown={onKey}>
       <div className="flex shrink-0 items-center gap-1 border-b border-border/70 pr-1.5">
+        {scope && (
+          <Hint tip="Back to all repos" kbd="⌫">
+            <button
+              type="button"
+              onClick={exitScope}
+              aria-label={`Leave ${scope.repoName}`}
+              className="ml-3 inline-flex h-6 shrink-0 items-center gap-1 rounded-md bg-secondary pl-2 pr-1 text-[12px] font-semibold text-secondary-foreground hover:bg-secondary/80"
+            >
+              {scope.repoName}
+              <X className="size-3 text-muted-foreground" />
+            </button>
+          </Hint>
+        )}
         <input
           ref={inputRef}
           autoFocus
@@ -174,13 +300,10 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
           autoCorrect="off"
           autoCapitalize="off"
           autoComplete="off"
-          className="h-11 min-w-0 flex-1 bg-transparent px-4 text-[14px] outline-none placeholder:text-muted-foreground/70"
-          placeholder="Search repos & worktrees…"
+          className={`h-11 min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-muted-foreground/70 ${scope ? "px-2" : "px-4"}`}
+          placeholder={scope ? `Search ${scope.repoName}…` : "Search repos & worktrees…"}
           value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setSel(0);
-          }}
+          onChange={(e) => onQueryChange(e.target.value)}
         />
         <Hint tip="Add a repo…">
           <button
@@ -211,51 +334,60 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
           </div>
         ) : (
           <div style={{ position: "relative", height: totalHeight }}>
-            {visibleCells.map((c) =>
-              c.kind === "label" ? (
-                <div
-                  key={c.key}
-                  style={{ position: "absolute", top: c.top, height: c.height, left: PAD, right: PAD }}
-                  className="flex items-end px-3 pb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70"
-                >
-                  {c.text}
-                </div>
-              ) : (
+            {visibleCells.map((c) => {
+              const row = rows[c.i];
+              const isSel = c.i === clampedSel;
+              const item = items[c.i];
+              return (
                 <div
                   key={c.key}
                   data-index={c.i}
                   style={{ position: "absolute", top: c.top, height: c.height, left: PAD, right: PAD }}
-                  className={`group flex items-center rounded-md ${c.i === clampedSel ? "bg-accent text-accent-foreground" : "hover:bg-muted/60"}`}
+                  className={`group flex items-center rounded-md ${isSel ? "bg-accent text-accent-foreground" : "hover:bg-muted/60"}`}
                   onMouseMove={(e) => onItemMouseMove(e, c.i)}
                 >
                   <button
                     type="button"
                     className="flex h-full min-w-0 flex-1 items-center gap-2.5 px-3 text-left outline-none"
-                    onClick={() => rows[c.i].onActivate()}
+                    onClick={row.onActivate}
                   >
-                    {rows[c.i].node}
+                    {row.node}
                   </button>
-                  {rows[c.i].onDelete && (
+                  {item.kind === "repo" && (
+                    <Hint tip="Only this repo" kbd="⇥">
+                      <button
+                        type="button"
+                        aria-label={`Only ${item.repoName}`}
+                        onClick={row.onScope}
+                        className={`mr-2 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring ${isSel ? "visible" : "invisible group-hover:visible"}`}
+                      >
+                        <ListFilter className="size-3.5" />
+                      </button>
+                    </Hint>
+                  )}
+                  {row.onDelete && (
                     <Hint tip="Delete review" kbd="⌘⌫">
                       <button
                         type="button"
                         aria-label="Delete review"
-                        onClick={rows[c.i].onDelete}
-                        className={`mr-2 inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus:outline-none focus-visible:ring-1 focus-visible:ring-ring ${c.i === clampedSel ? "visible" : "invisible group-hover:visible"}`}
+                        onClick={row.onDelete}
+                        className={`mr-2 inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus:outline-none focus-visible:ring-1 focus-visible:ring-ring ${isSel ? "visible" : "invisible group-hover:visible"}`}
                       >
                         <Trash2 className="size-3.5" />
                       </button>
                     </Hint>
                   )}
                 </div>
-              ),
-            )}
+              );
+            })}
           </div>
         )}
       </div>
       <div className="flex shrink-0 items-center gap-4 border-t border-border/70 px-4 py-1.5 text-[11px] text-muted-foreground">
         <span>↑↓ navigate</span>
         <span>↵ open</span>
+        {scope ? <span>⌫ all repos</span> : <span>⇥ only repo</span>}
+        {!scope && <span>←→ fold</span>}
         <span>⌘⌫ delete</span>
       </div>
     </div>

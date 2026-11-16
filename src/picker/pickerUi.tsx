@@ -23,9 +23,10 @@ export function relTime(iso: string): string {
 /** Leading icon + a hierarchical "repo / worktree" line over the branch — the identity
  *  shown for every row. The worktree name (what you usually know) is emphasized; the repo
  *  is a muted breadcrumb prefix, dropped when it equals the worktree (the main worktree). */
-export function worktreeIdentity(repoName: string, path: string, branch: string): ReactNode {
+export function worktreeIdentity(repoName: string, path: string, branch: string, { inRepoGroup = false } = {}): ReactNode {
   const wt = worktreeName(path);
   const isMain = wt === repoName;
+  const showRepoPrefix = !isMain && !inRepoGroup;
   return (
     // items-start so the folder icon tracks the title line (its top), not the vertical
     // center of the whole two-line block — the icon's height matches the title line, so
@@ -34,7 +35,7 @@ export function worktreeIdentity(repoName: string, path: string, branch: string)
       <Folder className="size-4 shrink-0 text-muted-foreground" />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex min-w-0 items-baseline text-[13px] leading-tight">
-          {!isMain && <span className="shrink-0 text-muted-foreground">{repoName}&nbsp;/&nbsp;</span>}
+          {showRepoPrefix && <span className="shrink-0 text-muted-foreground">{repoName}&nbsp;/&nbsp;</span>}
           <span className="truncate font-medium">{isMain ? repoName : wt}</span>
         </div>
         <div className="flex min-w-0 items-center gap-1 text-[11px] leading-tight text-muted-foreground">
