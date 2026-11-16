@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.28.0 — 2026-11-16
+
+### 🚀 New Features
+
+- **Repository-grouped worktree picker** — worktrees are grouped by repository, with an option to narrow the picker to one repository and search within it.
+
+### 🔧 Changes
+
+- **Faster working-tree change detection** — changed paths are discovered through the Git CLI, and untracked directories are listed without enumerating every file so Git's untracked cache can apply.
+
+### 🐛 Fixes
+
+- Toggle groups retain their on/off state when wrapped in tooltips.
+- Shell and JavaScript module scripts use LF line endings on checkout, including Windows builds.
+
+**Installation:** platform certificates/notarization are not included. If macOS blocks the downloaded app, use **System Settings → Privacy & Security → Open Anyway** after the first launch attempt. Windows may show SmartScreen; use **More info → Run anyway** if you trust this release. In-app updater packages are separately signed and verified.
+
 ## 0.27.0 — 2026-11-08
 
 ### 🚀 New Features
