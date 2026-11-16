@@ -303,7 +303,7 @@ function LineEditInput({ state, onSave, onCancel, onEditFull }: { state: RowEdit
 }
 
 const gutterCls = "w-12 shrink-0 select-none border-r border-border/40 px-1 text-right text-[length:var(--gutter-fs,11px)] text-muted-foreground/60 tabular-nums cursor-ns-resize";
-const addBtnCls = "absolute z-10 hidden size-5 -translate-y-1/2 items-center justify-center rounded-md bg-primary text-primary-foreground shadow-sm group-hover:flex hover:brightness-110";
+const addBtnCls = "invisible absolute z-10 flex size-5 -translate-y-1/2 items-center justify-center rounded-md bg-primary text-primary-foreground shadow-sm group-hover:visible hover:brightness-110";
 // Wide files scroll horizontally, but the scrollbar itself is hidden — the always-
 // on thin bar flickered as the outer pane scrolled. Trackpad/shift-wheel still
 // scroll the row. (#hscroll)
