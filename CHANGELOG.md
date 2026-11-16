@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.29.0 — 2026-11-16
+
+### 🚀 New Features
+
+- **Embedded terminal** — open a resizable bottom panel with Ctrl+` and run a shell in the current review worktree. Hiding the panel keeps the session running; restarting or killing a running shell asks for confirmation.
+- **Configurable terminal shell** — choose a shell in Settings → General (for example, `nu` or `pwsh`). Leave it blank to use PowerShell on Windows or your login shell elsewhere. The terminal follows the app theme and code font.
+
+### 🐛 Fixes
+
+- Terminal process trees are cleaned up when their review window closes or reloads, or the app exits, so child processes do not remain running after their session ends.
+- Windows uses the system ConPTY instead of picking up a conflicting `conpty.dll` from PATH, avoiding slow shell startup with tools such as WezTerm installed.
+
+**Installation:** platform certificates/notarization are not included. If macOS blocks the downloaded app, use **System Settings → Privacy & Security → Open Anyway** after the first launch attempt. Windows may show SmartScreen; use **More info → Run anyway** if you trust this release. In-app updater packages are separately signed and verified.
+
 ## 0.28.0 — 2026-11-16
 
 ### 🚀 New Features
