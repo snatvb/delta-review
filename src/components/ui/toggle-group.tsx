@@ -58,10 +58,14 @@ function ToggleGroupItem({
   children,
   variant = "default",
   size = "default",
-  ...props
+  ...propsWithTriggerState
 }: React.ComponentProps<typeof ToggleGroupPrimitive.Item> &
   VariantProps<typeof toggleVariants>) {
   const context = React.useContext(ToggleGroupContext)
+  // A TooltipTrigger asChild parent injects its open/closed data-state, which would override the item's on/off.
+  const { "data-state": _triggerState, ...props } = propsWithTriggerState as typeof propsWithTriggerState & {
+    "data-state"?: string
+  }
 
   return (
     <ToggleGroupPrimitive.Item
