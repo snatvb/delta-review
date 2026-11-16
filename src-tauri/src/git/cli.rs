@@ -52,6 +52,7 @@ fn runs_without_prompt(candidate: &Path) -> bool {
 }
 
 // libgit2 stats every tracked file (12 s on an 815k-file repo); git CLI uses threaded preload and fsmonitor (~3 s).
+// Untracked stays in "normal" mode: "-uall" bypasses the untracked cache (1.5 s vs 4.6 s there); libgit2 expands the dirs.
 pub fn changed_worktree_paths(workdir: &Path, from_tree: Oid) -> Option<Vec<String>> {
     let git = GIT_BINARY.as_deref()?;
     changed_worktree_paths_with(git, workdir, from_tree)
@@ -67,7 +68,7 @@ pub(crate) fn changed_worktree_paths_with(
         let tracked = scope.spawn(|| {
             run(git, workdir, &["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", &tree, "--"])
         });
-        let untracked = run(git, workdir, &["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"]);
+        let untracked = run(git, workdir, &["status", "--porcelain=v1", "-z", "--untracked-files=normal", "--no-renames"]);
         (tracked.join().ok().flatten(), untracked)
     });
     let mut paths = split_nul(&tracked?)?;
