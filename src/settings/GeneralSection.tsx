@@ -9,12 +9,15 @@ import { useUnreviewableLast } from "../unreviewableLastPref";
 import { useUpdateCheck } from "../updater/updateCheckPref";
 import { useAutoDownload } from "../updater/autoDownloadPref";
 import { Chevron, Divider, OnOffToggle, Row, selectClass } from "./controls";
+import { useTerminalShell } from "../terminal/terminalShellPref";
+import { isWindows } from "../lib/platform";
 
 // General: how reviews open, how the app reacts to file changes, and updates.
 // The window-per-branch pref is refreshed from the backend every time the
 // dialog opens (see SettingsDialog) — here we only read and write it.
 export function GeneralSection() {
   const [editor, setEditor] = useEditorPref();
+  const [terminalShell, setTerminalShell] = useTerminalShell();
   const [openMode, setOpenMode] = usePickerOpenMode();
   const [windowPerBranch, setWindowPerBranch] = useWindowPerBranch();
   const [changeDetection, setChangeDetection] = useChangeDetection();
@@ -44,6 +47,23 @@ export function GeneralSection() {
             </select>
             <Chevron />
           </div>
+        }
+      />
+
+      <Divider />
+
+      <Row
+        label="Terminal shell"
+        hint="Program name or full path, e.g. nu, pwsh, /bin/zsh. Empty: system default."
+        control={
+          <input
+            aria-label="Terminal shell"
+            value={terminalShell}
+            onChange={(e) => setTerminalShell(e.target.value)}
+            placeholder={isWindows ? "pwsh / powershell" : "$SHELL"}
+            spellCheck={false}
+            className={`${selectClass} w-44 pr-2.5 font-mono`}
+          />
         }
       />
 

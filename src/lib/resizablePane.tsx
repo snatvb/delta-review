@@ -12,6 +12,7 @@ export interface PaneConfig {
 // comments header far less but its cards want room to stay readable.
 export const FILE_PANE: PaneConfig = { key: "delta:sidebarWidth", min: 280, max: 520, def: 320 };
 export const COMMENTS_PANE: PaneConfig = { key: "delta:commentsWidth", min: 240, max: 520, def: 320 };
+export const TERMINAL_PANE: PaneConfig = { key: "delta:terminalHeight", min: 120, max: 1200, def: 280 };
 
 const clamp = (cfg: PaneConfig, w: number) => Math.min(cfg.max, Math.max(cfg.min, Math.round(w)));
 
@@ -48,16 +49,22 @@ export function useResizableWidth(cfg: PaneConfig): [number, (w: number, persist
 // grows as the pointer moves left (right/comments pane). Returns the active flag
 // (drives the divider styling + suppressing the open/close transition) plus props
 // to spread onto the separator element.
+export type PaneEdge = "left" | "right" | "top";
+
+const isVertical = (edge: PaneEdge) => edge === "top";
+const pointerAlong = (edge: PaneEdge, e: React.PointerEvent) => (isVertical(edge) ? e.clientY : e.clientX);
+
 export function usePaneResize(
   cfg: PaneConfig,
   width: number,
   setWidth: (w: number, persist?: boolean) => void,
-  edge: "left" | "right",
+  edge: PaneEdge,
 ) {
   const [resizing, setResizing] = useState(false);
   const gesture = useRef<{ startX: number; startW: number } | null>(null);
   const liveWidth = useRef(width);
   const dir = edge === "right" ? 1 : -1;
+  const [backKey, forwardKey] = isVertical(edge) ? ["ArrowUp", "ArrowDown"] : ["ArrowLeft", "ArrowRight"];
 
   // While dragging, force a col-resize cursor everywhere and suppress text
   // selection — pointer capture keeps move/up on the handle as the cursor sweeps
@@ -65,30 +72,30 @@ export function usePaneResize(
   useEffect(() => {
     if (!resizing) return;
     const { cursor, userSelect } = document.body.style;
-    document.body.style.cursor = "col-resize";
+    document.body.style.cursor = isVertical(edge) ? "row-resize" : "col-resize";
     document.body.style.userSelect = "none";
     return () => {
       document.body.style.cursor = cursor;
       document.body.style.userSelect = userSelect;
     };
-  }, [resizing]);
+  }, [resizing, edge]);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault(); // don't start a text selection
-    gesture.current = { startX: e.clientX, startW: width };
+    gesture.current = { startX: pointerAlong(edge, e), startW: width };
     liveWidth.current = width;
     // Capture keeps move/up on the handle as the cursor leaves the thin grab zone;
     // it can throw if the pointer isn't active, which must not abort the drag.
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
     setResizing(true);
-  }, [width]);
+  }, [edge, width]);
   const onPointerMove = useCallback((e: React.PointerEvent) => {
     const g = gesture.current;
     if (!g) return;
-    const next = g.startW + dir * (e.clientX - g.startX);
+    const next = g.startW + dir * (pointerAlong(edge, e) - g.startX);
     liveWidth.current = next;
     setWidth(next, false); // live, no persist (avoids localStorage thrash)
-  }, [dir, setWidth]);
+  }, [dir, edge, setWidth]);
   const onPointerUp = useCallback((e: React.PointerEvent) => {
     if (!gesture.current) return;
     gesture.current = null;
@@ -97,17 +104,17 @@ export function usePaneResize(
     setWidth(liveWidth.current, true); // commit the final width
   }, [setWidth]);
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    if (e.key !== backKey && e.key !== forwardKey) return;
     e.preventDefault();
     // Arrow toward the grow direction widens; the *dir factor keeps that intuitive
     // on either edge (→ grows the file pane, ← grows the comments pane).
-    const step = (e.shiftKey ? 48 : 16) * (e.key === "ArrowRight" ? 1 : -1) * dir;
+    const step = (e.shiftKey ? 48 : 16) * (e.key === forwardKey ? 1 : -1) * dir;
     setWidth(width + step, true);
-  }, [dir, setWidth, width]);
+  }, [backKey, dir, forwardKey, setWidth, width]);
 
   const separatorProps = {
     role: "separator" as const,
-    "aria-orientation": "vertical" as const,
+    "aria-orientation": isVertical(edge) ? ("horizontal" as const) : ("vertical" as const),
     "aria-valuenow": width,
     "aria-valuemin": cfg.min,
     "aria-valuemax": cfg.max,
@@ -130,11 +137,23 @@ export function usePaneResize(
 export function PaneResizer({
   edge, label, resizing, separatorProps,
 }: {
-  edge: "left" | "right";
+  edge: PaneEdge;
   label: string;
   resizing: boolean;
   separatorProps: ReturnType<typeof usePaneResize>["separatorProps"];
 }) {
+  const hairline = resizing ? "bg-foreground/30" : "bg-transparent group-hover/resize:bg-border group-focus-visible/resize:bg-border";
+  if (isVertical(edge)) {
+    return (
+      <div
+        {...separatorProps}
+        aria-label={label}
+        className="group/resize absolute inset-x-0 top-0 z-10 flex h-2.5 -translate-y-1/2 cursor-row-resize touch-none flex-col justify-center focus:outline-none"
+      >
+        <span aria-hidden className={`h-px w-full transition-colors ${hairline}`} />
+      </div>
+    );
+  }
   const pos = edge === "right"
     ? "right-0 translate-x-1/2 justify-center"
     // Center the hairline in the PAD-width (14px) gutter to the panel's left
@@ -149,7 +168,7 @@ export function PaneResizer({
     >
       <span
         aria-hidden
-        className={`w-px transition-colors ${resizing ? "bg-foreground/30" : "bg-transparent group-hover/resize:bg-border group-focus-visible/resize:bg-border"}`}
+        className={`w-px transition-colors ${hairline}`}
       />
     </div>
   );

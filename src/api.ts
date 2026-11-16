@@ -1,4 +1,4 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type {
   Target,
   DiffSummary,
@@ -21,6 +21,7 @@ import type {
   BaseStrategy,
   BranchList,
   UpdaterSnapshot,
+  TerminalEvent,
 } from "./types";
 
 // Transport indirection: a dev-only fixture backend (VITE_MOCK_IPC) can replace
@@ -46,6 +47,14 @@ let blobUrlImpl: BlobUrlFn = (target, path, side, mime, rev) => {
 /** Dev-only: swap how binary blob URLs are built (no URI scheme outside Tauri). */
 export function __setBlobUrlForDev(fn: BlobUrlFn): void {
   blobUrlImpl = fn;
+}
+
+export type TerminalChannelFn = (onEvent: (event: TerminalEvent) => void) => unknown;
+
+let terminalChannelImpl: TerminalChannelFn = (onEvent) => new Channel<TerminalEvent>(onEvent);
+
+export function __setTerminalChannelForDev(fn: TerminalChannelFn): void {
+  terminalChannelImpl = fn;
 }
 
 export const api = {
@@ -113,6 +122,12 @@ export const api = {
   // `line` jumps there where the editor's CLI supports it. (#editor)
   openInEditor: (editor: string, repoPath: string, file?: string, line?: number): Promise<void> =>
     invokeImpl("open_in_editor", { editor, repoPath, file, line }),
+  terminalOpen: (cwd: string, shell: string, cols: number, rows: number, onEvent: (event: TerminalEvent) => void): Promise<number> =>
+    invokeImpl("terminal_open", { cwd, shell: shell || null, cols, rows, events: terminalChannelImpl(onEvent) }),
+  terminalWrite: (id: number, data: string): Promise<void> => invokeImpl("terminal_write", { id, data }),
+  terminalResize: (id: number, cols: number, rows: number): Promise<void> =>
+    invokeImpl("terminal_resize", { id, cols, rows }),
+  terminalClose: (id: number): Promise<void> => invokeImpl("terminal_close", { id }),
   // `expected` must match the line's on-disk text or the backend refuses the write.
   editFileLine: (target: Target, path: string, line: number, expected: string, replacement: string): Promise<void> =>
     invokeImpl("edit_file_line", { target, path, line, expected, replacement }),

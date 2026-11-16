@@ -18,7 +18,7 @@ use crate::settings::Settings;
 use crate::storage::{JsonRegistryStore, JsonStorage, RegistryStore, Storage};
 use crate::vcs::{Repo, VcsKind};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
@@ -932,6 +932,50 @@ pub fn open_in_editor(
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("launch {editor}: {e}"))
+}
+
+#[tauri::command]
+pub fn terminal_open(
+    window: tauri::WebviewWindow,
+    terminals: tauri::State<'_, crate::terminal::Terminals>,
+    cwd: String,
+    shell: Option<String>,
+    cols: u16,
+    rows: u16,
+    events: tauri::ipc::Channel<crate::terminal::TerminalEvent>,
+) -> Result<u32, String> {
+    let request = crate::terminal::OpenRequest {
+        window: window.label(),
+        cwd: Path::new(&cwd),
+        shell: shell.as_deref(),
+        cols,
+        rows,
+    };
+    terminals.open(request, events)
+}
+
+#[tauri::command]
+pub fn terminal_write(
+    terminals: tauri::State<'_, crate::terminal::Terminals>,
+    id: u32,
+    data: String,
+) -> Result<(), String> {
+    terminals.write(id, &data)
+}
+
+#[tauri::command]
+pub fn terminal_resize(
+    terminals: tauri::State<'_, crate::terminal::Terminals>,
+    id: u32,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    terminals.resize(id, cols, rows)
+}
+
+#[tauri::command]
+pub fn terminal_close(terminals: tauri::State<'_, crate::terminal::Terminals>, id: u32) {
+    terminals.close(id);
 }
 
 #[tauri::command]
