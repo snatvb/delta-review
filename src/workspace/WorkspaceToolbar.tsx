@@ -1,5 +1,5 @@
 import { useRef, type ReactNode } from "react";
-import { Check, CheckCheck, ChevronDown, ChevronLeft, ChevronRight, Copy, ExternalLink, ListFilter, MessageSquare, MoreHorizontal, RefreshCw, Search, Settings } from "lucide-react";
+import { Check, CheckCheck, ChevronDown, ChevronLeft, ChevronRight, Copy, ExternalLink, ListFilter, MessageSquare, MoreHorizontal, RefreshCw, Search, Settings, SquareTerminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
 import { Kbd } from "@/components/ui/kbd";
@@ -46,6 +46,8 @@ interface WorkspaceToolbarProps {
   copyState: "idle" | "ok" | "err";
   onCopy: () => void;
   onOpenEditor: () => void;
+  terminalOpen: boolean;
+  onToggleTerminal: () => void;
   onOpenSettings?: () => void;
 }
 
@@ -138,6 +140,11 @@ export function WorkspaceToolbar(props: WorkspaceToolbarProps) {
             </Hint>
           </>
         )}
+        <Hint tip={props.terminalOpen ? "Hide terminal" : "Open terminal in this worktree"} kbd="⌃`">
+          <button type="button" aria-label="Terminal" aria-pressed={props.terminalOpen} onClick={props.onToggleTerminal} className={`${ICON_BUTTON} aria-pressed:border-primary/40 aria-pressed:bg-primary/10 aria-pressed:text-primary`}>
+            <SquareTerminal className="size-4" />
+          </button>
+        </Hint>
         <DropdownMenu>
           <Hint tip="More actions"><DropdownMenuTrigger aria-label="More actions" className={ICON_BUTTON}><MoreHorizontal className="size-4" /></DropdownMenuTrigger></Hint>
           <DropdownMenuContent align="end" className="min-w-[13rem]" onCloseAutoFocus={(event) => {

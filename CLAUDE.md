@@ -43,7 +43,7 @@ The body is wrapped in an async IIFE, so `await` works; `?w=<window-label>` targ
 - `commands.rs` — all `#[tauri::command]` handlers (the IPC surface; mirror it in `src/api.ts` and `mockBackend.ts`).
 - `launch/` — window management (singleton `home`, one `review-{id}` per target), CLI parsing, registry, CLI install.
 - `git/` — diff computation, language detection, repo/worktree/base resolution.
-- `review/` — review model + comment reconciliation (anchors survive edits). `registry/`, `storage/` — persisted recents/reviews. `watch/` — fs watcher → `fs:changed` events for auto-refresh. `export/` — Markdown export for agents.
+- `review/` — review model + comment reconciliation (anchors survive edits). `registry/`, `storage/` — persisted recents/reviews. `watch/` — fs watcher → `fs:changed` events for auto-refresh. `terminal/` — embedded PTY sessions (portable-pty) for the bottom terminal panel; each session's process tree is owned by a Windows Job Object / Unix session and killed when its window closes or reloads, or the app exits. `export/` — Markdown export for agents.
 - `lib.rs` — plugin/command registration + the window-lifecycle run loop: on macOS it keeps the app alive when the last window closes (`ExitRequested` → `prevent_exit`) and reopens `home` on dock-click; other platforms exit.
 
 ### Window model

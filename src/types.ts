@@ -262,3 +262,5 @@ export interface UpdaterSnapshot {
   /** Unix ms of the last completed check; null before the first one. */
   lastCheckedAt: number | null;
 }
+
+export type TerminalEvent = { kind: "data"; data: string } | { kind: "exit"; code: number | null };

@@ -40,6 +40,8 @@ const defaults = {
   copyState: "idle" as const,
   onCopy: vi.fn(),
   onOpenEditor: vi.fn(),
+  terminalOpen: false,
+  onToggleTerminal: vi.fn(),
   onOpenSettings: vi.fn(),
 };
 

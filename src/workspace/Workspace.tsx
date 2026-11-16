@@ -27,6 +27,8 @@ import { useDiffLayout } from "../diff/useDiffLayout";
 import { useResizableWidth, usePaneResize, PaneResizer, FILE_PANE } from "../lib/resizablePane";
 import { CheckCheck, ChevronDown, CircleAlert, Eye, EyeOff, FlaskConical } from "lucide-react";
 import { getEditorPref } from "../editor";
+import { TerminalPanel } from "../terminal/TerminalPanel";
+import { isTerminalToggle } from "../terminal/terminalKeys";
 import { getHideViewedFiles, useHideViewedFiles } from "../hideViewedFilesPref";
 import { getFileTypeFilter, matchesFileType, setFileTypeFilter, useFileTypeFilter } from "../fileTypeFilterPref";
 import { useUnreviewableLast } from "../unreviewableLastPref";
@@ -146,6 +148,8 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   const [repoName, setRepoName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [indexOpen, setIndexOpen] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalStarted, setTerminalStarted] = useState(false);
   // Jump target for the diff pane. `n` is a nonce so re-selecting the same
   // file/comment still re-fires the scroll effect; `commentId` lets the pane
   // scroll to the exact comment, not just the file top.
@@ -807,9 +811,21 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     }
   }, [orderedFiles]);
 
+  const toggleTerminal = useCallback(() => {
+    setTerminalStarted(true);
+    setTerminalOpen((open) => !open);
+  }, []);
+  const killTerminal = useCallback(() => {
+    setTerminalOpen(false);
+    setTerminalStarted(false);
+  }, []);
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if ((e.key === "r" || e.key === "R") && (e.metaKey || e.ctrlKey)) {
+      if (isTerminalToggle(e)) {
+        e.preventDefault();
+        toggleTerminal();
+      } else if ((e.key === "r" || e.key === "R") && (e.metaKey || e.ctrlKey)) {
         // ⌘R re-diffs now: apply a pending change if there is one, else force a
         // full reload. preventDefault stops the webview's reload accelerator. (#9/#12)
         e.preventDefault();
@@ -836,7 +852,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [review, stepperVisible, stepCommit]);
+  }, [review, stepperVisible, stepCommit, toggleTerminal]);
 
   return (
     <div data-testid="app-root" className="flex h-screen flex-col overflow-hidden bg-background text-[13px] text-foreground">
@@ -862,6 +878,8 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
         copyState={copyState}
         onCopy={() => { void copyForClaude(); }}
         onOpenEditor={() => { void api.openInEditor(getEditorPref(), target.repoPath).catch((e) => setError(String(e))); }}
+        terminalOpen={terminalOpen}
+        onToggleTerminal={toggleTerminal}
         commitNavigation={stepperVisible ? {
           position: `${stepIndex + 1}/${commits.length}${commitsHasMore ? "+" : ""}`,
           previousDisabled: stepIndex <= 0,
@@ -1073,6 +1091,15 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
           </div>
         )}
       </div>
+      {terminalStarted && (
+        <TerminalPanel
+          key={target.repoPath}
+          cwd={target.repoPath}
+          visible={terminalOpen}
+          onHide={() => setTerminalOpen(false)}
+          onClose={killTerminal}
+        />
+      )}
     </div>
   );
 }

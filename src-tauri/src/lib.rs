@@ -16,6 +16,7 @@ mod registry;
 mod review;
 mod settings;
 mod storage;
+mod terminal;
 mod updater;
 mod vcs;
 mod watch;
@@ -104,6 +105,12 @@ pub fn run() {
         .manage(crate::watch::Watchers::default())
         .manage(crate::updater::UpdaterShared::default())
         .manage(crate::git::cache::DiffCache::default())
+        .manage(crate::terminal::Terminals::default())
+        .on_page_load(|webview, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Started {
+                webview.state::<crate::terminal::Terminals>().close_window(webview.label());
+            }
+        })
         .register_asynchronous_uri_scheme_protocol(blob_scheme::SCHEME, blob_scheme::handle)
         .invoke_handler(tauri::generate_handler![
             commands::compute_diff,
@@ -133,6 +140,10 @@ pub fn run() {
             commands::install_cli,
             commands::cli_status,
             commands::open_in_editor,
+            commands::terminal_open,
+            commands::terminal_write,
+            commands::terminal_resize,
+            commands::terminal_close,
             commands::edit_file_line,
             commands::read_file_text,
             commands::write_file_text,
@@ -190,6 +201,7 @@ pub fn run() {
                     ..
                 } => {
                     crate::watch::stop(app_handle, &label);
+                    app_handle.state::<crate::terminal::Terminals>().close_window(&label);
                     let remaining = app_handle
                         .webview_windows()
                         .into_keys()
@@ -217,6 +229,9 @@ pub fn run() {
                     ..
                 } if !has_visible_windows => {
                     let _ = crate::launch::open_home_window(app_handle);
+                }
+                tauri::RunEvent::Exit => {
+                    app_handle.state::<crate::terminal::Terminals>().close_all();
                 }
                 _ => {}
             }

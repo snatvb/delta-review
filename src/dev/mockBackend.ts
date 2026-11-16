@@ -4,9 +4,10 @@
 //
 // Keep fixtures realistic but small. As Plan 2 adds commands (open_review,
 // refresh_review, save_review, export_review) extend the switch + fixtures here.
-import { __setBlobUrlForDev, __setInvokeForDev } from "../api";
+import { __setBlobUrlForDev, __setInvokeForDev, __setTerminalChannelForDev } from "../api";
 import { sameFolder } from "../lib/sameFolder";
 import type { AppSettings, BaseStrategy, DiffSummary, FileDiff, PickerData, PickerWorktree, Registry, Review, ReviewSession } from "../types";
+import { MockTerminals, type MockTerminalSink } from "./mockTerminals";
 
 // Canvas-drawn PNG data URL so an image compare card shows something in browser dev.
 function mockPng(w: number, h: number, color: string): string {
@@ -645,8 +646,20 @@ export function installMockBackend(): void {
     if (!modified) return mockPng(128, 128, "#34d399");
     return side === "old" ? mockPng(120, 80, "#38bdf8") : mockPng(160, 90, "#f472b6");
   });
+  const terminals = new MockTerminals();
+  __setTerminalChannelForDev((onEvent) => onEvent);
   __setInvokeForDev(async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
     switch (cmd) {
+      case "terminal_open":
+        return terminals.open(String(args?.cwd), args?.events as MockTerminalSink) as T;
+      case "terminal_write":
+        terminals.write(Number(args?.id), String(args?.data));
+        return undefined as T;
+      case "terminal_resize":
+        return undefined as T;
+      case "terminal_close":
+        terminals.close(Number(args?.id));
+        return undefined as T;
       case "compute_diff": {
         const t = args?.target as { mode?: string; commit?: string } | undefined;
         if (t?.mode === "commit" && t.commit) {
@@ -883,3 +896,4 @@ export function installMockBackend(): void {
   });
   console.info(`[delta] mock IPC backend installed (VITE_MOCK_IPC)${largeParam ? ` — large fixture: ${ds.summary.files.length} files` : ""}`);
 }
+
