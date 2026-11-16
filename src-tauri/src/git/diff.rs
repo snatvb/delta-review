@@ -48,7 +48,30 @@ pub struct DiffSummary {
     pub head_label: String,
 }
 
+enum WorktreeScan {
+    Everything,
+    Only(Vec<String>),
+}
+
 pub fn build_diff<'r>(repo: &'r Repository, ep: &Endpoints) -> Result<Diff<'r>, GitError> {
+    let scan = match ep.right {
+        RightSide::WorkTree => changed_paths_from_cli(repo, ep).map_or(WorktreeScan::Everything, WorktreeScan::Only),
+        RightSide::Tree(_) => WorktreeScan::Everything,
+    };
+    build_diff_scanning(repo, ep, scan)
+}
+
+fn changed_paths_from_cli(repo: &Repository, ep: &Endpoints) -> Option<Vec<String>> {
+    let workdir = repo.workdir()?;
+    let from_tree = ep.from_tree?;
+    crate::git::cli::changed_worktree_paths(workdir, from_tree)
+}
+
+fn build_diff_scanning<'r>(
+    repo: &'r Repository,
+    ep: &Endpoints,
+    scan: WorktreeScan,
+) -> Result<Diff<'r>, GitError> {
     let mut opts = DiffOptions::new();
     // Without show_untracked_content libgit2 reports an untracked file as a delta it
     // never diffs, so the file lands in the summary with no line stats at all.
@@ -63,11 +86,22 @@ pub fn build_diff<'r>(repo: &'r Repository, ep: &Endpoints) -> Result<Diff<'r>, 
         None => None,
     };
 
-    let mut diff = match &ep.right {
-        RightSide::WorkTree => repo
-            .diff_tree_to_workdir_with_index(from_tree.as_ref(), Some(&mut opts))
+    let mut diff = match (&ep.right, scan) {
+        // An empty pathspec means "no filter" to libgit2, so a clean tree must not reach it.
+        (RightSide::WorkTree, WorktreeScan::Only(paths)) if paths.is_empty() => repo
+            .diff_tree_to_tree(None, None, Some(&mut opts))
             .map_err(|e| format!("diff workdir: {e}"))?,
-        RightSide::Tree(oid) => {
+        (RightSide::WorkTree, scan) => {
+            if let WorktreeScan::Only(paths) = scan {
+                opts.disable_pathspec_match(true);
+                for path in paths {
+                    opts.pathspec(path);
+                }
+            }
+            repo.diff_tree_to_workdir_with_index(from_tree.as_ref(), Some(&mut opts))
+                .map_err(|e| format!("diff workdir: {e}"))?
+        }
+        (RightSide::Tree(oid), _) => {
             let to = repo.find_tree(*oid).map_err(|e| e.to_string())?;
             repo.diff_tree_to_tree(from_tree.as_ref(), Some(&to), Some(&mut opts))
                 .map_err(|e| format!("diff trees: {e}"))?
@@ -757,5 +791,121 @@ mod tests {
             "expected Modified, got {:?}",
             f.status
         );
+    }
+
+    type Row = (String, Option<String>, FileStatus, usize, usize);
+
+    fn rows(repo: &Repository, ep: &Endpoints, scan: WorktreeScan) -> Vec<Row> {
+        let diff = build_diff_scanning(repo, ep, scan).unwrap();
+        let mut rows: Vec<Row> = diff
+            .deltas()
+            .enumerate()
+            .map(|(idx, delta)| {
+                let e = summary_entry(&diff, idx, &delta, 0, &DeltaIgnore::for_repo(repo));
+                (e.path, e.old_path, e.status, e.additions, e.deletions)
+            })
+            .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        rows
+    }
+
+    fn assert_cli_scan_matches_full_scan(dir: &std::path::Path, mode: DiffMode) -> Vec<Row> {
+        let repo = crate::git::open_repo(dir.to_str().unwrap()).unwrap();
+        let ep = resolve_endpoints(&repo, &target(dir.to_str().unwrap(), mode)).unwrap();
+        let paths = changed_paths_from_cli(&repo, &ep).expect("git CLI must be available for this test");
+        let scoped = rows(&repo, &ep, WorktreeScan::Only(paths));
+        assert_eq!(scoped, rows(&repo, &ep, WorktreeScan::Everything));
+        scoped
+    }
+
+    #[test]
+    fn cli_scoped_worktree_diff_matches_the_full_scan() {
+        let (dir, repo) = repo_with_commit();
+        write(dir.path(), "keep.txt", "same
+");
+        write(dir.path(), "moved/from.txt", "a
+b
+c
+d
+e
+");
+        write(dir.path(), "gone.txt", "bye
+");
+        write(dir.path(), ".gitignore", "build/
+");
+        commit_all(&repo, "more files");
+
+        write(dir.path(), "file.txt", "line1
+CHANGED
+line2
+");
+        std::fs::remove_file(dir.path().join("gone.txt")).unwrap();
+        std::fs::remove_file(dir.path().join("moved/from.txt")).unwrap();
+        write(dir.path(), "moved/to.txt", "a
+b
+c
+d
+e
+");
+        write(dir.path(), "deep/nested/new.rs", "fn main() {}
+");
+        write(dir.path(), "build/out.bin", "ignored
+");
+        write(dir.path(), "staged.txt", "staged
+");
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("staged.txt")).unwrap();
+        index.write().unwrap();
+
+        let rows = assert_cli_scan_matches_full_scan(dir.path(), DiffMode::Uncommitted);
+        let paths: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(
+            paths,
+            ["deep/nested/new.rs", "file.txt", "gone.txt", "moved/from.txt", "moved/to.txt", "staged.txt"]
+        );
+    }
+
+    #[test]
+    fn cli_scoped_branch_diff_includes_commits_and_worktree_edits() {
+        let (dir, _repo) = forked_repo();
+        write(dir.path(), "feat.txt", "f
+more
+");
+        write(dir.path(), "untracked.txt", "u
+");
+        let rows = assert_cli_scan_matches_full_scan(dir.path(), DiffMode::AllChanges);
+        let paths: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(paths, ["feat.txt", "untracked.txt"]);
+    }
+
+    #[test]
+    fn cli_scoped_diff_pairs_a_staged_rename() {
+        let (dir, repo) = repo_with_commit();
+        write(dir.path(), "old/name.txt", "a
+b
+c
+d
+e
+");
+        commit_all(&repo, "add file");
+        std::fs::create_dir_all(dir.path().join("new")).unwrap();
+        std::fs::rename(dir.path().join("old/name.txt"), dir.path().join("new/name.txt")).unwrap();
+        let mut index = repo.index().unwrap();
+        index.remove_path(std::path::Path::new("old/name.txt")).unwrap();
+        index.add_path(std::path::Path::new("new/name.txt")).unwrap();
+        index.write().unwrap();
+
+        let rows = assert_cli_scan_matches_full_scan(dir.path(), DiffMode::Uncommitted);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "new/name.txt");
+        assert_eq!(rows[0].1.as_deref(), Some("old/name.txt"));
+        assert_eq!(rows[0].2, FileStatus::Renamed);
+    }
+
+    #[test]
+    fn clean_worktree_yields_an_empty_scoped_diff() {
+        let (dir, _repo) = repo_with_commit();
+        let rows = assert_cli_scan_matches_full_scan(dir.path(), DiffMode::Uncommitted);
+        assert!(rows.is_empty());
     }
 }

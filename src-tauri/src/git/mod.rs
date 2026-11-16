@@ -1,4 +1,5 @@
 pub mod branches;
+pub mod cli;
 pub mod cache;
 pub mod deltaignore;
 pub mod diff;
