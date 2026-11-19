@@ -2,6 +2,18 @@ import type * as React from "react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Kbd } from "@/components/ui/kbd";
 
+let lastKeyWasTab = false;
+if (typeof document !== "undefined") {
+  document.addEventListener("keydown", (event) => { lastKeyWasTab = event.key === "Tab"; }, true);
+  document.addEventListener("pointerdown", () => { lastKeyWasTab = false; }, true);
+}
+
+function openOnFocusOnlyWhenTabbedTo(event: React.FocusEvent) {
+  if (!lastKeyWasTab) {
+    event.preventDefault();
+  }
+}
+
 /** One-line replacement for native `title=` tooltips:
  *
  *   <Hint tip="Delete" kbd="⌘⌫"><Button/></Hint>
@@ -37,7 +49,7 @@ export function Hint({
     // to the ~1s native `title` delay but doesn't flicker on a toolbar sweep.
     <TooltipProvider delayDuration={200}>
       <Tooltip>
-        <TooltipTrigger asChild>{children}</TooltipTrigger>
+        <TooltipTrigger asChild onFocus={openOnFocusOnlyWhenTabbedTo}>{children}</TooltipTrigger>
         <TooltipContent side={side} align={align} className={contentClassName}>
           {tip}
           {kbd && (

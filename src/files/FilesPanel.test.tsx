@@ -9,9 +9,8 @@ const files: FileEntry[] = [
   { path: "src/a.ts", status: "modified", additions: 3, deletions: 1, binary: false },
 ];
 
-// Tooltips (Hint/radix) mount their content only while open — focus the trigger
-// (radix opens instantly on focus) and read the mounted text.
 async function openTip(el: Element): Promise<void> {
+  fireEvent.keyDown(document.body, { key: "Tab" });
   fireEvent.focus(el);
   await screen.findByRole("tooltip");
 }

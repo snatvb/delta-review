@@ -27,4 +27,22 @@ describe("Hint", () => {
     fireEvent.pointerLeave(trigger, { pointerType: "mouse" });
     expect(trigger.getAttribute("data-state")).toBe("closed");
   });
+
+  it("stays closed when focus lands on the trigger without Tab, like a menu returning focus", () => {
+    render(
+      <Hint tip="Last commit">
+        <button type="button">mode</button>
+      </Hint>,
+    );
+    const trigger = screen.getByRole("button", { name: "mode" });
+
+    fireEvent.pointerDown(document.body);
+    act(() => trigger.focus());
+    expect(trigger.getAttribute("data-state")).toBe("closed");
+
+    act(() => trigger.blur());
+    fireEvent.keyDown(document.body, { key: "Tab" });
+    act(() => trigger.focus());
+    expect(trigger.getAttribute("data-state")).toBe("instant-open");
+  });
 });

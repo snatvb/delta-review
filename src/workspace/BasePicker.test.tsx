@@ -53,9 +53,8 @@ function openMenu() {
   fireEvent.click(trigger);
 }
 
-// The trigger's tooltip now rides the shared Hint component (radix mounts its
-// content on focus/hover) instead of a native `title` attribute.
 async function openTip(trigger: HTMLElement): Promise<HTMLElement> {
+  fireEvent.keyDown(document.body, { key: "Tab" });
   fireEvent.focus(trigger);
   return await screen.findByRole("tooltip");
 }
