@@ -40,12 +40,17 @@ function groupByRepo(ranked: PickerWorktree[], pinnedRepoId?: string): PickerWor
   return ordered;
 }
 
+function mainWorktreeFirst(group: PickerWorktree[]): PickerWorktree[] {
+  return [...group.filter((w) => w.isMain), ...group.filter((w) => !w.isMain)];
+}
+
 export function buildPickerItems({ ranked, scope, collapsed, expanded, searching, pinnedRepoId }: PickerItemsInput): PickerItem[] {
+  const arrange = searching ? (group: PickerWorktree[]) => group : mainWorktreeFirst;
   if (scope) {
-    return ranked.filter((w) => w.repoId === scope.repoId).map((w) => ({ kind: "worktree", w, nested: false }));
+    return arrange(ranked.filter((w) => w.repoId === scope.repoId)).map((w) => ({ kind: "worktree", w, nested: false }));
   }
   const items: PickerItem[] = [];
-  for (const group of groupByRepo(ranked, pinnedRepoId)) {
+  for (const group of groupByRepo(ranked, pinnedRepoId).map(arrange)) {
     const { repoId, repoName } = group[0];
     const isCollapsed = !searching && collapsed.has(repoId);
     const lastActivity = group.map(worktreeActivity).reduce((a, b) => (b > a ? b : a), "");
