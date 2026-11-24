@@ -134,6 +134,31 @@ describe("FilesPanel", () => {
     expect(screen.queryByRole("button", { name: "viewed gen/api.ts" })).not.toBeInTheDocument();
   });
 
+  describe("folders shared by the main tree and the Ignored group", () => {
+    const entry = (path: string, ignored = false): FileEntry =>
+      ({ path, status: "modified", additions: 1, deletions: 1, binary: false, ignored });
+    const shared = [entry("scripts/gui/impl/b.py"), entry("scripts/gui/impl/gen/x.py", true)];
+    const props = { selected: null, onSelect: () => {}, viewedFiles: new Set<string>(), onToggleViewed: () => {}, onSetViewedBulk: () => {} };
+    const rowTops = (container: HTMLElement) =>
+      [...container.querySelectorAll<HTMLElement>("[data-path]")].map((el) => el.style.top);
+
+    it("leaves no stale rows behind when the tree grows above them", () => {
+      const { container, rerender } = render(<FilesPanel files={shared} {...props} />);
+      fireEvent.click(screen.getByText("Ignored (1)"));
+      rerender(<FilesPanel files={[entry("scripts/aaa/new.py"), entry("scripts/aab/new2.py"), ...shared]} {...props} />);
+      const tops = rowTops(container);
+      expect(new Set(tops).size).toBe(tops.length);
+    });
+
+    it("collapses a folder in the main tree without collapsing its Ignored twin", () => {
+      render(<FilesPanel files={shared} {...props} />);
+      fireEvent.click(screen.getByText("Ignored (1)"));
+      fireEvent.click(screen.getAllByText("scripts")[0]);
+      expect(screen.queryByText("b.py")).not.toBeInTheDocument();
+      expect(screen.getByText("x.py")).toBeInTheDocument();
+    });
+  });
+
   it("omits the tree-indent spacer in list mode", () => {
     render(<FilesPanel files={files} selected={null} onSelect={() => {}} viewedFiles={new Set()} onToggleViewed={() => {}} onSetViewedBulk={() => {}} />);
     // Tree mode (default): file rows carry the chevron-column spacer.

@@ -3,7 +3,7 @@ import type { FileEntry } from "../types";
 import { isGiant } from "../diff/giant";
 
 export interface TreeNode {
-  id: string; // = path; stable node identifier
+  id: string;
   name: string;
   path: string;
   kind: "dir" | "file";

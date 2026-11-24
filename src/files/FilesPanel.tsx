@@ -46,6 +46,11 @@ const IGNORED_GROUP = "/:ignored";
 const countFiles = (node: TreeNode): number =>
   node.children.reduce((n, c) => n + (c.kind === "file" ? 1 : countFiles(c)), 0);
 
+const withIgnoredDirIds = (nodes: TreeNode[]): TreeNode[] =>
+  nodes.map((n) => n.kind === "dir"
+    ? { ...n, id: `${IGNORED_GROUP}/${n.path}`, children: withIgnoredDirIds(n.children) }
+    : n);
+
 // Row windowing geometry (#virtual). Rows are a fixed height, so a row's y-offset is
 // exact arithmetic — we mount only the on-screen slice of a flattened node list and
 // float it over a full-height spacer. Same idea as VirtualDiffPane, but simpler
@@ -113,14 +118,14 @@ function Row({ node, depth, top, h }: { node: TreeNode; depth: number; top: numb
   const isDir = node.kind === "dir";
   const isIgnoredGroup = node.path === IGNORED_GROUP;
   const isIgnoredFile = !isDir && !!node.entry?.ignored;
-  const open = isDir && !h.collapsed.has(node.path);
-  const active = node.path === h.activePath;
+  const open = isDir && !h.collapsed.has(node.id);
+  const active = node.id === h.activePath;
   const isViewed = !isDir && node.entry ? h.viewedFiles.has(node.entry.path) : false;
   const commentN = !isDir && node.entry ? h.commentCounts.get(node.entry.path) ?? 0 : 0;
   const paddingLeft = h.flat ? FLAT_PL : depth * INDENT + ROW_PL;
   // Folder tri-state: all → check, some → dash, none → empty (and no checkbox at
   // all when the folder has no reviewable descendants, e.g. the Ignored group).
-  const dirAgg = isDir ? h.dirViewed.get(node.path) : undefined;
+  const dirAgg = isDir ? h.dirViewed.get(node.id) : undefined;
   const dirAll = !!dirAgg && dirAgg.viewed === dirAgg.total;
   const dirSome = !!dirAgg && dirAgg.viewed > 0 && !dirAll;
   // Renamed file → tooltip names the source path (the sky icon already flags the
@@ -139,7 +144,7 @@ function Row({ node, depth, top, h }: { node: TreeNode; depth: number; top: numb
         aria-label={renamedFrom ? `Renamed from ${renamedFrom}` : undefined}
         className={`group absolute inset-x-0 flex h-[26px] select-none items-center gap-1.5 rounded-md pr-1.5 ${active ? "bg-accent" : "hover:bg-foreground/[0.05]"} ${isViewed ? "opacity-65" : ""}`}
         style={{ top, paddingLeft }}
-        onClick={() => (isDir ? h.onToggleDir(node.path) : h.onSelectFile(node.path))}
+        onClick={() => (isDir ? h.onToggleDir(node.id) : h.onSelectFile(node.path))}
         onMouseEnter={isDir ? undefined : () => h.onHoverFile(node.path)}
         onMouseLeave={isDir ? undefined : () => h.onHoverFile(null)}
       >
@@ -346,7 +351,7 @@ export function FilesPanel({
     const ignored = filteredFiles.filter((f) => f.ignored);
     const nodes = toNodes(filteredFiles.filter((f) => !f.ignored));
     if (ignored.length > 0) {
-      nodes.push({ id: IGNORED_GROUP, name: `Ignored (${ignored.length})`, path: IGNORED_GROUP, kind: "dir", children: toNodes(ignored) });
+      nodes.push({ id: IGNORED_GROUP, name: `Ignored (${ignored.length})`, path: IGNORED_GROUP, kind: "dir", children: withIgnoredDirIds(toNodes(ignored)) });
     }
     return nodes;
   }, [filteredFiles, mode]);
@@ -358,25 +363,17 @@ export function FilesPanel({
   // unviewed-only mode viewed files drop out of adds/dels (the checkbox counts
   // stay whole). Ignored-only folders (the Ignored group and its subtree) end
   // up with total 0 and render no checkbox. Empty in list mode (no dir nodes).
-  //
-  // The map is keyed by path, and the Ignored group replays folder paths that
-  // already exist in the main tree (godot/ holds both reviewable .ron files
-  // and ignored *.import ones). Its subtree aggregates to zeros, so if it were
-  // recorded it would overwrite the real rollup and strip the checkbox +/−
-  // stats from every folder that also contains ignored files — which is most
-  // high-level folders. Walk it (the group header still needs its entry), but
-  // stop recording inside it.
   const dirViewed = useMemo(() => {
     const m = new Map<string, DirViewed>();
-    (function walk(nodes: TreeNode[], record: boolean): DirViewed {
+    (function walk(nodes: TreeNode[]): DirViewed {
       let total = 0;
       let viewed = 0;
       let adds = 0;
       let dels = 0;
       for (const n of nodes) {
         if (n.kind === "dir") {
-          const a = walk(n.children, record && n.path !== IGNORED_GROUP);
-          if (record) m.set(n.path, a);
+          const a = walk(n.children);
+          m.set(n.id, a);
           total += a.total;
           viewed += a.viewed;
           adds += a.adds;
@@ -392,7 +389,7 @@ export function FilesPanel({
         }
       }
       return { total, viewed, adds, dels };
-    })(roots, true);
+    })(roots);
     return m;
   }, [roots, viewedFiles, excluding]);
 
@@ -404,7 +401,7 @@ export function FilesPanel({
     (function walk(nodes: TreeNode[], depth: number) {
       for (const n of nodes) {
         out.push({ node: n, depth });
-        if (n.kind === "dir" && (searching || !collapsed.has(n.path))) walk(n.children, depth + 1);
+        if (n.kind === "dir" && (searching || !collapsed.has(n.id))) walk(n.children, depth + 1);
       }
     })(roots, 0);
     return out;
@@ -424,7 +421,7 @@ export function FilesPanel({
     if (!selectionChanged) return; // tree reshaped, not a new selection — leave scroll put
     const el = scrollRef.current;
     if (!el) return;
-    const idx = visible.findIndex((r) => r.node.path === activePath);
+    const idx = visible.findIndex((r) => r.node.id === activePath);
     if (idx < 0) return;
     const rowTop = TREE_PAD_Y + idx * ROW_H;
     const pad = ROW_H + 6; // one neighbor row of breathing room
@@ -442,15 +439,15 @@ export function FilesPanel({
   // Every directory path, for collapse/expand-all. `roots` is the full tree when
   // not searching, and the collapse-all button is hidden while searching, so this
   // stays accurate without rebuilding the tree.
-  const treeDirPaths = useMemo(() => {
+  const treeDirIds = useMemo(() => {
     if (mode !== "tree") return [] as string[];
     const out: string[] = [];
     (function walk(nodes: TreeNode[]) {
-      for (const n of nodes) if (n.kind === "dir") { out.push(n.path); walk(n.children); }
+      for (const n of nodes) if (n.kind === "dir") { out.push(n.id); walk(n.children); }
     })(roots);
     return out;
   }, [roots, mode]);
-  const anyDirOpen = treeDirPaths.some((p) => !collapsed.has(p));
+  const anyDirOpen = treeDirIds.some((p) => !collapsed.has(p));
 
   // Cheap sums — React Compiler memoizes the render; no manual useMemo needed.
   // With the "unviewed-only totals" pref on, viewed files drop out of the top
@@ -462,7 +459,7 @@ export function FilesPanel({
 
   const toggleDir = (path: string) =>
     setCollapsed((s) => { const n = new Set(s); if (n.has(path)) n.delete(path); else n.add(path); return n; });
-  const toggleAll = () => setCollapsed(anyDirOpen ? new Set(treeDirPaths) : new Set());
+  const toggleAll = () => setCollapsed(anyDirOpen ? new Set(treeDirIds) : new Set());
   const selectFile = (path: string) => { setActivePath(path); onSelect(path); };
   // Debounced hover-prefetch: only fire after the pointer rests ~110ms, so
   // sweeping the mouse down the tree doesn't kick off a build per row. (#perf)
@@ -473,11 +470,11 @@ export function FilesPanel({
 
   function onKeyDown(e: React.KeyboardEvent) {
     if (!visible.length) return;
-    const idx = visible.findIndex((r) => r.node.path === activePath);
+    const idx = visible.findIndex((r) => r.node.id === activePath);
     const cur = idx >= 0 ? visible[idx].node : undefined;
     // Arrows loop and jump-scroll the diff to the file; Enter toggles viewed;
     // left/right collapse/expand dirs. (#r5)
-    const moveTo = (n: TreeNode) => (n.kind === "file" ? selectFile(n.path) : setActivePath(n.path));
+    const moveTo = (n: TreeNode) => (n.kind === "file" ? selectFile(n.path) : setActivePath(n.id));
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault();
@@ -489,16 +486,16 @@ export function FilesPanel({
         break;
       case "ArrowRight":
         e.preventDefault();
-        if (cur?.kind === "dir" && collapsed.has(cur.path)) toggleDir(cur.path);
+        if (cur?.kind === "dir" && collapsed.has(cur.id)) toggleDir(cur.id);
         break;
       case "ArrowLeft":
         e.preventDefault();
-        if (cur?.kind === "dir" && !collapsed.has(cur.path)) toggleDir(cur.path);
+        if (cur?.kind === "dir" && !collapsed.has(cur.id)) toggleDir(cur.id);
         break;
       case "Enter":
         e.preventDefault();
         if (cur?.kind === "file" && !cur.entry?.ignored) onToggleViewed(cur.path);
-        else if (cur?.kind === "dir") toggleDir(cur.path);
+        else if (cur?.kind === "dir") toggleDir(cur.id);
         break;
     }
   }
@@ -517,7 +514,7 @@ export function FilesPanel({
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
       const first = visible[0]?.node;
-      if (first) { setActivePath(first.path); scrollRef.current?.focus(); }
+      if (first) { setActivePath(first.id); scrollRef.current?.focus(); }
     }
   }
 
@@ -669,7 +666,7 @@ export function FilesPanel({
         ) : (
           <div className="relative" style={{ height: totalH }}>
             {visible.slice(firstRow, lastRow).map(({ node, depth }, k) => (
-              <Row key={node.path} node={node} depth={depth} top={TREE_PAD_Y + (firstRow + k) * ROW_H} h={h} />
+              <Row key={node.id} node={node} depth={depth} top={TREE_PAD_Y + (firstRow + k) * ROW_H} h={h} />
             ))}
           </div>
         )}
