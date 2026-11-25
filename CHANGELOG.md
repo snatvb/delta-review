@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.30.0 — 2026-11-25
+
+### 🚀 New Features
+
+- **Comments on lines that aren't adjacent** — while a comment's editor is open in a file, `+` and drags there add their lines to that comment instead of starting another, and deleted lines join it as well. The editor stays under the lowest selected line. Pressing `+` on a selected line takes it back out; taking out the last line asks before deleting a comment that has text.
+- **Sort repositories by dragging, or automatically** — a sort menu beside "Add repo" in the launcher and the ⌘K palette, mirrored by "Sort repos by" in Settings → General. Manual order is the default: drag a repo header to move its group; the order is shared by every window. Recent activity and Name are the automatic alternatives, and a drag in either of them switches to Manual. In the ⌘K frame the current review's repository stays first.
+- **Main worktree on top of its repository group** — outside search, the main checkout leads its group instead of drifting among the worktrees by recency.
+
+### 🔧 Changes
+
+- A comment can now name every selected run where it is handed to an agent: `path:1,5 (deleted: old side 9)`, followed by separate `deleted` and `current` snippet blocks. The comments list locates such a comment as `L1, 5 · old 9`.
+- A drag from the gutter or `+` selects every row it passes, deleted lines included, instead of the lines of one side only.
+- In the split view, the lines a multi-line comment covers are marked on added and deleted lines too.
+
+### 🐛 Fixes
+
+- An open comment editor keeps its text when its file scrolls out of view and back.
+- Tooltips close as soon as the pointer leaves their trigger, and open on keyboard focus only when reached with Tab.
+- The `+` button's tooltip no longer jumps to the corner while it fades out.
+- Inside the Ignored group, folders no longer overlap after a tree refresh and no longer fold together with their twins in the main tree.
+
+**Installation:** platform certificates/notarization are not included. If macOS blocks the downloaded app, use **System Settings → Privacy & Security → Open Anyway** after the first launch attempt. Windows may show SmartScreen; use **More info → Run anyway** if you trust this release. In-app updater packages are separately signed and verified.
+
 ## 0.29.0 — 2026-11-16
 
 ### 🚀 New Features
