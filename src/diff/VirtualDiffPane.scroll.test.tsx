@@ -20,7 +20,7 @@ function pane(files: FileEntry[], viewedFiles = new Set<string>(), layout: DiffL
   return (
     <VirtualDiffPane
       target={target} files={files} viewedFiles={viewedFiles} hiddenFiles={hiddenFiles} layout={layout} theme="light"
-      comments={[]} onToggleViewed={noop} onAddComment={noop} onAddFileComment={noop}
+      comments={[]} onToggleViewed={noop} onAddComment={noop} onAddFileComment={noop} onSetCommentSpans={noop}
       onEditComment={noop} onDeleteComment={noop} onToggleResolvedComment={noop}
     />
   );

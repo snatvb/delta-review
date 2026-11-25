@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { commentForAgent } from "./commentForAgent";
+import { anchorFromSpans } from "./anchorSpans";
 import type { Anchor, Comment } from "../types";
 
 function c(anchor: Anchor | null, body: string, extra: Partial<Comment> = {}): Comment {
@@ -62,6 +63,46 @@ describe("commentForAgent", () => {
 
   it("general comment copies as just the body", () => {
     expect(commentForAgent(c(null, "standardize errors"))).toBe("standardize errors");
+  });
+
+  it("lists every selected run of a non-contiguous comment in the location", () => {
+    const md = commentForAgent(c(anchorFromSpans("src/a.ts", [
+      { side: "new", start: 3, end: 5, text: "a\nb\nc" },
+      { side: "new", start: 10, end: 10, text: "j" },
+    ]), "split these"));
+    expect(md).toBe("src/a.ts:3-5,10\n```ts\na\nb\nc\nj\n```\nsplit these");
+  });
+
+  it("separates deleted lines from the current ones", () => {
+    const md = commentForAgent(c(anchorFromSpans("src/a.ts", [
+      { side: "new", start: 10, end: 12, text: "j\nk\nl" },
+      { side: "new", start: 20, end: 20, text: "t" },
+      { side: "old", start: 8, end: 9, text: "h\ni" },
+    ]), "rethink"));
+    expect(md).toBe([
+      "src/a.ts:10-12,20 (deleted: old side 8-9)",
+      "",
+      "deleted (old side 8-9):",
+      "```ts",
+      "h",
+      "i",
+      "```",
+      "",
+      "current (10-12, 20):",
+      "```ts",
+      "j",
+      "k",
+      "l",
+      "t",
+      "```",
+      "",
+      "rethink",
+    ].join("\n"));
+  });
+
+  it("an old-side-only selection keeps the plain old-side note", () => {
+    const md = commentForAgent(c(anchorFromSpans("src/a.ts", [{ side: "old", start: 8, end: 9, text: "h\ni" }]), "gone"));
+    expect(md).toBe("src/a.ts:8-9 (old side)\n```ts\nh\ni\n```\ngone");
   });
 
   it("empty body still yields location + snippet — the context to ask a question against", () => {

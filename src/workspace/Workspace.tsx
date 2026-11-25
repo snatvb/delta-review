@@ -19,6 +19,7 @@ import { CommentIndex } from "../review/CommentIndex";
 import { prefetchPicker } from "../picker/pickerData";
 import { mergeRefreshedReview } from "../review/mergeRefreshedReview";
 import { useReview } from "../review/useReview";
+import { scopeForAnchor } from "../review/anchorSpans";
 import { useResolvedTheme } from "../theme";
 import { vcsProfile } from "../vcsProfile";
 import { Hint } from "@/components/Hint";
@@ -167,7 +168,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
   const [copyState, setCopyState] = useState<"idle" | "ok" | "err">("idle");
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const { review, setReview, addComment, updateCommentBody, deleteComment, clearComments, toggleViewed, setViewedBulk, toggleResolved } = useReview(null);
+  const { review, setReview, addComment, updateCommentBody, setCommentSpans, deleteComment, clearComments, toggleViewed, setViewedBulk, toggleResolved } = useReview(null);
 
   // Auto-refresh plumbing (#9): reviewRef lets the once-mounted fs-watcher
   // listener always refresh the *current* review; sigRef skips no-op state
@@ -584,7 +585,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
     // Scope from the anchor's shape: an image point (x/y) is a point comment, a
     // multi-line span a range, anything else a single line.
     (anchor: Anchor, body: string) =>
-      addComment(anchor.x != null ? "point" : anchor.endLine != null ? "range" : "line", anchor, body, commitOid),
+      addComment(scopeForAnchor(anchor), anchor, body, commitOid),
     [addComment, commitOid],
   );
   const onAddFileComment = useCallback(
@@ -1046,7 +1047,7 @@ export function Workspace({ target, onOpenPalette, onOpenSettings }: { target: T
                     onReloadSettled={() => setRefreshing(false)}
                     onVisibleFileChange={onVisibleFileChange}
                     onToggleViewed={onToggleViewedFile}
-                    onAddComment={onAddComment}
+                    onAddComment={onAddComment} onSetCommentSpans={setCommentSpans}
                     onAddFileComment={onAddFileComment}
                     onEditComment={updateCommentBody}
                     onDeleteComment={deleteComment}

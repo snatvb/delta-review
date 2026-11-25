@@ -2,7 +2,7 @@ use crate::anchor::{diff_hash, reanchor};
 use crate::git::cache::DiffCache;
 use crate::git::diff::DiffSummary;
 use crate::git::model::Target;
-use crate::review::model::{review_id, Review, Side};
+use crate::review::model::{review_id, AnchorSpan, Review, Side};
 use crate::vcs::{Repo, VcsError, VcsKind};
 use git2::{Oid, Repository, Sort};
 use serde::{Deserialize, Serialize};
@@ -78,27 +78,16 @@ pub fn reconcile(cache: &DiffCache, mut review: Review) -> Result<ReviewSession,
         if ignored.contains(anchor.file.as_str()) {
             continue;
         }
-        let has_lines = anchor.start_line.is_some() && anchor.snippet.is_some();
-        if !has_lines {
+        let spans = anchor.spans();
+        if spans.is_empty() {
             // file-scope: present in diff => fresh, else stale
             comment.stale = !present.contains(anchor.file.as_str());
             continue;
         }
-        let content = file_side_content(cache, &target, &anchor.file, anchor.side);
-        match content {
-            Some(content) => {
-                match reanchor(
-                    anchor.start_line.unwrap(),
-                    anchor.snippet.as_deref().unwrap(),
-                    &content,
-                ) {
-                    Some((start, end)) => {
-                        anchor.start_line = Some(start);
-                        anchor.end_line = end;
-                        comment.stale = false;
-                    }
-                    None => comment.stale = true,
-                }
+        match reanchor_spans(cache, &target, &anchor.file, spans) {
+            Some(spans) => {
+                anchor.set_spans(spans);
+                comment.stale = false;
             }
             None => comment.stale = true, // file removed from diff or binary
         }
@@ -297,6 +286,22 @@ pub fn restore_persisted_comments(incoming: &mut Review, persisted: &Review) {
     incoming.comments = persisted.comments.clone();
 }
 
+fn reanchor_spans(
+    cache: &DiffCache,
+    target: &Target,
+    file: &str,
+    spans: Vec<AnchorSpan>,
+) -> Option<Vec<AnchorSpan>> {
+    spans
+        .into_iter()
+        .map(|span| {
+            let content = file_side_content(cache, target, file, span.side)?;
+            let (start, end) = reanchor(span.start, &span.text, &content)?;
+            Some(AnchorSpan { side: span.side, start, end: end.unwrap_or(start), text: span.text })
+        })
+        .collect()
+}
+
 fn file_side_content(cache: &DiffCache, target: &Target, file: &str, side: Side) -> Option<String> {
     let fd = cache.file(target, file).ok()?;
     match side {
@@ -311,7 +316,7 @@ mod tests {
     use crate::git::model::{DiffMode, Target};
     use crate::git::test_support::*;
     use crate::review::model::{
-        Anchor, Comment, CommentScope, Review, Side, Snapshot, ViewedEntry,
+        Anchor, AnchorSpan, Comment, CommentScope, Review, Side, Snapshot, ViewedEntry,
     };
 
     fn empty_review(repo_path: &str) -> Review {
@@ -347,6 +352,7 @@ mod tests {
                 snippet: Some(snippet.into()),
                 x: None,
                 y: None,
+                spans: None,
             }),
             body: "b".into(),
             stale: false,
@@ -591,6 +597,86 @@ mod tests {
         );
         assert_eq!(session.review.viewed.len(), 1);
         assert_eq!(session.review.viewed[0].diff_hash, "stale-hash");
+    }
+
+    fn run(side: Side, start: u32, text: &str) -> AnchorSpan {
+        AnchorSpan { side, start, end: start, text: text.into() }
+    }
+
+    fn comment_on(file: &str, spans: Vec<AnchorSpan>) -> Comment {
+        Comment {
+            id: "c1".into(),
+            scope: CommentScope::Range,
+            anchor: Some(Anchor {
+                file: file.into(),
+                side: Side::New,
+                start_line: None,
+                end_line: None,
+                snippet: None,
+                x: None,
+                y: None,
+                spans: Some(spans),
+            }),
+            body: "b".into(),
+            stale: false,
+            resolved: false,
+            commit: None,
+            created_at: "t".into(),
+            updated_at: "t".into(),
+        }
+    }
+
+    fn runs(c: &Comment) -> Vec<(Side, u32, u32)> {
+        c.anchor
+            .as_ref()
+            .unwrap()
+            .spans()
+            .into_iter()
+            .map(|s| (s.side, s.start, s.end))
+            .collect()
+    }
+
+    #[test]
+    fn every_run_reanchors_against_its_own_side() {
+        let (dir, _repo) = repo_with_commit(); // committed file.txt = "line1\nline2\n"
+        write(dir.path(), "file.txt", "line1\nX\nline2\n"); // working tree: old 2 deleted, new 2 added
+        let mut r = empty_review(dir.path().to_str().unwrap());
+        r.comments.push(comment_on(
+            "file.txt",
+            vec![run(Side::New, 3, "line2"), run(Side::Old, 2, "line2")],
+        ));
+        let first = reconcile(&DiffCache::default(), r).unwrap();
+        assert!(!first.review.comments[0].stale);
+
+        write(dir.path(), "file.txt", "line1\nX\nY\nline2\n"); // new "line2" moves down; the old side is untouched
+        let second = reconcile(&DiffCache::default(), first.review).unwrap();
+        assert!(!second.review.comments[0].stale);
+        assert_eq!(
+            runs(&second.review.comments[0]),
+            vec![(Side::New, 4, 4), (Side::Old, 2, 2)]
+        );
+        let a = second.review.comments[0].anchor.as_ref().unwrap();
+        assert_eq!(
+            (a.start_line, a.end_line, a.snippet.as_deref()),
+            (Some(4), None, Some("line2\nline2"))
+        );
+    }
+
+    #[test]
+    fn a_run_that_no_longer_matches_makes_the_whole_comment_stale() {
+        let (dir, _repo) = repo_with_commit();
+        write(dir.path(), "file.txt", "alpha\nX\nomega\n");
+        let mut r = empty_review(dir.path().to_str().unwrap());
+        r.comments.push(comment_on(
+            "file.txt",
+            vec![run(Side::New, 1, "alpha"), run(Side::New, 3, "omega")],
+        ));
+        let first = reconcile(&DiffCache::default(), r).unwrap();
+        assert!(!first.review.comments[0].stale);
+
+        write(dir.path(), "file.txt", "alpha\nX\ndelta\n"); // "omega" is gone
+        let second = reconcile(&DiffCache::default(), first.review).unwrap();
+        assert!(second.review.comments[0].stale);
     }
 
     #[test]

@@ -73,9 +73,19 @@ export interface DiffSummary {
 export type CommentScope = "line" | "range" | "file" | "point" | "general";
 export type Side = "new" | "old";
 
+/** A context line is always anchored to the new side, so an old-side span is a deleted line. */
+export interface AnchorSpan {
+  side: Side;
+  start: number;
+  end: number;
+  text: string;
+}
+
 export interface Anchor {
   file: string;
   side: Side;
+  /** Absent on anchors stored before `spans` existed, which hold a single run in `startLine`/`endLine`/`snippet`. */
+  spans?: AnchorSpan[] | null;
   startLine?: number | null;
   endLine?: number | null;
   snippet?: string | null;

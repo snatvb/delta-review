@@ -3,7 +3,8 @@
 // viewport has zero height, so no section auto-mounts — the ONLY way the fetch fires
 // is the jump preload, which isolates the behavior under test.
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
-import { render, waitFor, fireEvent, act, screen } from "@testing-library/react";
+import { render, waitFor, fireEvent, act, screen, within } from "@testing-library/react";
+import { useEffect, useMemo, useState } from "react";
 
 const getFileDiff = vi.fn();
 const getBinaryFileDiff = vi.fn();
@@ -17,7 +18,8 @@ vi.mock("../api", () => ({
 }));
 
 import { VirtualDiffPane } from "./VirtualDiffPane";
-import type { Anchor, Comment, FileEntry, Target } from "../types";
+import { anchorFromSpans, scopeForAnchor } from "../review/anchorSpans";
+import type { Anchor, AnchorSpan, Comment, FileEntry, Target } from "../types";
 
 const target: Target = { repoPath: "/r", mode: "all-changes" };
 const files: FileEntry[] = [
@@ -42,6 +44,7 @@ function paneEl(
       prefetch={prefetch}
       onToggleViewed={noop}
       onAddComment={noop}
+      onSetCommentSpans={noop}
       onAddFileComment={noop}
       onEditComment={noop}
       onDeleteComment={noop}
@@ -111,6 +114,7 @@ describe("VirtualDiffPane comment affordances", () => {
         comments={comments}
         onToggleViewed={noop}
         onAddComment={onAddComment}
+        onSetCommentSpans={noop}
         onAddFileComment={noop}
         onEditComment={noop}
         onDeleteComment={onDeleteComment}
@@ -128,7 +132,7 @@ describe("VirtualDiffPane comment affordances", () => {
     await waitFor(() => expect(addBtn(c, 2)).toBeTruthy());
     fireEvent.click(addBtn(c, 2)!);
     expect(onAddComment).toHaveBeenCalledTimes(1);
-    expect(onAddComment).toHaveBeenCalledWith({ file: "a.ts", side: "new", startLine: 2, endLine: null, snippet: "b" }, "");
+    expect(onAddComment).toHaveBeenCalledWith({ file: "a.ts", side: "new", spans: [{ side: "new", start: 2, end: 2, text: "b" }] }, "");
   });
 
   it("`+` click on a line that already has a thread doesn't add a second comment", async () => {
@@ -176,7 +180,7 @@ describe("VirtualDiffPane comment affordances", () => {
       window.dispatchEvent(new MouseEvent("pointerup"));
     });
     expect(onAddComment).toHaveBeenCalledTimes(1); // no single-line click alongside the range
-    expect(onAddComment).toHaveBeenCalledWith({ file: "a.ts", side: "new", startLine: 2, endLine: 4, snippet: "b\nc\nd" }, "");
+    expect(onAddComment).toHaveBeenCalledWith({ file: "a.ts", side: "new", spans: [{ side: "new", start: 2, end: 4, text: "b\nc\nd" }] }, "");
   });
 });
 
@@ -213,6 +217,7 @@ describe("VirtualDiffPane selection occurrences", () => {
         prefetch={null}
         onToggleViewed={noop}
         onAddComment={noop}
+      onSetCommentSpans={noop}
         onAddFileComment={noop}
         onEditComment={noop}
         onDeleteComment={noop}
@@ -299,6 +304,7 @@ describe("VirtualDiffPane binary card comments", () => {
         comments={comments}
         onToggleViewed={noop}
         onAddComment={noop}
+      onSetCommentSpans={noop}
         onAddFileComment={noop}
         onEditComment={noop}
         onDeleteComment={noop}
@@ -330,5 +336,220 @@ describe("VirtualDiffPane binary card comments", () => {
     await waitFor(() => expect(c.container.querySelector('[data-file="logo.png"]')).toBeTruthy());
     await waitFor(() => expect(screen.getByText("The wordmark is blurry here.")).toBeInTheDocument());
     expect(screen.getByText("x42% y36%")).toBeInTheDocument();
+  });
+});
+
+describe("VirtualDiffPane selecting more lines for an open comment", () => {
+  const oneFile: FileEntry[] = [{ path: "a.ts", status: "modified", additions: 12, deletions: 0, binary: false }];
+  const content = { status: "modified", binary: false, oldContent: "", newContent: "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\n" };
+  const spies = { add: vi.fn(), setSpans: vi.fn(), del: vi.fn() };
+  let clientHeightDesc: PropertyDescriptor | undefined;
+  let elementFromPoint: typeof document.elementFromPoint;
+
+  beforeAll(() => {
+    clientHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 900 });
+    elementFromPoint = document.elementFromPoint;
+  });
+  afterAll(() => {
+    if (clientHeightDesc) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDesc);
+    document.elementFromPoint = elementFromPoint;
+  });
+  beforeEach(() => {
+    getFileDiff.mockReset();
+    getFileDiff.mockResolvedValue(content);
+    for (const spy of Object.values(spies)) spy.mockReset();
+  });
+
+  function Harness({ initial = [], fd = content, layout = "unified" }: { initial?: Comment[]; fd?: typeof content; layout?: "unified" | "split" }) {
+    const [comments, setComments] = useState<Comment[]>(initial);
+    const apply = useMemo(() => ({
+      add: (a: Anchor) => setComments((cs) => [...cs, { id: `c${cs.length + 1}`, scope: scopeForAnchor(a), anchor: a, body: "", stale: false, resolved: false, createdAt: "t", updatedAt: "t" }]),
+      setSpans: (id: string, spans: AnchorSpan[]) => setComments((cs) => cs.map((c) => (c.id === id ? { ...c, anchor: anchorFromSpans("a.ts", spans) } : c))),
+      del: (id: string) => setComments((cs) => cs.filter((c) => c.id !== id)),
+    }), []);
+    useEffect(() => { getFileDiff.mockResolvedValue(fd); }, [fd]);
+    return (
+      <VirtualDiffPane
+        target={target}
+        files={oneFile}
+        theme="light"
+        layout={layout}
+        viewedFiles={new Set()}
+        comments={comments}
+        onToggleViewed={noop}
+        onAddComment={(a, body) => { spies.add(a, body); apply.add(a); }}
+        onSetCommentSpans={(id, spans) => { spies.setSpans(id, spans); apply.setSpans(id, spans); }}
+        onDeleteComment={(id) => { spies.del(id); apply.del(id); }}
+        onAddFileComment={noop}
+        onEditComment={noop}
+        onToggleResolvedComment={noop}
+      />
+    );
+  }
+
+  const line = (n: number): AnchorSpan => ({ side: "new", start: n, end: n, text: content.newContent.split("\n")[n - 1] });
+  const plusOf = (c: ReturnType<typeof render>, n: number) =>
+    c.container.querySelector(`[aria-label="comment on line ${n}"]`) as HTMLButtonElement | null;
+  const plusInRow = (c: ReturnType<typeof render>, row: number) =>
+    c.container.querySelector(`[data-row-index="${row}"] [data-add-comment]`) as HTMLButtonElement | null;
+  const areaOf = (c: ReturnType<typeof render>) => c.container.querySelector("[data-comment-id] textarea") as HTMLTextAreaElement | null;
+  const row = (c: ReturnType<typeof render>, i: number) => c.container.querySelector(`[data-row-index="${i}"]`) as HTMLElement;
+  const blockBottomOfRow = (c: ReturnType<typeof render>, i: number) => parseFloat(row(c, i).style.top) + parseFloat(row(c, i).style.height);
+  const blockTop = (c: ReturnType<typeof render>) => parseFloat((areaOf(c)!.closest(".delta-comment-ui") as HTMLElement).style.top);
+  const railShadow = (c: ReturnType<typeof render>, i: number) => (row(c, i).firstElementChild as HTMLElement).style.boxShadow;
+
+  async function openDraftOn(c: ReturnType<typeof render>, n: number) {
+    await waitFor(() => expect(plusOf(c, n)).toBeTruthy());
+    fireEvent.click(plusOf(c, n)!);
+    await waitFor(() => expect(areaOf(c)).toBeTruthy());
+  }
+
+  it("`+` on another line joins the comment whose editor is open instead of starting a new one", async () => {
+    const c = render(<Harness />);
+    await openDraftOn(c, 2);
+    fireEvent.click(plusOf(c, 5)!);
+    await waitFor(() => expect(spies.setSpans).toHaveBeenCalledTimes(1));
+    expect(spies.setSpans).toHaveBeenCalledWith("c1", [line(2), line(5)]);
+    expect(spies.add).toHaveBeenCalledTimes(1);
+    expect(c.container.querySelectorAll("textarea")).toHaveLength(1);
+  });
+
+  it("moves the editor under the lowest selected line, keeping its text and focus", async () => {
+    const c = render(<Harness />);
+    await openDraftOn(c, 2);
+    expect(blockTop(c)).toBe(blockBottomOfRow(c, 1));
+    fireEvent.change(areaOf(c)!, { target: { value: "typed note" } });
+    fireEvent.click(plusOf(c, 5)!);
+    await waitFor(() => expect(areaOf(c)?.value).toBe("typed note"));
+    expect(blockTop(c)).toBe(blockBottomOfRow(c, 4));
+    expect(document.activeElement).toBe(areaOf(c));
+  });
+
+  it("`+` on a selected line unselects it; unselecting the last line of a blank draft discards the draft", async () => {
+    const c = render(<Harness />);
+    await openDraftOn(c, 2);
+    fireEvent.click(plusOf(c, 5)!);
+    await waitFor(() => expect(spies.setSpans).toHaveBeenCalledTimes(1));
+    fireEvent.click(plusOf(c, 2)!);
+    await waitFor(() => expect(spies.setSpans).toHaveBeenLastCalledWith("c1", [line(5)]));
+    expect(spies.del).not.toHaveBeenCalled();
+    fireEvent.click(plusOf(c, 5)!);
+    await waitFor(() => expect(spies.del).toHaveBeenCalledWith("c1"));
+    expect(c.container.querySelector("[data-comment-id]")).toBeNull();
+  });
+
+  it("unselecting the last line of a comment that has text asks first; Cancel keeps everything", async () => {
+    const c = render(<Harness />);
+    await openDraftOn(c, 2);
+    fireEvent.change(areaOf(c)!, { target: { value: "typed note" } });
+    fireEvent.click(plusOf(c, 2)!);
+    const dialog = await screen.findByRole("alertdialog");
+    expect(spies.del).not.toHaveBeenCalled();
+    expect(spies.setSpans).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(areaOf(c)?.value).toBe("typed note");
+    fireEvent.click(plusOf(c, 2)!);
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+    expect(spies.del).toHaveBeenCalledWith("c1");
+  });
+
+  it("a drag joins the open comment as one run", async () => {
+    const c = render(<Harness />);
+    await openDraftOn(c, 2);
+    document.elementFromPoint = (() => row(c, 9)) as typeof document.elementFromPoint;
+    fireEvent.pointerDown(plusOf(c, 8)!, { button: 0 });
+    act(() => {
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 10, clientY: 30 }));
+      window.dispatchEvent(new MouseEvent("pointerup"));
+    });
+    expect(spies.setSpans).toHaveBeenCalledWith("c1", [line(2), { side: "new", start: 8, end: 10, text: "h\ni\nj" }]);
+    expect(spies.add).toHaveBeenCalledTimes(1);
+  });
+
+  it("a deleted line joins the same comment as an old-side span", async () => {
+    const c = render(<Harness fd={{ status: "modified", binary: false, oldContent: "x\ny\n", newContent: "a\nb\nc\n" }} />);
+    await waitFor(() => expect(plusInRow(c, 3)).toBeTruthy());
+    fireEvent.click(plusInRow(c, 3)!);
+    await waitFor(() => expect(areaOf(c)).toBeTruthy());
+    fireEvent.click(plusInRow(c, 0)!);
+    await waitFor(() => expect(spies.setSpans).toHaveBeenCalledTimes(1));
+    expect(spies.setSpans).toHaveBeenCalledWith("c1", [{ side: "new", start: 2, end: 2, text: "b" }, { side: "old", start: 1, end: 1, text: "x" }]);
+  });
+
+  it("gives the selected rows the comment accent and leaves the lines between alone", async () => {
+    const c = render(<Harness />);
+    await openDraftOn(c, 2);
+    expect(railShadow(c, 1)).toContain("--color-emerald-500");
+    fireEvent.click(plusOf(c, 5)!);
+    await waitFor(() => expect(railShadow(c, 4)).toContain("var(--primary)"));
+    expect(railShadow(c, 1)).toContain("var(--primary)");
+    for (const between of [2, 3, 5]) expect(railShadow(c, between)).toContain("--color-emerald-500");
+  });
+
+  it("in the split view a paired row's left `+` selects the deleted line, its right `+` the added one, and a context row joins from either side", async () => {
+    const c = render(<Harness layout="split" fd={{ status: "modified", binary: false, oldContent: "c\nx\n", newContent: "c\ny\n" }} />);
+    const plusInCell = (row: number, side: string) =>
+      c.container.querySelector(`[data-row-index="${row}"] [data-add-comment="${side}"]`) as HTMLButtonElement | null;
+    await waitFor(() => expect(plusInCell(1, "old")).toBeTruthy());
+    fireEvent.click(plusInCell(1, "old")!);
+    await waitFor(() => expect(areaOf(c)).toBeTruthy());
+    fireEvent.click(plusInCell(1, "new")!);
+    await waitFor(() => expect(spies.setSpans).toHaveBeenCalledTimes(1));
+    expect(spies.setSpans).toHaveBeenCalledWith("c1", [{ side: "new", start: 2, end: 2, text: "y" }, { side: "old", start: 2, end: 2, text: "x" }]);
+    fireEvent.click(plusInCell(0, "old")!);
+    await waitFor(() => expect(spies.setSpans).toHaveBeenCalledTimes(2));
+    expect(spies.setSpans).toHaveBeenLastCalledWith("c1", [{ side: "new", start: 1, end: 2, text: "c\ny" }, { side: "old", start: 2, end: 2, text: "x" }]);
+
+    const accentOf = (row: number, column: number) =>
+      (c.container.querySelectorAll(`[data-row-index="${row}"]`)[column].firstElementChild as HTMLElement).style.boxShadow;
+    expect(accentOf(0, 0)).toContain("var(--primary)");
+    expect(accentOf(0, 1)).toContain("var(--primary)");
+    expect(accentOf(1, 0)).toContain("var(--primary)");
+    expect(accentOf(1, 1)).toContain("var(--primary)");
+  });
+
+  it("a paired row's selected side alone is marked when the other side isn't selected", async () => {
+    const c = render(<Harness layout="split" fd={{ status: "modified", binary: false, oldContent: "c\nx\n", newContent: "c\ny\n" }} />);
+    const plusInCell = (row: number, side: string) =>
+      c.container.querySelector(`[data-row-index="${row}"] [data-add-comment="${side}"]`) as HTMLButtonElement | null;
+    await waitFor(() => expect(plusInCell(1, "new")).toBeTruthy());
+    fireEvent.click(plusInCell(0, "old")!);
+    await waitFor(() => expect(areaOf(c)).toBeTruthy());
+    fireEvent.click(plusInCell(1, "new")!);
+    await waitFor(() => expect(spies.setSpans).toHaveBeenCalledTimes(1));
+    expect(spies.setSpans).toHaveBeenLastCalledWith("c1", [{ side: "new", start: 1, end: 2, text: "c\ny" }]);
+    const accentOf = (row: number, column: number) =>
+      (c.container.querySelectorAll(`[data-row-index="${row}"]`)[column].firstElementChild as HTMLElement).style.boxShadow;
+    expect(accentOf(1, 1)).toContain("var(--primary)");
+    expect(accentOf(1, 0)).toContain("--color-rose-500");
+  });
+
+  it("a saved comment takes lines too once it is opened for editing", async () => {
+    const saved: Comment = {
+      id: "s1", scope: "line", body: "saved", stale: false, resolved: false, createdAt: "t", updatedAt: "t",
+      anchor: anchorFromSpans("a.ts", [line(2)]),
+    };
+    const c = render(<Harness initial={[saved]} />);
+    await waitFor(() => expect(c.container.querySelector('[data-comment-id="s1"]')).toBeTruthy());
+    fireEvent.click(plusOf(c, 5)!);
+    await waitFor(() => expect(spies.add).toHaveBeenCalledTimes(1));
+    fireEvent.click(within(c.container.querySelector('[data-comment-id="s1"]')!).getByRole("button", { name: "Edit" }));
+    fireEvent.click(plusOf(c, 6)!);
+    await waitFor(() => expect(spies.setSpans).toHaveBeenCalledTimes(1));
+    expect(spies.setSpans).toHaveBeenCalledWith("s1", [line(2), line(6)]);
+  });
+
+  it("a comment stored before spans existed gains lines the same way", async () => {
+    const legacy: Comment = {
+      id: "l1", scope: "line", body: "", stale: false, resolved: false, createdAt: "t", updatedAt: "t",
+      anchor: { file: "a.ts", side: "new", startLine: 2, endLine: null, snippet: "b" },
+    };
+    const c = render(<Harness initial={[legacy]} />);
+    await waitFor(() => expect(areaOf(c)).toBeTruthy());
+    fireEvent.click(plusOf(c, 5)!);
+    await waitFor(() => expect(spies.setSpans).toHaveBeenCalledTimes(1));
+    expect(spies.setSpans).toHaveBeenCalledWith("l1", [line(2), line(5)]);
   });
 });

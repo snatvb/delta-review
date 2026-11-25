@@ -1706,6 +1706,7 @@ mod tests {
                 side: Side::New,
                 start_line: Some(2),
                 end_line: None,
+                spans: None,
                 snippet: Some("line2 CHANGED".into()),
                 x: None,
                 y: None,

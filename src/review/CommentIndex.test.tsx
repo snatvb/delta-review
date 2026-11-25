@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, within, act } from "@testing-library/react";
 import { CommentIndex } from "./CommentIndex";
+import { anchorFromSpans } from "./anchorSpans";
 import type { Comment } from "../types";
 
 const comments: Comment[] = [
@@ -29,6 +30,34 @@ describe("CommentIndex", () => {
     expect(screen.getByText(/1 stale/)).toBeInTheDocument();
     // Only the open comment carries the "⚠ stale" entry badge.
     expect(screen.getAllByText("⚠ stale")).toHaveLength(1);
+  });
+
+  it("locates a non-contiguous comment by every run, its deleted lines after the current ones", () => {
+    const multi: Comment[] = [{
+      id: "m", scope: "range", body: "note", stale: false, resolved: false, createdAt: "t", updatedAt: "t",
+      anchor: anchorFromSpans("src/a.ts", [
+        { side: "new", start: 3, end: 5, text: "a\nb\nc" },
+        { side: "new", start: 10, end: 10, text: "j" },
+        { side: "old", start: 8, end: 9, text: "h\ni" },
+      ]),
+    }];
+    render(<CommentIndex open onOpenChange={() => {}} comments={multi} onJump={() => {}} />);
+    expect(screen.getByText("L3–5, 10 · old 8–9")).toBeInTheDocument();
+  });
+
+  it("orders comments by the first line they select", () => {
+    const note = (id: string, spans: Parameters<typeof anchorFromSpans>[1]): Comment => ({
+      id, scope: "range", body: id, stale: false, resolved: false, createdAt: "t", updatedAt: "t",
+      anchor: anchorFromSpans("src/a.ts", spans),
+    });
+    render(
+      <CommentIndex
+        open onOpenChange={() => {}} onJump={() => {}}
+        comments={[note("later", [{ side: "new", start: 12, end: 12, text: "" }]), note("earlier", [{ side: "new", start: 12, end: 12, text: "" }, { side: "new", start: 4, end: 4, text: "" }])]}
+      />,
+    );
+    const bodies = screen.getAllByText(/^(earlier|later)$/).map((el) => el.textContent);
+    expect(bodies).toEqual(["earlier", "later"]);
   });
 
   it("offers stale cards resolve + delete but no edit", () => {

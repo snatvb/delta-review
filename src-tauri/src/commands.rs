@@ -182,6 +182,11 @@ pub fn save_review_impl(
     // files are still at the version the user saw — see stamp_viewed_baselines.
     // Served from the diff cache (a map read), not a fresh whole-repo diff per entry.
     stamp_viewed_baselines(cache, &mut review);
+    for comment in &mut review.comments {
+        if let Some(anchor) = comment.anchor.as_mut() {
+            anchor.project();
+        }
+    }
     storage.save(&review)
 }
 
@@ -1334,6 +1339,63 @@ mod tests {
     }
 
     #[test]
+    fn save_review_impl_writes_the_fields_older_versions_read_alongside_the_spans() {
+        use crate::review::model::{Anchor, AnchorSpan, Side};
+        use crate::storage::{JsonStorage, Storage};
+
+        let store_dir = tempfile::TempDir::new().unwrap();
+        let storage = JsonStorage::new(store_dir.path().join("reviews"));
+        let now = chrono::Utc::now().to_rfc3339();
+        let target = Target {
+            repo_path: "/repo".into(),
+            worktree: Some("main".into()),
+            mode: DiffMode::Uncommitted,
+            base: None,
+            commit: None,
+        };
+        let snapshot = Snapshot {
+            base_oid: "abc123".into(),
+            head_oid: None,
+            head_commit: None,
+            captured_at: now.clone(),
+        };
+        let mut review = Review::new("0123456789abcdef".into(), target, snapshot, now);
+        review.comments.push(Comment {
+            id: "c1".into(),
+            scope: CommentScope::Range,
+            anchor: Some(Anchor {
+                file: "a.ts".into(),
+                side: Side::New,
+                start_line: None,
+                end_line: None,
+                snippet: None,
+                x: None,
+                y: None,
+                spans: Some(vec![
+                    AnchorSpan { side: Side::New, start: 10, end: 12, text: "j\nk\nl".into() },
+                    AnchorSpan { side: Side::Old, start: 8, end: 8, text: "h".into() },
+                ]),
+            }),
+            body: "why".into(),
+            stale: false,
+            resolved: false,
+            commit: None,
+            created_at: "t".into(),
+            updated_at: "t".into(),
+        });
+
+        save_review_impl(&DiffCache::default(), &storage, review.clone()).unwrap();
+        let loaded = storage.load(&review.id).unwrap().unwrap();
+        let anchor = loaded.comments[0].anchor.as_ref().unwrap();
+        assert_eq!(
+            (anchor.side, anchor.start_line, anchor.end_line),
+            (Side::New, Some(10), Some(12))
+        );
+        assert_eq!(anchor.snippet.as_deref(), Some("j\nk\nl\nh"));
+        assert_eq!(anchor.spans.as_ref().map(Vec::len), Some(2));
+    }
+
+    #[test]
     fn refresh_review_impl_reconciles_and_persists() {
         use crate::storage::{JsonStorage, Storage};
 
@@ -1488,6 +1550,7 @@ mod tests {
                 side: Side::New,
                 start_line: None,
                 end_line: None,
+                spans: None,
                 snippet: None,
                 x: None,
                 y: None,
@@ -1575,6 +1638,7 @@ mod tests {
                 side: Side::New,
                 start_line: Some(2),
                 end_line: None,
+                spans: None,
                 snippet: Some("ADDED".into()),
                 x: None,
                 y: None,

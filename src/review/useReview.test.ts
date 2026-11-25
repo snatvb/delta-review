@@ -5,6 +5,7 @@ const saveMock = vi.fn();
 vi.mock("../api", () => ({ api: { saveReview: (...a: unknown[]) => saveMock(...a) } }));
 
 import { useReview } from "./useReview";
+import { anchorFromSpans } from "./anchorSpans";
 import type { Review } from "../types";
 
 const base: Review = {
@@ -102,5 +103,21 @@ describe("useReview", () => {
     await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1));
     act(() => result.current.toggleResolved(id));
     expect(result.current.review!.comments[0].resolved).toBe(false);
+  });
+
+  it("setCommentSpans follows the selection's scope and saves only a comment that already has text", async () => {
+    const { result } = renderHook(() => useReview(base));
+    const line = { side: "new" as const, start: 2, end: 2, text: "b" };
+    act(() => { result.current.addComment("line", anchorFromSpans("a.ts", [line]), ""); });
+    const id = result.current.review!.comments[0].id;
+    act(() => { result.current.setCommentSpans(id, [line, { side: "new", start: 5, end: 5, text: "e" }]); });
+    expect(result.current.review!.comments[0]).toMatchObject({ scope: "range", anchor: { file: "a.ts", spans: [line, { side: "new", start: 5, end: 5, text: "e" }] } });
+    expect(saveMock).not.toHaveBeenCalled(); // still a blank draft — in memory only
+
+    act(() => { result.current.updateCommentBody(id, "note"); });
+    saveMock.mockReset();
+    act(() => { result.current.setCommentSpans(id, [{ side: "new", start: 5, end: 5, text: "e" }]); });
+    expect(result.current.review!.comments[0].scope).toBe("line");
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1));
   });
 });

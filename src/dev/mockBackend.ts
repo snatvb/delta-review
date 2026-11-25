@@ -6,6 +6,7 @@
 // refresh_review, save_review, export_review) extend the switch + fixtures here.
 import { __setBlobUrlForDev, __setInvokeForDev, __setTerminalChannelForDev } from "../api";
 import { sameFolder } from "../lib/sameFolder";
+import { runsLabel, spansOf } from "../review/anchorSpans";
 import type { AppSettings, BaseStrategy, DiffSummary, FileDiff, PickerData, PickerWorktree, Registry, Review, ReviewSession } from "../types";
 import { MockTerminals, type MockTerminalSink } from "./mockTerminals";
 
@@ -708,7 +709,12 @@ export function installMockBackend(): void {
         const review = (args?.review ?? ds.review) as Review;
         const open = review.comments.filter((c) => !c.resolved);
         const lines = open.map((c) => {
-          const loc = c.anchor ? `${c.anchor.file}${c.anchor.startLine ? `:${c.anchor.startLine}` : ""}` : "general";
+          const current = c.anchor ? spansOf(c.anchor).filter((s) => s.side === "new") : [];
+          const deleted = c.anchor ? spansOf(c.anchor).filter((s) => s.side === "old") : [];
+          const lines = current.length ? current : deleted;
+          const loc = c.anchor
+            ? `${c.anchor.file}${lines.length ? `:${runsLabel(lines, "-", ",")}` : ""}${current.length && deleted.length ? ` (deleted: old side ${runsLabel(deleted, "-", ",")})` : ""}`
+            : "general";
           return `- [${loc}] ${c.body}`;
         });
         return `# Review — demo · feat/auth · All changes\n\n${lines.join("\n")}\n` as T;

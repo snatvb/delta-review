@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Comment } from "../types";
+import type { AnchorSpan, Comment } from "../types";
 import { track } from "../analytics";
+import { runsLabel, spansOf } from "./anchorSpans";
 
 // The per-comment counterpart of the backend's agent export (export/mod.rs):
 // one comment, as compact as an agent can use it. The location leads in
@@ -11,27 +12,41 @@ import { track } from "../analytics";
 export function commentForAgent(c: Comment): string {
   const a = c.anchor;
   if (!a) return c.body.trim();
+  const current = spansOf(a).filter((s) => s.side === "new");
+  const deleted = spansOf(a).filter((s) => s.side === "old");
   let loc = a.file;
-  if (a.startLine != null) {
-    loc += `:${a.startLine}`;
-    if (a.endLine != null && a.endLine > a.startLine) loc += `-${a.endLine}`;
-  }
+  if (current.length || deleted.length) loc += `:${runsLabel(current.length ? current : deleted, "-", ",")}`;
   // Old-side line numbers refer to the pre-change content, and a stale anchor
   // no longer resolves in the current diff — both change how the agent should
   // read the location, so they ride along on the same line. So does an image
   // point: fractions of the picture's natural size, the spot the pin marks.
   const notes: string[] = [];
   if (a.x != null && a.y != null) notes.push(`image x ${Math.round(a.x * 100)}% y ${Math.round(a.y * 100)}%`);
-  if (a.side === "old") notes.push("old side");
+  if (current.length && deleted.length) notes.push(`deleted: old side ${runsLabel(deleted, "-", ",")}`);
+  else if (a.side === "old") notes.push("old side");
   if (c.stale && !c.resolved) notes.push("⚠ stale");
   if (c.commit) notes.push(`commit ${c.commit.slice(0, 7)}`);
   if (notes.length) loc += ` (${notes.join(" · ")})`;
 
-  const out = [loc];
-  if (a.snippet && a.snippet.trim()) out.push("```" + langFor(a.file), a.snippet.trimEnd(), "```");
-  const body = c.body.trim();
-  if (body) out.push(body);
-  return out.join("\n");
+  const lang = langFor(a.file);
+  const textOf = (spans: AnchorSpan[]) => spans.map((s) => s.text).join("\n");
+  const fence = (text: string): string[] => (text.trim() ? ["```" + lang, text.trimEnd(), "```"] : []);
+  const block = (label: string, spans: AnchorSpan[]): string | null => {
+    const lines = fence(textOf(spans));
+    return lines.length ? [label, ...lines].join("\n") : null;
+  };
+  const split = current.length > 0 && deleted.length > 0;
+  const sections = [
+    loc,
+    split
+      ? [
+          block(`deleted (old side ${runsLabel(deleted, "-", ", ")}):`, deleted),
+          block(`current (${runsLabel(current, "-", ", ")}):`, current),
+        ].filter((b): b is string => b != null).join("\n\n")
+      : fence(textOf(current.length ? current : deleted)).join("\n"),
+    c.body.trim(),
+  ].filter((section) => section !== "");
+  return sections.join(split ? "\n\n" : "\n");
 }
 
 function langFor(file: string): string {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Markdown from "react-markdown";
 import { markdownComponents } from "@/lib/markdownLink";
 import { Check, Copy, Pencil, Trash2, RotateCcw, TriangleAlert } from "lucide-react";
@@ -35,42 +35,70 @@ const ICON_BTN = "size-7 text-muted-foreground hover:text-foreground";
 const RESOLVE_BTN = "size-7 text-muted-foreground hover:bg-emerald-500/10 hover:text-emerald-600 dark:hover:text-emerald-400";
 const DEL_BTN = "size-7 text-muted-foreground hover:bg-destructive/10 hover:text-destructive";
 
-export function CommentThread({
-  comments,
-  onEdit,
-  onDelete,
-  onToggleResolved,
-}: {
-  comments: Comment[];
-  onEdit: (id: string, body: string) => void;
-  onDelete: (id: string) => void;
-  onToggleResolved: (id: string) => void;
-}) {
-  // The open editor, plus whether its comment was blank when it opened — a
-  // never-saved draft (opened blank, still blank) is discarded on cancel.
-  const [editing, setEditing] = useState<{ id: string; wasBlank: boolean } | null>(null);
-  // The comment pending a delete confirmation (drives the single ConfirmDialog).
-  const [confirmId, setConfirmId] = useState<string | null>(null);
-  // Per-comment "copy for agent" clipboard + ✓ flash.
-  const { copiedId, copy } = useCopyCommentForAgent();
-  const open = (c: Comment) => setEditing({ id: c.id, wasBlank: c.body.trim() === "" });
-  const close = () => setEditing(null);
+// Host-owned when an editor must outlive its thread: the diff pane re-creates
+// a thread whenever the lines it hangs under change.
+export type ThreadEditor = {
+  open: ReadonlyMap<string, { wasBlank: boolean }>;
+  textOf: (id: string) => string | undefined;
+  onOpen: (id: string, wasBlank: boolean) => void;
+  onClose: (id: string) => void;
+  onText: (id: string, text: string) => void;
+};
 
+function useOwnEditor(autoOpenDrafts: boolean, comments: Comment[]): ThreadEditor {
+  const [open, setOpen] = useState<ReadonlyMap<string, { wasBlank: boolean }>>(() => new Map());
   // Auto-open the editor for a newly-appeared empty (draft) comment. Adjusted
   // during render — not in an effect — so the editor opens in the same commit
   // with no stale-UI flash. `seen` guards against re-opening a closed comment
   // and prevents a render loop.
   const [seen, setSeen] = useState<ReadonlySet<string>>(() => new Set());
-  if (comments.some((c) => !seen.has(c.id))) {
+  if (autoOpenDrafts && comments.some((c) => !seen.has(c.id))) {
     const draft = comments.find((c) => !seen.has(c.id) && c.body.trim() === "");
     setSeen(new Set(comments.map((c) => c.id)));
-    if (draft) setEditing({ id: draft.id, wasBlank: true });
+    if (draft) setOpen((prev) => new Map(prev).set(draft.id, { wasBlank: true }));
   }
+  return useMemo(
+    () => ({
+      open,
+      textOf: () => undefined,
+      onOpen: (id, wasBlank) => setOpen((prev) => new Map(prev).set(id, { wasBlank })),
+      onClose: (id) => setOpen((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      }),
+      onText: () => {},
+    }),
+    [open],
+  );
+}
+
+export function CommentThread({
+  comments,
+  onEdit,
+  onDelete,
+  onToggleResolved,
+  editor: hostEditor,
+}: {
+  comments: Comment[];
+  onEdit: (id: string, body: string) => void;
+  onDelete: (id: string) => void;
+  onToggleResolved: (id: string) => void;
+  editor?: ThreadEditor;
+}) {
+  const ownEditor = useOwnEditor(hostEditor == null, comments);
+  const editor = hostEditor ?? ownEditor;
+  // The comment pending a delete confirmation (drives the single ConfirmDialog).
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  // Per-comment "copy for agent" clipboard + ✓ flash.
+  const { copiedId, copy } = useCopyCommentForAgent();
 
   return (
     <div className="flex flex-col gap-2 text-[13px]">
       {comments.map((c) => {
-        const isEditing = editing?.id === c.id;
+        const editing = editor.open.get(c.id);
+        const isEditing = editing != null;
         const collapsed = c.resolved && !isEditing;
         return (
           <div
@@ -83,18 +111,19 @@ export function CommentThread({
               {isEditing ? (
                 <div className="px-4 py-3.5">
                   <CommentEditor
-                    initialValue={c.body}
+                    initialValue={editor.textOf(c.id) ?? c.body}
+                    onChange={(text) => editor.onText(c.id, text)}
                     onSubmit={(body) => {
                       // Saving a never-saved draft while still blank is a no-op
                       // comment — discard it instead of persisting an empty one.
                       if (editing?.wasBlank && body.trim() === "") onDelete(c.id);
                       else onEdit(c.id, body);
-                      close();
+                      editor.onClose(c.id);
                     }}
                     onCancel={() => {
                       // A never-saved draft (opened blank, still blank) is discarded.
                       if (editing?.wasBlank && c.body.trim() === "") onDelete(c.id);
-                      close();
+                      editor.onClose(c.id);
                     }}
                   />
                 </div>
@@ -134,7 +163,7 @@ export function CommentThread({
                         </Button>
                       </Hint>
                       <Hint tip="Edit">
-                        <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Edit" onClick={() => open(c)}>
+                        <Button variant="ghost" size="icon-xs" className={ICON_BTN} aria-label="Edit" onClick={() => editor.onOpen(c.id, c.body.trim() === "")}>
                           <Pencil className="size-4" />
                         </Button>
                       </Hint>
@@ -153,7 +182,7 @@ export function CommentThread({
                   {c.body.trim() === "" ? (
                     <button
                       className="self-start text-[13px] italic text-muted-foreground/70 transition-colors hover:text-foreground"
-                      onClick={() => open(c)}
+                      onClick={() => editor.onOpen(c.id, c.body.trim() === "")}
                     >
                       Empty note — click to edit
                     </button>

@@ -28,7 +28,9 @@ import { api } from "../api";
 import { getEditorPref } from "../editor";
 import { toDiffFile } from "./toDiffFile";
 import { RenameLabel } from "./RenameLabel";
-import { CommentThread } from "../review/CommentThread";
+import { CommentThread, type ThreadEditor } from "../review/CommentThread";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { anchorFromSpans, fillGaps, isLineSelected, spansFromLines, spansOf, withLines, type LineRef, type LineText } from "../review/anchorSpans";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { markdownComponents } from "@/lib/markdownLink";
@@ -43,7 +45,7 @@ import { ImageLightbox, type ImageLightboxSide } from "./ImageLightbox";
 import { binarySidesFor, formatBytes, imageMimeFor, isImagePath, previewableImageSide } from "./binaryFile";
 import { useBinaryFile } from "./useBinaryFile";
 import { numberPointComments, PIN_TONE_CLASS, pinToneFor, pointKey, pointOf, pointSuffix } from "./imagePoints";
-import type { Anchor, BinaryFileDiff, Comment, DiffMode, FileDiff, FileEntry, FileStatus, Side, Target } from "../types";
+import type { Anchor, AnchorSpan, BinaryFileDiff, Comment, DiffMode, FileDiff, FileEntry, FileStatus, Side, Target } from "../types";
 import type { DiffLayout } from "./useDiffLayout";
 import { useFileDiffCache } from "./useFileDiffCache";
 import { wrapsByDefault, paneColsFor, visualLinesForCols, buildRowOffsets } from "./wrap";
@@ -318,7 +320,7 @@ const railBg = (tint: string | null) => (tint ? `linear-gradient(${tint}, ${tint
 const mix = (color: string, pct: number) => `color-mix(in oklch, ${color} ${pct}%, transparent)`;
 
 // Unified row: old# · new# · marker · code, hover `+` to comment, gutters drag-select.
-function Row({ model, index, top, height, wrap, selected, highlighted, onComment, marks, mode, readOnly, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onEscalateEdit }: { model: Model; index: number; top: number; height: number; wrap: boolean; selected: boolean; highlighted: boolean; onComment: (side: Side, line: number) => void; marks?: RowMark[]; mode: DiffMode; readOnly: boolean; rowEdit: RowEditState | null; onStartEdit: (line: number, text: string) => void; onSaveEdit: (line: number, expected: string, replacement: string) => void; onCancelEdit: () => void; onEscalateEdit: (line: number) => void }) {
+function Row({ model, index, top, height, wrap, selected, highlighted, onComment, marks, mode, readOnly, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onEscalateEdit }: { model: Model; index: number; top: number; height: number; wrap: boolean; selected: boolean; highlighted: boolean; onComment: (index: number) => void; marks?: RowMark[]; mode: DiffMode; readOnly: boolean; rowEdit: RowEditState | null; onStartEdit: (line: number, text: string) => void; onSaveEdit: (line: number, expected: string, replacement: string) => void; onCancelEdit: () => void; onEscalateEdit: (line: number) => void }) {
   const line = model.getUnifiedLine(index);
   const hasOld = line.oldLineNumber != null, hasNew = line.newLineNumber != null;
   const kind = hasOld && hasNew ? "ctx" : hasNew ? "add" : hasOld ? "del" : "hunk";
@@ -354,7 +356,7 @@ function Row({ model, index, top, height, wrap, selected, highlighted, onComment
         <span className={`w-4 shrink-0 select-none text-center ${markerColor}`}>{marker}</span>
         {!readOnly && kind !== "hunk" && (
           <Hint tip="Comment (drag for a range)">
-            <button type="button" data-add-comment={side} onClick={() => onComment(side, (hasNew ? line.newLineNumber : line.oldLineNumber)!)} aria-label={`comment on line ${hasNew ? line.newLineNumber : line.oldLineNumber}`} className={`left-[5.25rem] top-1/2 ${addBtnCls}`}>
+            <button type="button" data-add-comment={side} onClick={() => onComment(index)} aria-label={`comment on line ${hasNew ? line.newLineNumber : line.oldLineNumber}`} className={`left-[5.25rem] top-1/2 ${addBtnCls}`}>
               <Plus className="size-3.5" strokeWidth={2.5} />
             </button>
           </Hint>
@@ -373,7 +375,7 @@ function Row({ model, index, top, height, wrap, selected, highlighted, onComment
 // gutter is a sticky rail (like the unified row) so it stays pinned and masks the
 // code that scrolls under it on horizontal scroll. The two columns are separate
 // scroll containers (synced), so each side scrolls within its own half. (#2/#10)
-function SplitColCell({ model, side, index, top, height, wrap, changed, highlighted, selected, onComment, marks, mode, readOnly, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onEscalateEdit }: { model: Model; side: Side; index: number; top: number; height: number; wrap: boolean; changed: boolean; highlighted: boolean; selected: boolean; onComment: (side: Side, line: number) => void; marks?: RowMark[]; mode: DiffMode; readOnly: boolean; rowEdit: RowEditState | null; onStartEdit: (line: number, text: string) => void; onSaveEdit: (line: number, expected: string, replacement: string) => void; onCancelEdit: () => void; onEscalateEdit: (line: number) => void }) {
+function SplitColCell({ model, side, index, top, height, wrap, changed, highlighted, selected, onComment, marks, mode, readOnly, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onEscalateEdit }: { model: Model; side: Side; index: number; top: number; height: number; wrap: boolean; changed: boolean; highlighted: boolean; selected: boolean; onComment: (index: number, side: Side) => void; marks?: RowMark[]; mode: DiffMode; readOnly: boolean; rowEdit: RowEditState | null; onStartEdit: (line: number, text: string) => void; onSaveEdit: (line: number, expected: string, replacement: string) => void; onCancelEdit: () => void; onEscalateEdit: (line: number) => void }) {
   const line = side === "old" ? model.getSplitLeftLine(index) : model.getSplitRightLine(index);
   const has = line.lineNumber != null;
   const ln = line.lineNumber!;
@@ -390,14 +392,14 @@ function SplitColCell({ model, side, index, top, height, wrap, changed, highligh
     : highlighted ? mix("var(--primary)", 6)
     : null;
   const range = changed ? changeRangeOf(line.diff) : undefined;
-  const accent = changed ? (side === "old" ? DEL_ACCENT : ADD_ACCENT) : highlighted ? "var(--primary)" : undefined;
+  const accent = highlighted ? "var(--primary)" : changed ? (side === "old" ? DEL_ACCENT : ADD_ACCENT) : undefined;
   return (
     <div data-row-index={index} className="group absolute left-0 flex w-full items-stretch font-mono text-[length:var(--code-fs,13px)] leading-[var(--code-lh,22px)]" style={{ top, height, background: tint ?? undefined }}>
       <div className="sticky left-0 z-[1] flex items-stretch bg-code" style={{ background: railBg(tint), boxShadow: accent ? `inset 3px 0 0 ${accent}` : undefined }}>
         <span data-gutter={side} className={gutterCls}>{has ? ln : ""}</span>
         {!readOnly && has && (
           <Hint tip="Comment (drag for a range)">
-            <button type="button" data-add-comment={side} onClick={() => onComment(side, ln)} aria-label={`comment on ${side} line ${ln}`} className={`left-12 top-1/2 ${addBtnCls}`}>
+            <button type="button" data-add-comment={side} onClick={() => onComment(index, side)} aria-label={`comment on ${side} line ${ln}`} className={`left-12 top-1/2 ${addBtnCls}`}>
               <Plus className="size-3.5" strokeWidth={2.5} />
             </button>
           </Hint>
@@ -462,7 +464,7 @@ function FoldRow({ top, count, showDown, showUp, onDown, onUp, onExpand, onAll }
 }
 
 // An inline comment thread anchored under a row. Measures its own (variable) height.
-function CommentBlock({ id, top, comments, header, onEdit, onDelete, onToggleResolved, onHeight }: { id: string; top: number; comments: Comment[]; header?: ReactNode; onEdit: (id: string, body: string) => void; onDelete: (id: string) => void; onToggleResolved: (id: string) => void; onHeight: (id: string, h: number) => void }) {
+function CommentBlock({ id, top, comments, header, editor, onEdit, onDelete, onToggleResolved, onHeight }: { id: string; top: number; comments: Comment[]; header?: ReactNode; editor?: ThreadEditor; onEdit: (id: string, body: string) => void; onDelete: (id: string) => void; onToggleResolved: (id: string) => void; onHeight: (id: string, h: number) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = ref.current;
@@ -478,7 +480,7 @@ function CommentBlock({ id, top, comments, header, onEdit, onDelete, onToggleRes
     // wrapper forces mono on everything inside it) and restores app colors. (#3)
     <div ref={ref} className="delta-comment-ui absolute inset-x-0 px-3 pb-3 pt-1.5" style={{ top }}>
       {header}
-      <CommentThread comments={comments} onEdit={onEdit} onDelete={onDelete} onToggleResolved={onToggleResolved} />
+      <CommentThread comments={comments} editor={editor} onEdit={onEdit} onDelete={onDelete} onToggleResolved={onToggleResolved} />
     </div>
   );
 }
@@ -510,8 +512,29 @@ function PreviewBody({ content, onHeight }: { content: string; onHeight: (h: num
 
 interface Block { id: string; index: number; comments: Comment[]; point?: { side: Side; x: number; y: number } }
 
+type CommentedCells = { old: Set<number>; new: Set<number> };
+
+function cellsOfSpans(model: Model, layout: DiffLayout, spans: AnchorSpan[]): { cells: CommentedCells; rows: number[] } {
+  const cells: CommentedCells = { old: new Set(), new: new Set() };
+  const rows: number[] = [];
+  for (const s of spans) {
+    const ss = s.side === "old" ? SplitSide.old : SplitSide.new;
+    for (let line = s.start; line <= s.end; line++) {
+      const idx = layout === "split" ? model.getSplitLineIndexByLineNumber(line, ss) : model.getUnifiedLineIndexByLineNumber(line, ss);
+      if (idx < 0) continue;
+      rows.push(idx);
+      cells[s.side].add(idx);
+      const isContextRow = layout === "split" && s.side === "new" && !splitRowChanged(model.getSplitLeftLine(idx), model.getSplitRightLine(idx));
+      if (isContextRow) cells.old.add(idx);
+    }
+  }
+  return { cells, rows };
+}
+const lowestOf = (rows: number[]) => rows.reduce((lowest, row) => Math.max(lowest, row), -1);
+const lineCountOf = (spans: AnchorSpan[]) => spans.reduce((n, s) => n + s.end - s.start + 1, 0);
+
 const VFileSection = memo(function VFileSection({
-  entry, theme, layout, cache, collapsed, viewed, previewing, onSetPreview, headerSolo, target, repoPath, mode, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onOpenFileEditor, onOpenImage, onToggleCollapse, onToggleViewed, wrap, onToggleWrap, view, imageNear, paneW, rowH, chPx, query, caseSensitive, wholeWord, activeMatch, onMatches, forceModel, occ, comments, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, reportBodyHeight,
+  entry, theme, layout, cache, collapsed, viewed, previewing, onSetPreview, headerSolo, target, repoPath, mode, rowEdit, onStartEdit, onSaveEdit, onCancelEdit, onOpenFileEditor, onOpenImage, onToggleCollapse, onToggleViewed, wrap, onToggleWrap, view, imageNear, paneW, rowH, chPx, query, caseSensitive, wholeWord, activeMatch, onMatches, forceModel, occ, comments, editor, onAddComment, onAddFileComment, onSetCommentSpans, onEditComment, onDeleteComment, onToggleResolvedComment, reportBodyHeight,
 }: {
   entry: FileEntry; theme: "light" | "dark"; layout: DiffLayout;
   cache: ReturnType<typeof useFileDiffCache>;
@@ -549,8 +572,10 @@ const VFileSection = memo(function VFileSection({
   forceModel: boolean; // find active → build the model even off-screen/collapsed so this file is searchable (#find)
   occ: string | null; // trimmed selection made inside one row of THIS file → highlight its occurrences (#occ)
   comments: Comment[];
+  editor: ThreadEditor;
   onAddComment: (a: Anchor, body: string) => void;
   onAddFileComment: (file: string, body: string) => void;
+  onSetCommentSpans: (id: string, spans: AnchorSpan[]) => void;
   onEditComment: (id: string, body: string) => void;
   onDeleteComment: (id: string) => void;
   onToggleResolvedComment: (id: string) => void;
@@ -666,32 +691,31 @@ const VFileSection = memo(function VFileSection({
   const wide = paneW > 0 && rowPx > paneW - 2 * PAD - 2; // card is inset by PAD each side, minus its 1px borders
   const hScroll = wide && !wrap; // wrapping and horizontal scroll are mutually exclusive (#wrap)
 
-  // Comment blocks: file-scope → index -1 (top); line/range → the row they anchor.
-  const blocks = useMemo<Block[]>(() => {
-    if (!model) return [];
-    const out: Block[] = [];
+  const { blocks, rangeRows, commentedCells } = useMemo(() => {
+    const blocks: Block[] = [];
+    const rangeRows = new Set<number>();
+    const commentedCells: CommentedCells = { old: new Set(), new: new Set() };
+    if (!model) return { blocks, rangeRows, commentedCells };
     const fileScoped = comments.filter((c) => c.scope === "file");
-    if (fileScoped.length) out.push({ id: "__file__", index: -1, comments: fileScoped });
-    const byKey = new Map<string, Block>();
+    if (fileScoped.length) blocks.push({ id: "__file__", index: -1, comments: fileScoped });
+    const byRow = new Map<number, Block>();
     for (const c of comments) {
-      const a = c.anchor;
-      if (!a || a.startLine == null || c.scope === "file") continue;
-      // Anchor multi-line (range) comments to the LAST selected line, not the
-      // first, so the thread sits under the end of the span. (#anchor)
-      const anchorLine = a.endLine ?? a.startLine;
-      const key = `${a.side}:${anchorLine}`;
-      let b = byKey.get(key);
-      if (!b) {
-        const ss = a.side === "old" ? SplitSide.old : SplitSide.new;
-        const idx = layout === "split" ? model.getSplitLineIndexByLineNumber(anchorLine, ss) : model.getUnifiedLineIndexByLineNumber(anchorLine, ss);
-        if (idx == null || idx < 0) continue;
-        b = { id: key, index: idx, comments: [] };
-        byKey.set(key, b);
+      const spans = c.anchor ? spansOf(c.anchor) : [];
+      const covered = cellsOfSpans(model, layout, spans);
+      const lowestRow = lowestOf(covered.rows);
+      if (lowestRow < 0) continue;
+      if (lineCountOf(spans) > 1) {
+        for (const row of covered.rows) rangeRows.add(row);
+        for (const row of covered.cells.old) commentedCells.old.add(row);
+        for (const row of covered.cells.new) commentedCells.new.add(row);
       }
+      let b = byRow.get(lowestRow);
+      if (!b) byRow.set(lowestRow, (b = { id: `row:${lowestRow}`, index: lowestRow, comments: [] }));
       b.comments.push(c);
     }
-    out.push(...byKey.values());
-    return out.sort((x, y) => x.index - y.index);
+    blocks.push(...byRow.values());
+    blocks.sort((x, y) => x.index - y.index);
+    return { blocks, rangeRows, commentedCells };
   }, [model, comments, layout]);
 
   // Binary cards have no model, so their threads (#point + the fix that made
@@ -761,22 +785,7 @@ const VFileSection = memo(function VFileSection({
     });
   }, []);
 
-  // Model rows covered by a multi-line (range) comment — force-shown and given a
-  // left accent so the commented span reads as one group. (#7)
-  const rangeRows = useMemo(() => {
-    const s = new Set<number>();
-    if (!model) return s;
-    for (const c of comments) {
-      const a = c.anchor;
-      if (!a || a.startLine == null || a.endLine == null || a.endLine <= a.startLine || c.scope === "file") continue;
-      const ss = a.side === "old" ? SplitSide.old : SplitSide.new;
-      const lo = layout === "split" ? model.getSplitLineIndexByLineNumber(a.startLine, ss) : model.getUnifiedLineIndexByLineNumber(a.startLine, ss);
-      const hi = layout === "split" ? model.getSplitLineIndexByLineNumber(a.endLine, ss) : model.getUnifiedLineIndexByLineNumber(a.endLine, ss);
-      if (lo == null || hi == null || lo < 0 || hi < 0) continue;
-      for (let i = Math.min(lo, hi); i <= Math.max(lo, hi); i++) s.add(i);
-    }
-    return s;
-  }, [model, comments, layout]);
+
 
   // Only show changed lines plus CONTEXT unchanged lines around each change (and
   // around every commented line); collapse the rest into expandable fold rows.
@@ -911,15 +920,70 @@ const VFileSection = memo(function VFileSection({
   // placeholder shown — so the parent's offsets are exact. (#10/#11)
   useEffect(() => { if (model || showPlaceholder || previewing || loadFailed) reportBodyHeight(entry.path, bodyH); }, [model, showPlaceholder, previewing, loadFailed, isBinary, entry.path, bodyH, reportBodyHeight]);
 
-  // Create a line/range anchor and add an (empty) comment, mirroring the classic renderer.
-  // A line that already carries a thread (same block key as `blocks`) never gets a
-  // second comment from `+`. Pressed again, `+` toggles the draft away: a trailing
-  // empty draft is discarded — the editor closes with it, since a blank comment is
-  // noise — while a thread with real content just pulses (caret into an open
-  // editor) so "already commented here" is obvious and the button doesn't read dead.
-  const commentLine = useCallback((side: Side, lineNumber: number) => {
-    if (!fd || lineNumber == null) return;
-    const existing = blocks.find((b) => b.id === `${side}:${lineNumber}`);
+  const [focusRequest, setFocusRequest] = useState<{ id: string; n: number } | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const focusEditor = (id: string) => setFocusRequest({ id, n: (focusRequest?.n ?? 0) + 1 });
+  useEffect(() => {
+    if (!focusRequest) return;
+    const area = document.querySelector<HTMLTextAreaElement>(`[data-file="${CSS.escape(entry.path)}"] [data-comment-id="${CSS.escape(focusRequest.id)}"] textarea`);
+    if (!area) return;
+    area.focus();
+    area.setSelectionRange(area.value.length, area.value.length);
+  }, [focusRequest, entry.path]);
+
+  const oldLines = useMemo(() => fd?.oldContent?.split("\n"), [fd]);
+  const newLines = useMemo(() => fd?.newContent?.split("\n"), [fd]);
+  const lineText: LineText = (side, line) => (side === "old" ? oldLines : newLines)?.[line - 1] ?? "";
+  const anchoredLine = (i: number, column?: Side): LineRef | null => {
+    if (!model) return null;
+    if (layout === "split") {
+      const left = model.getSplitLeftLine(i), right = model.getSplitRightLine(i);
+      if (column === "old" && splitSideChanged(left)) return { side: "old", line: left.lineNumber! };
+      if (right.lineNumber != null) return { side: "new", line: right.lineNumber };
+      return left.lineNumber != null ? { side: "old", line: left.lineNumber } : null;
+    }
+    const line = model.getUnifiedLine(i);
+    return line.newLineNumber != null
+      ? { side: "new", line: line.newLineNumber }
+      : line.oldLineNumber != null ? { side: "old", line: line.oldLineNumber } : null;
+  };
+  const openLineEditor = (): Comment | null => {
+    const byId = new Map(comments.map((c) => [c.id, c]));
+    let found: Comment | null = null;
+    for (const id of editor.open.keys()) {
+      const c = byId.get(id);
+      if (c && !c.stale && c.anchor && spansOf(c.anchor).length > 0) found = c;
+    }
+    return found;
+  };
+  const applyLines = (comment: Comment, refs: LineRef[], selected: boolean) => {
+    if (!model || !comment.anchor) return;
+    const next = withLines(spansOf(comment.anchor), refs, selected, lineText);
+    if (next.length === 0) {
+      if ((editor.textOf(comment.id) ?? comment.body).trim() !== "") setConfirmDeleteId(comment.id);
+      else onDeleteComment(comment.id);
+      return;
+    }
+    const from = blocks.find((b) => b.comments.includes(comment))?.id;
+    const to = `row:${lowestOf(cellsOfSpans(model, layout, next).rows)}`;
+    if (from && from !== to) {
+      const moving = blockH[from] ?? EST_BLOCK_H;
+      setBlockH((prev) => ({ ...prev, [to]: (prev[to] ?? 0) + moving }));
+    }
+    onSetCommentSpans(comment.id, next);
+    focusEditor(comment.id);
+  };
+  const commentLine = (rowIndex: number, column?: Side) => {
+    if (!fd || !model) return;
+    const ref = anchoredLine(rowIndex, column);
+    if (!ref) return;
+    const open = openLineEditor();
+    if (open) {
+      const spans = open.anchor ? spansOf(open.anchor) : [];
+      applyLines(open, [ref], !isLineSelected(spans, ref));
+      return;
+    }
+    const existing = blocks.find((b) => b.index === rowIndex);
     if (existing) {
       const last = existing.comments[existing.comments.length - 1];
       if (last.body.trim() === "") { onDeleteComment(last.id); return; }
@@ -929,14 +993,12 @@ const VFileSection = memo(function VFileSection({
         const ta = node.querySelector("textarea");
         if (ta) { ta.focus(); const n = ta.value.length; ta.setSelectionRange(n, n); }
         const primary = getComputedStyle(document.documentElement).getPropertyValue("--primary").trim() || "currentColor";
-        if (typeof node.animate === "function") node.animate([{ boxShadow: `0 0 0 2px ${primary}` }, { boxShadow: "0 0 0 2px transparent" }], { duration: 1100, easing: "ease-out" });
+        if (typeof node.animate === "function") node.animate([{ boxShadow: `0 0 0 2px ${primary}` }, { boxShadow: `0 0 0 2px transparent` }], { duration: 1100, easing: "ease-out" });
       }
       return;
     }
-    const content = side === "old" ? fd.oldContent : fd.newContent;
-    const snippet = (content ?? "").split("\n").slice(lineNumber - 1, lineNumber).join("\n");
-    onAddComment({ file: entry.path, side, startLine: lineNumber, endLine: null, snippet }, "");
-  }, [fd, entry.path, onAddComment, onDeleteComment, blocks]);
+    onAddComment(anchorFromSpans(entry.path, spansFromLines([ref], lineText)), "");
+  };
 
   const startEditRow = useCallback((line: number, text: string) => onStartEdit(entry.path, line, text), [entry.path, onStartEdit]);
   const saveEditRow = useCallback((line: number, expected: string, replacement: string) => onSaveEdit(entry.path, line, expected, replacement), [entry.path, onSaveEdit]);
@@ -946,21 +1008,16 @@ const VFileSection = memo(function VFileSection({
   // never leaves its row is a click: nothing happens here — for `+` the plain
   // onClick still fires and adds the single-line comment.
   const [sel, setSel] = useState<{ a: number; b: number } | null>(null);
-  const onGutterPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+  const onGutterPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!model || !fd || isIgnored) return;
     const t = e.target as HTMLElement;
-    const gut = t.closest("[data-gutter]"), add = t.closest("[data-add-comment]");
+    const handle = t.closest("[data-gutter], [data-add-comment]");
     const rowEl = t.closest("[data-row-index]");
-    if ((!gut && !add) || !rowEl) return;
-    const side: Side = gut
-      ? (gut.getAttribute("data-gutter") === "old" ? "old" : "new")
-      : (add!.getAttribute("data-add-comment") === "old" ? "old" : "new");
+    if (!handle || !rowEl) return;
+    const column = (handle.getAttribute("data-gutter") ?? handle.getAttribute("data-add-comment")) as Side;
     const startIdx = Number(rowEl.getAttribute("data-row-index"));
     e.preventDefault();
     let head = startIdx, moved = false;
-    const lineAt = (i: number): number | undefined => layout === "split"
-      ? (side === "old" ? model.getSplitLeftLine(i) : model.getSplitRightLine(i)).lineNumber
-      : (side === "old" ? model.getUnifiedLine(i).oldLineNumber : model.getUnifiedLine(i).newLineNumber);
     const onMove = (ev: PointerEvent) => {
       const r = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)?.closest("[data-row-index]");
       if (!r) return;
@@ -978,18 +1035,19 @@ const VFileSection = memo(function VFileSection({
       // pointermove away from where the pointer actually let go.
       const r = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)?.closest("[data-row-index]");
       if (r) head = Number(r.getAttribute("data-row-index"));
-      const lo = Math.min(startIdx, head), hi = Math.max(startIdx, head);
-      let startLine: number | null = null, endLine: number | null = null;
-      for (let i = lo; i <= hi; i++) { const n = lineAt(i); if (n != null) { if (startLine == null) startLine = n; endLine = n; } }
-      if (startLine != null && endLine != null && endLine > startLine) {
-        const content = side === "old" ? fd.oldContent : fd.newContent;
-        const snippet = (content ?? "").split("\n").slice(startLine - 1, endLine).join("\n");
-        onAddComment({ file: entry.path, side, startLine, endLine, snippet }, "");
+      const swept: LineRef[] = [];
+      for (let i = Math.min(startIdx, head); i <= Math.max(startIdx, head); i++) {
+        const ref = anchoredLine(i, column);
+        if (ref) swept.push(ref);
       }
+      if (!swept.length) return;
+      const open = openLineEditor();
+      if (open) { applyLines(open, fillGaps(swept), true); return; }
+      onAddComment(anchorFromSpans(entry.path, spansFromLines(fillGaps(swept), lineText)), "");
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
-  }, [model, fd, isIgnored, entry.path, layout, onAddComment]);
+  };
   const selLo = sel ? Math.min(sel.a, sel.b) : -1, selHi = sel ? Math.max(sel.a, sel.b) : -1;
 
   const slash = entry.path.lastIndexOf("/");
@@ -1036,7 +1094,7 @@ const VFileSection = memo(function VFileSection({
         return (
           <SplitColCell
             key={idx} model={model} side={side} index={idx} top={visualRowTop(v)} height={rowPxOf(v)} wrap={wrap}
-            changed={changed} highlighted={rangeRows.has(idx)} selected={idx >= selLo && idx <= selHi}
+            changed={changed} highlighted={commentedCells[side].has(idx)} selected={idx >= selLo && idx <= selHi}
             onComment={commentLine} marks={rowMarks(idx)?.filter((m) => m.side === side)}
             mode={mode} readOnly={isIgnored} rowEdit={rowEdit} onStartEdit={startEditRow} onSaveEdit={saveEditRow} onCancelEdit={onCancelEdit} onEscalateEdit={escalateEditRow}
           />
@@ -1319,6 +1377,7 @@ const VFileSection = memo(function VFileSection({
                     top={top}
                     comments={b.comments}
                     header={header}
+                    editor={editor}
                     onEdit={onEditComment}
                     onDelete={onDeleteComment}
                     onToggleResolved={onToggleResolvedComment}
@@ -1406,7 +1465,7 @@ const VFileSection = memo(function VFileSection({
                   {renderVisual.map((v) => {
                     const vr = visualRows[v];
                     if (vr.kind !== "line") return null;
-                    const hl = rangeRows.has(vr.index);
+                    const hl = commentedCells.new.has(vr.index) || commentedCells.old.has(vr.index);
                     return <Row key={vr.index} model={model} index={vr.index} top={visualRowTop(v)} height={rowPxOf(v)} wrap={wrap} selected={vr.index >= selLo && vr.index <= selHi} highlighted={hl} onComment={commentLine} marks={rowMarks(vr.index)} mode={mode} readOnly={isIgnored} rowEdit={rowEdit} onStartEdit={startEditRow} onSaveEdit={saveEditRow} onCancelEdit={onCancelEdit} onEscalateEdit={escalateEditRow} />;
                   })}
                 </div>
@@ -1427,12 +1486,19 @@ const VFileSection = memo(function VFileSection({
                 return <FoldRow key={`fold-${vr.start}`} top={visualRowTop(v)} count={vr.count} showDown={canDown || both} showUp={canUp || both} onDown={() => growFold(key, "top")} onUp={() => growFold(key, "bottom")} onExpand={() => growFold(key, primary)} onAll={() => growFold(key, "all")} />;
               })}
               {model && blocks.map((b) => (
-                <CommentBlock key={b.id} id={b.id} top={b.index < 0 ? 0 : visualRowTop(blockVa(b)) + rowPxOf(blockVa(b))} comments={b.comments} onEdit={onEditComment} onDelete={onDeleteComment} onToggleResolved={onToggleResolvedComment} onHeight={onHeight} />
+                <CommentBlock key={b.id} id={b.id} top={b.index < 0 ? 0 : visualRowTop(blockVa(b)) + rowPxOf(blockVa(b))} comments={b.comments} editor={editor} onEdit={onEditComment} onDelete={onDeleteComment} onToggleResolved={onToggleResolvedComment} onHeight={onHeight} />
               ))}
             </>
           )}
         </div>
       )}
+      <ConfirmDialog
+        open={confirmDeleteId != null}
+        title="Delete this comment?"
+        message="It has no lines left. This can't be undone."
+        onConfirm={() => { if (confirmDeleteId) onDeleteComment(confirmDeleteId); setConfirmDeleteId(null); }}
+        onCancel={() => { const id = confirmDeleteId; setConfirmDeleteId(null); if (id) focusEditor(id); }}
+      />
     </div>
   );
 });
@@ -1467,7 +1533,7 @@ function useFileDiffCacheEntry(cache: ReturnType<typeof useFileDiffCache>, path:
 }
 
 export function VirtualDiffPane({
-  target, files, theme, layout, viewedFiles, hiddenFiles = viewedFiles, comments, jump, prefetch, invalidate, onReloadSettled, onVisibleFileChange, onToggleViewed, onAddComment, onAddFileComment, onEditComment, onDeleteComment, onToggleResolvedComment, onFileEdited,
+  target, files, theme, layout, viewedFiles, hiddenFiles = viewedFiles, comments, jump, prefetch, invalidate, onReloadSettled, onVisibleFileChange, onToggleViewed, onAddComment, onAddFileComment, onSetCommentSpans, onEditComment, onDeleteComment, onToggleResolvedComment, onFileEdited,
 }: {
   target: Target; files: FileEntry[]; theme: "light" | "dark"; layout: DiffLayout;
   viewedFiles: Set<string>; comments: Comment[];
@@ -1487,6 +1553,7 @@ export function VirtualDiffPane({
   onToggleViewed: (file: string) => void;
   onAddComment: (a: Anchor, body: string) => void;
   onAddFileComment: (file: string, body: string) => void;
+  onSetCommentSpans: (id: string, spans: AnchorSpan[]) => void;
   onEditComment: (id: string, body: string) => void;
   onDeleteComment: (id: string) => void;
   onToggleResolvedComment: (id: string) => void;
@@ -1707,6 +1774,33 @@ export function VirtualDiffPane({
   }, [comments]);
   const noComments = useMemo<Comment[]>(() => [], []);
 
+  const [openEditors, setOpenEditors] = useState<ReadonlyMap<string, { wasBlank: boolean }>>(() => new Map());
+  const editorTexts = useRef(new Map<string, string>());
+  const [seenCommentIds, setSeenCommentIds] = useState<ReadonlySet<string>>(() => new Set());
+  if (comments.some((c) => !seenCommentIds.has(c.id))) {
+    const drafts = comments.filter((c) => !seenCommentIds.has(c.id) && c.body.trim() === "");
+    setSeenCommentIds(new Set(comments.map((c) => c.id)));
+    if (drafts.length) setOpenEditors((prev) => new Map([...prev, ...drafts.map((c) => [c.id, { wasBlank: true }] as const)]));
+  }
+  const threadEditor = useMemo<ThreadEditor>(() => ({
+    open: openEditors,
+    textOf: (id) => editorTexts.current.get(id),
+    onOpen: (id, wasBlank) => setOpenEditors((prev) => {
+      const next = new Map(prev);
+      next.delete(id);
+      return next.set(id, { wasBlank });
+    }),
+    onClose: (id) => {
+      editorTexts.current.delete(id);
+      setOpenEditors((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      });
+    },
+    onText: (id, text) => { editorTexts.current.set(id, text); },
+  }), [openEditors]);
   const [editing, setEditing] = useState<(RowEditState & { file: string }) | null>(null);
   const startEdit = useCallback((file: string, line: number, text: string) => {
     setEditing({ file, line, text, saving: false, error: null });
@@ -2049,7 +2143,8 @@ export function VirtualDiffPane({
                 forceModel={findActive}
                 occ={occ && occ.file === entry.path ? occ.text : null}
                 comments={view || findActive ? (commentsByFile.get(entry.path) ?? noComments) : noComments}
-                onAddComment={onAddComment} onAddFileComment={onAddFileComment} onEditComment={onEditComment} onDeleteComment={onDeleteComment} onToggleResolvedComment={onToggleResolvedComment}
+                editor={threadEditor}
+                onAddComment={onAddComment} onAddFileComment={onAddFileComment} onSetCommentSpans={onSetCommentSpans} onEditComment={onEditComment} onDeleteComment={onDeleteComment} onToggleResolvedComment={onToggleResolvedComment}
                 reportBodyHeight={reportBodyHeight}
               />
             </div>

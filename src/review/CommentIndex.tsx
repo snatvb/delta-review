@@ -8,6 +8,7 @@ import { useResizableWidth, usePaneResize, PaneResizer, COMMENTS_PANE } from "..
 import { pointSuffix } from "../diff/imagePoints";
 import { CommentEditor } from "./CommentEditor";
 import { useCopyCommentForAgent } from "./commentForAgent";
+import { firstLineOf, runsLabel, spansOf } from "./anchorSpans";
 import type { Comment, CommitMeta } from "../types";
 
 // Split so the dir can truncate while the filename (last segment) + line range
@@ -19,11 +20,14 @@ function locationParts(c: Comment): { dir: string; name: string; suffix: string 
   const dir = slash >= 0 ? a.file.slice(0, slash + 1) : "";
   const name = slash >= 0 ? a.file.slice(slash + 1) : a.file;
   // Image point comments locate by their pin ("x30% y62%"), like a line number.
+  const spans = spansOf(a);
+  const current = spans.filter((s) => s.side === "new");
+  const deleted = spans.filter((s) => s.side === "old");
   const suffix = a.x != null && a.y != null
     ? pointSuffix(a.x, a.y)
-    : a.startLine == null
+    : spans.length === 0
       ? "file"
-      : a.endLine && a.endLine !== a.startLine ? `L${a.startLine}–${a.endLine}` : `L${a.startLine}`;
+      : `L${runsLabel(current.length ? current : deleted, "–", ", ")}${current.length && deleted.length ? ` · old ${runsLabel(deleted, "–", ", ")}` : ""}`;
   return { dir, name, suffix };
 }
 
@@ -108,7 +112,7 @@ export function CommentIndex({
       // Same file: by line, with image points ordered by their y fraction (the
       // top-to-bottom order their pins render in), like the diff pane sorts them.
       if (fa === fb) {
-        const la = a.anchor?.startLine ?? 0, lb = b.anchor?.startLine ?? 0;
+        const la = a.anchor ? firstLineOf(a.anchor) : 0, lb = b.anchor ? firstLineOf(b.anchor) : 0;
         if (la !== lb) return la - lb;
         return (a.anchor?.y ?? 0) - (b.anchor?.y ?? 0);
       }
@@ -222,12 +226,15 @@ export function CommentIndex({
             }}
           >
             <span className="flex w-full min-w-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-              {/* The dir truncates first (shrink-[9999]); the filename falls back to
-                  truncating only when it alone overflows; the line range stays pinned. */}
+              {/* The dir truncates first (shrink-[9999]), then a long line list
+                  (shrink-[999], full text in its tooltip); the filename falls
+                  back to truncating only when it alone overflows. */}
               <span className="flex min-w-0 flex-1 items-baseline overflow-hidden">
                 {dir && <span className="min-w-0 shrink-[9999] truncate text-muted-foreground/55">{dir}</span>}
                 <span className="min-w-0 truncate text-foreground/80">{name}</span>
-                <span className="ml-1 shrink-0 text-muted-foreground/70">{suffix}</span>
+                <Hint tip={suffix} side="bottom">
+                  <span className="ml-1 min-w-0 max-w-[60%] shrink-[999] truncate text-muted-foreground/70">{suffix}</span>
+                </Hint>
               </span>
               {c.commit && (
                 <Hint

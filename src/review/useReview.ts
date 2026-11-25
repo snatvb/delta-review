@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { track } from "@/analytics";
 import { api } from "../api";
-import type { Anchor, Comment, CommentScope, Review } from "../types";
+import type { Anchor, AnchorSpan, Comment, CommentScope, Review } from "../types";
+import { anchorFromSpans, scopeForAnchor } from "./anchorSpans";
 
 const DEBOUNCE_MS = 400;
 
@@ -89,6 +90,22 @@ export function useReview(initial: Review | null) {
     if (prev && prev.body.trim() === "" && body.trim() !== "") track("comment_added");
   }, [mutate]);
 
+  const setCommentSpans = useCallback((id: string, spans: AnchorSpan[]) => {
+    const now = new Date().toISOString();
+    const saved = latest.current?.comments.some((c) => c.id === id && c.body.trim() !== "") ?? false;
+    mutate(
+      (r) => ({
+        ...r,
+        comments: r.comments.map((c) => {
+          if (c.id !== id || !c.anchor) return c;
+          const anchor = anchorFromSpans(c.anchor.file, spans);
+          return { ...c, anchor, scope: scopeForAnchor(anchor), updatedAt: now };
+        }),
+      }),
+      saved ? "now" : "none",
+    );
+  }, [mutate]);
+
   const deleteComment = useCallback((id: string) => {
     mutate((r) => ({ ...r, comments: r.comments.filter((c) => c.id !== id) }), "now");
   }, [mutate]);
@@ -128,5 +145,5 @@ export function useReview(initial: Review | null) {
     }, "now");
   }, [mutate]);
 
-  return { review, setReview, addComment, updateCommentBody, deleteComment, clearComments, toggleResolved, toggleViewed, setViewedBulk };
+  return { review, setReview, addComment, updateCommentBody, setCommentSpans, deleteComment, clearComments, toggleResolved, toggleViewed, setViewedBulk };
 }

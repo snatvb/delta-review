@@ -1,4 +1,4 @@
-use crate::review::model::{Comment, CommentScope, Review, Side};
+use crate::review::model::{AnchorSpan, Comment, CommentScope, Review, Side};
 use std::collections::BTreeMap;
 
 pub fn export_markdown(review: &Review) -> String {
@@ -53,7 +53,10 @@ pub fn export_markdown(review: &Review) -> String {
         comments.sort_by(|a, b| {
             let key = |c: &Comment| {
                 let a = c.anchor.as_ref();
-                let line = a.and_then(|a| a.start_line).unwrap_or(0);
+                let line = a
+                    .and_then(|a| a.spans().iter().map(|s| (s.side == Side::Old, s.start)).min())
+                    .map(|(_, start)| start)
+                    .unwrap_or(0);
                 let y = (a.and_then(|a| a.y).unwrap_or(0.0) * 1000.0) as u32;
                 (line, y)
             };
@@ -66,6 +69,23 @@ pub fn export_markdown(review: &Review) -> String {
         };
         for c in comments {
             let a = c.anchor.as_ref().unwrap();
+            let spans = a.spans();
+            let (current, deleted) = spans
+                .iter()
+                .partition::<Vec<_>, _>(|s: &&AnchorSpan| s.side == Side::New);
+            let listed = |group: &[&AnchorSpan]| {
+                group
+                    .iter()
+                    .map(|s| {
+                        if s.start == s.end {
+                            s.start.to_string()
+                        } else {
+                            format!("{}–{}", s.start, s.end)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
             let header = match c.scope {
                 CommentScope::File => "#### File-level".to_string(),
                 CommentScope::Point => match (a.x, a.y) {
@@ -76,15 +96,14 @@ pub fn export_markdown(review: &Review) -> String {
                     ),
                     _ => "#### Image point".to_string(),
                 },
-                CommentScope::Range => match (a.start_line, a.end_line) {
-                    (Some(s), Some(e)) => format!("#### L{s}–{e}"),
-                    (Some(s), _) => format!("#### L{s}"),
-                    _ => "#### File-level".to_string(),
-                },
-                _ => a
-                    .start_line
-                    .map(|s| format!("#### L{s}"))
-                    .unwrap_or_else(|| "#### File-level".to_string()),
+                _ if spans.is_empty() => "#### File-level".to_string(),
+                _ if current.is_empty() => format!("#### L{}", listed(&deleted)),
+                _ if deleted.is_empty() => format!("#### L{}", listed(&current)),
+                _ => format!(
+                    "#### L{} · deleted: old side {}",
+                    listed(&current),
+                    listed(&deleted)
+                ),
             };
             let side_note = if a.side == Side::Old {
                 " · old-side"
@@ -99,8 +118,44 @@ pub fn export_markdown(review: &Review) -> String {
                 "{header}{side_note}{commit_note}{}\n",
                 stale_suffix(c)
             ));
-            if let Some(snippet) = &a.snippet {
-                out.push_str(&format!("```{lang}\n{}\n```\n", snippet.trim_end()));
+            let text_of = |group: &[&AnchorSpan]| {
+                group
+                    .iter()
+                    .map(|s| s.text.trim_end())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            let fence = |text: &str| format!("```{lang}\n{text}\n```");
+            let split = !current.is_empty() && !deleted.is_empty();
+            let snippet = if split {
+                let part = |label: String, text: String| {
+                    (!text.trim().is_empty()).then(|| format!("{label}\n{}", fence(&text)))
+                };
+                [
+                    part(
+                        format!("deleted (old side {}):", listed(&deleted)),
+                        text_of(&deleted),
+                    ),
+                    part(format!("current ({}):", listed(&current)), text_of(&current)),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("\n\n")
+            } else if spans.is_empty() {
+                String::new()
+            } else {
+                fence(&text_of(if current.is_empty() { &deleted } else { &current }))
+            };
+            if !snippet.is_empty() {
+                if split {
+                    out.push('\n');
+                }
+                out.push_str(&snippet);
+                out.push('\n');
+                if split {
+                    out.push('\n');
+                }
             }
             out.push_str(&format!("{}\n\n", c.body.trim()));
         }
@@ -129,7 +184,7 @@ fn stale_suffix(c: &Comment) -> &'static str {
 mod tests {
     use super::*;
     use crate::git::model::{DiffMode, Target};
-    use crate::review::model::{Anchor, CommentScope, Snapshot};
+    use crate::review::model::{Anchor, AnchorSpan, CommentScope, Side, Snapshot};
 
     fn review_with(comments: Vec<Comment>) -> Review {
         let target = Target {
@@ -187,6 +242,7 @@ mod tests {
                     snippet: Some("export const TTL = 3600".into()),
                     x: None,
                     y: None,
+                    spans: None,
                 }),
                 "make configurable",
                 false,
@@ -218,6 +274,7 @@ mod tests {
                 snippet: Some("export const TTL = 3600".into()),
                 x: None,
                 y: None,
+                spans: None,
             }),
             "make configurable",
             false,
@@ -242,6 +299,7 @@ mod tests {
                     snippet: None,
                     x: Some(x),
                     y: Some(y),
+                    spans: None,
                 }),
                 &format!("note at y{y}"),
                 false,
@@ -269,6 +327,7 @@ mod tests {
                 snippet: Some("if (!token) return null".into()),
                 x: None,
                 y: None,
+                spans: None,
             }),
             "redundant guard",
             true,
@@ -277,6 +336,66 @@ mod tests {
         assert!(md.contains("⚠ stale"));
         assert!(md.contains("redundant guard"));
         assert!(md.contains("old-side"));
+    }
+
+    fn span(side: Side, start: u32, end: u32, text: &str) -> AnchorSpan {
+        AnchorSpan { side, start, end, text: text.into() }
+    }
+
+    #[test]
+    fn every_selected_run_is_listed_in_the_header_and_the_snippet() {
+        let comment = cmt(
+            CommentScope::Range,
+            Some(Anchor {
+                file: "src/a.ts".into(),
+                side: Side::New,
+                start_line: None,
+                end_line: None,
+                snippet: None,
+                x: None,
+                y: None,
+                spans: Some(vec![span(Side::New, 3, 5, "a\nb\nc"), span(Side::New, 10, 10, "j")]),
+            }),
+            "split these",
+            false,
+            false,
+        );
+        let md = export_markdown(&review_with(vec![comment]));
+        assert!(
+            md.contains("#### L3–5, 10\n```ts\na\nb\nc\nj\n```\nsplit these"),
+            "{md}"
+        );
+    }
+
+    #[test]
+    fn deleted_lines_get_their_own_block() {
+        let comment = cmt(
+            CommentScope::Range,
+            Some(Anchor {
+                file: "src/a.ts".into(),
+                side: Side::New,
+                start_line: None,
+                end_line: None,
+                snippet: None,
+                x: None,
+                y: None,
+                spans: Some(vec![
+                    span(Side::New, 10, 12, "j\nk\nl"),
+                    span(Side::New, 20, 20, "t"),
+                    span(Side::Old, 8, 9, "h\ni"),
+                ]),
+            }),
+            "rethink",
+            false,
+            false,
+        );
+        let md = export_markdown(&review_with(vec![comment]));
+        assert!(
+            md.contains(
+                "#### L10–12, 20 · deleted: old side 8–9\n\ndeleted (old side 8–9):\n```ts\nh\ni\n```\n\ncurrent (10–12, 20):\n```ts\nj\nk\nl\nt\n```\n\nrethink"
+            ),
+            "{md}"
+        );
     }
 
     #[test]
@@ -292,6 +411,7 @@ mod tests {
                     snippet: Some("keep".into()),
                     x: None,
                     y: None,
+                    spans: None,
                 }),
                 "keep me",
                 false,
@@ -307,6 +427,7 @@ mod tests {
                     snippet: Some("gone".into()),
                     x: None,
                     y: None,
+                    spans: None,
                 }),
                 "resolved away",
                 false,
@@ -329,6 +450,7 @@ mod tests {
                 snippet: Some("export const TTL = 3600".into()),
                 x: None,
                 y: None,
+                spans: None,
             }),
             "make configurable",
             false,
