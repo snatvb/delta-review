@@ -8,6 +8,7 @@ import { FILE_TYPE_FILTERS, useFileTypeFilter, type FileTypeFilter } from "../fi
 import { useUnreviewableLast } from "../unreviewableLastPref";
 import { useUpdateCheck } from "../updater/updateCheckPref";
 import { useAutoDownload } from "../updater/autoDownloadPref";
+import { REPO_SORTS, useRepoSort, type RepoSort } from "../repoSortPref";
 import { Chevron, Divider, OnOffToggle, Row, selectClass } from "./controls";
 import { useTerminalShell } from "../terminal/terminalShellPref";
 import { isWindows } from "../lib/platform";
@@ -27,6 +28,7 @@ export function GeneralSection() {
   const [unreviewableLast, setUnreviewableLast] = useUnreviewableLast();
   const [updateCheck, setUpdateCheck] = useUpdateCheck();
   const [autoDownload, setAutoDownload] = useAutoDownload();
+  const [repoSort, setRepoSort] = useRepoSort();
 
   return (
     <div>
@@ -82,6 +84,28 @@ export function GeneralSection() {
             >
               <option value="new-window">New window</option>
               <option value="replace">Current window</option>
+            </select>
+            <Chevron />
+          </div>
+        }
+      />
+
+      <Divider />
+
+      <Row
+        label="Sort repos by"
+        hint="Order of repositories in the launcher and ⌘K. Manual: drag a repo to arrange it. A search still ranks by match."
+        control={
+          <div className="relative">
+            <select
+              aria-label="Sort repos by"
+              value={repoSort}
+              onChange={(e) => setRepoSort(e.target.value as RepoSort)}
+              className={selectClass}
+            >
+              {REPO_SORTS.map((item) => (
+                <option key={item.value} value={item.value}>{item.label}</option>
+              ))}
             </select>
             <Chevron />
           </div>

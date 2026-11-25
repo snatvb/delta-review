@@ -1,5 +1,6 @@
 import { worktreeActivity } from "./fuzzy";
 import type { PickerWorktree } from "../types";
+import type { RepoSort } from "../repoSortPref";
 
 export interface RepoScope {
   repoId: string;
@@ -20,9 +21,36 @@ export interface PickerItemsInput {
   expanded: ReadonlySet<string>;
   searching: boolean;
   pinnedRepoId?: string;
+  sort: RepoSort;
+  repoOrder: readonly string[];
 }
 
-function groupByRepo(ranked: PickerWorktree[], pinnedRepoId?: string): PickerWorktree[][] {
+const byRepoName = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+export function arrangeRepoIds(incoming: readonly string[], saved: readonly string[]): string[] {
+  const rank = new Map(saved.map((id, at) => [id, at] as const));
+  const placed = incoming.filter((id) => rank.has(id)).sort((a, b) => rank.get(a)! - rank.get(b)!);
+  return [...incoming.filter((id) => !rank.has(id)), ...placed];
+}
+
+export function moveRepo(ids: readonly string[], repo: string, slot: number): string[] {
+  const rest = ids.filter((id) => id !== repo);
+  rest.splice(slot, 0, repo);
+  return rest;
+}
+
+function arrangeRepos(rest: PickerWorktree[][], sort: RepoSort, savedOrder: readonly string[]): PickerWorktree[][] {
+  if (sort === "name") {
+    return [...rest].sort((a, b) => byRepoName.compare(a[0].repoName, b[0].repoName));
+  }
+  if (sort === "manual") {
+    const byId = new Map(rest.map((group) => [group[0].repoId, group] as const));
+    return arrangeRepoIds([...byId.keys()], savedOrder).map((id) => byId.get(id)!);
+  }
+  return rest;
+}
+
+function groupByRepo(ranked: PickerWorktree[], pinnedRepoId: string | undefined, sort: RepoSort, savedOrder: readonly string[]): PickerWorktree[][] {
   const groups = new Map<string, PickerWorktree[]>();
   for (const w of ranked) {
     const group = groups.get(w.repoId);
@@ -33,24 +61,22 @@ function groupByRepo(ranked: PickerWorktree[], pinnedRepoId?: string): PickerWor
     }
   }
   const ordered = [...groups.values()];
-  const pinned = ordered.findIndex((g) => g[0].repoId === pinnedRepoId);
-  if (pinned > 0) {
-    ordered.unshift(...ordered.splice(pinned, 1));
-  }
-  return ordered;
+  const pinned = ordered.find((g) => g[0].repoId === pinnedRepoId);
+  const rest = ordered.filter((g) => g !== pinned);
+  return pinned ? [pinned, ...arrangeRepos(rest, sort, savedOrder)] : arrangeRepos(rest, sort, savedOrder);
 }
 
 function mainWorktreeFirst(group: PickerWorktree[]): PickerWorktree[] {
   return [...group.filter((w) => w.isMain), ...group.filter((w) => !w.isMain)];
 }
 
-export function buildPickerItems({ ranked, scope, collapsed, expanded, searching, pinnedRepoId }: PickerItemsInput): PickerItem[] {
+export function buildPickerItems({ ranked, scope, collapsed, expanded, searching, pinnedRepoId, sort, repoOrder }: PickerItemsInput): PickerItem[] {
   const arrange = searching ? (group: PickerWorktree[]) => group : mainWorktreeFirst;
   if (scope) {
     return arrange(ranked.filter((w) => w.repoId === scope.repoId)).map((w) => ({ kind: "worktree", w, nested: false }));
   }
   const items: PickerItem[] = [];
-  for (const group of groupByRepo(ranked, pinnedRepoId).map(arrange)) {
+  for (const group of groupByRepo(ranked, pinnedRepoId, searching ? "recent" : sort, repoOrder).map(arrange)) {
     const { repoId, repoName } = group[0];
     const isCollapsed = !searching && collapsed.has(repoId);
     const lastActivity = group.map(worktreeActivity).reduce((a, b) => (b > a ? b : a), "");

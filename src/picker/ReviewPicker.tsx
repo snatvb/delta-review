@@ -15,15 +15,27 @@ import {
   buildPickerItems,
   itemRepoId,
   loadCollapsedRepos,
+  moveRepo,
   saveCollapsedRepos,
   scopeFromQuery,
   type PickerItem,
   type RepoScope,
 } from "./pickerGroups";
+import { dropIndex, slides, type RepoBox } from "./repoDrag";
 import { sameFolder } from "../lib/sameFolder";
-import { Trash2, FolderPlus, ChevronRight, ListFilter, X } from "lucide-react";
+import { cn } from "../lib/utils";
+import { REPO_SORTS, useRepoSort, type RepoSort } from "../repoSortPref";
+import { useRepoOrder } from "../repoOrderPref";
+import { Trash2, FolderPlus, ChevronRight, ChevronDown, ArrowUpDown, ListFilter, X } from "lucide-react";
 import { Kbd } from "@/components/ui/kbd";
 import { Hint } from "@/components/Hint";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+} from "@/components/ui/dropdown-menu";
 import type { PickerWorktree, ReviewEntry, Target } from "../types";
 
 export interface ReviewPickerProps {
@@ -42,7 +54,10 @@ type Row = {
   onActivate: () => void;
   onDelete?: () => void;
   onScope?: () => void;
+  onPress?: (event: React.PointerEvent<HTMLButtonElement>) => void;
 };
+
+type RepoDrag = { repoId: string; from: number; slot: number };
 
 // Virtualized list metrics (px). A repo can have dozens of worktrees, so mounting
 // every row is the picker's open cost — we render only the rows in the viewport.
@@ -52,8 +67,18 @@ const MORE_H = 28;
 const PAD = 6;
 const OVERSCAN = 220;
 const DEFAULT_VIEWPORT = 420;
+const CELL_FRAME = { position: "absolute", left: PAD, right: PAD } as const;
+const DRAG_THRESHOLD = 4;
+const AUTOSCROLL_EDGE = 36;
+const AUTOSCROLL_SPEED = 0.75;
 
 type Cell = { top: number; height: number; key: string; i: number };
+
+function swallowNextClick(): void {
+  const swallow = (event: MouseEvent) => event.stopPropagation();
+  window.addEventListener("click", swallow, { capture: true });
+  setTimeout(() => window.removeEventListener("click", swallow, true), 0);
+}
 
 function worktreeNode(w: PickerWorktree, nested: boolean): ReactNode {
   return (
@@ -86,12 +111,52 @@ function rowHeight(item: PickerItem): number {
   return item.kind === "more" ? MORE_H : WORKTREE_H;
 }
 
+function RepoSortMenu({ onClosed }: { onClosed: () => void }) {
+  const [sort, setSort] = useRepoSort();
+  const current = REPO_SORTS.find((item) => item.value === sort)!.shortLabel;
+  return (
+    <DropdownMenu>
+      <Hint tip="Sort repos">
+        <DropdownMenuTrigger
+          aria-label={`Sort repos: ${current}`}
+          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-input bg-muted/40 px-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <ArrowUpDown className="size-3.5" />
+          {current}
+          <ChevronDown className="size-3 shrink-0" />
+        </DropdownMenuTrigger>
+      </Hint>
+      <DropdownMenuContent
+        align="end"
+        onKeyDown={(event) => event.stopPropagation()}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          onClosed();
+        }}
+      >
+        <DropdownMenuRadioGroup aria-label="Sort repos" value={sort} onValueChange={(value) => setSort(value as RepoSort)}>
+          {REPO_SORTS.map((item) => (
+            <DropdownMenuRadioItem key={item.value} value={item.value}>
+              {item.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+        <p className="max-w-[15rem] px-2 py-1 text-[11px] text-muted-foreground">
+          {sort === "manual" ? "Drag a repo to arrange the list." : "Dragging a repo arranges it manually."}
+        </p>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteReview }: ReviewPickerProps) {
   // Seeds from the shared cache for an instant reopen, then revalidates on mount and
   // whenever the window regains focus, so freshly-created worktrees show up. (#refresh)
   const data = usePickerData();
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<RepoScope | null>(null);
+  const [sort, setRepoSort] = useRepoSort();
+  const [repoOrder, setRepoOrder] = useRepoOrder();
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(loadCollapsedRepos);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const [sel, setSel] = useState(0);
@@ -105,6 +170,10 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
   // Reviews deleted this session: the folder row stays (it's a real place), but
   // its joined review — counts, delete button, resume-on-open — drops off.
   const [deletedIds, setDeletedIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [repoDrag, setRepoDrag] = useState<RepoDrag | null>(null);
+  const ghostRef = useRef<HTMLDivElement>(null);
+  const cancelDrag = useRef<(() => void) | null>(null);
+  useEffect(() => () => cancelDrag.current?.(), []);
 
   async function deleteReviewOf(w: PickerWorktree) {
     const r = w.review;
@@ -133,8 +202,9 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
   const currentRepoId = all.find((w) => isCurrentWorktree(w.path))?.repoId;
   const ranked = rankWorktrees(all.filter((w) => !isCurrentWorktree(w.path)).map(visible), query);
   const searching = query.trim() !== "";
+  const canDrag = data != null && !searching && scope == null;
   const itemsFor = (forScope: RepoScope | null) =>
-    buildPickerItems({ ranked, scope: forScope, collapsed, expanded, searching, pinnedRepoId: currentRepoId });
+    buildPickerItems({ ranked, scope: forScope, collapsed, expanded, searching, pinnedRepoId: currentRepoId, sort, repoOrder });
   const items = itemsFor(scope);
 
   function persistCollapsed(next: ReadonlySet<string>) {
@@ -174,7 +244,13 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
     const repoId = itemRepoId(item);
     const base = { height: rowHeight(item), repoId, onScope: () => enterScope(repoId) };
     if (item.kind === "repo") {
-      return { ...base, key: `repo-${repoId}`, node: repoNode(item), onActivate: () => setRepoCollapsed(repoId, !item.collapsed) };
+      return {
+        ...base,
+        key: `repo-${repoId}`,
+        node: repoNode(item),
+        onActivate: () => setRepoCollapsed(repoId, !item.collapsed),
+        onPress: canDrag && repoId !== currentRepoId ? (event) => pressRepo(event, repoId) : undefined,
+      };
     }
     if (item.kind === "more") {
       return { ...base, key: `more-${repoId}`, node: moreNode(item.hidden), onActivate: () => setExpanded((prev) => new Set(prev).add(repoId)) };
@@ -207,6 +283,28 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
   const totalHeight = y + PAD;
   const visibleCells = cells.filter((c) => c.top + c.height >= scrollTop - OVERSCAN && c.top <= scrollTop + viewportH + OVERSCAN);
 
+  const repoBoxes: RepoBox[] = [];
+  cells.forEach((cell, i) => {
+    if (items[i].kind === "repo") {
+      repoBoxes.push({ repoId: items[i].repoId, top: cell.top, height: cell.height });
+    } else if (repoBoxes.length > 0) {
+      repoBoxes[repoBoxes.length - 1].height += cell.height;
+    }
+  });
+  const slideOf = new Map<string, number>();
+  let slotTop = PAD;
+  let activeDrag: { repoId: string; height: number; header: Extract<PickerItem, { kind: "repo" }> } | null = null;
+  if (repoDrag) {
+    const box = repoBoxes.find((candidate) => candidate.repoId === repoDrag.repoId);
+    const header = items.find((it): it is Extract<PickerItem, { kind: "repo" }> => it.kind === "repo" && it.repoId === repoDrag.repoId);
+    if (box && header) {
+      const others = repoBoxes.filter((candidate) => candidate !== box);
+      slides(others, repoDrag.from, repoDrag.slot, box.height).forEach((px, j) => slideOf.set(others[j].repoId, px));
+      slotTop = PAD + others.slice(0, repoDrag.slot).reduce((sum, other) => sum + other.height, 0);
+      activeDrag = { repoId: repoDrag.repoId, height: box.height, header };
+    }
+  }
+
   // Keep the keyboard-selected row in view — its cell may not be rendered, so scroll
   // by computed offset rather than scrollIntoView.
   useEffect(() => {
@@ -217,6 +315,100 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
     else if (cell.top + cell.height > el.scrollTop + el.clientHeight) el.scrollTop = cell.top + cell.height - el.clientHeight + PAD;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clampedSel]);
+
+  function pressRepo(event: React.PointerEvent<HTMLButtonElement>, repoId: string) {
+    const list = listRef.current;
+    const box = repoBoxes.find((candidate) => candidate.repoId === repoId);
+    if (event.button !== 0 || !list || !box) return;
+    const from = repoBoxes.indexOf(box);
+    const others = repoBoxes.filter((candidate) => candidate !== box);
+    const minSlot = repoBoxes[0].repoId === currentRepoId ? 1 : 0;
+    const displayed = repoBoxes.map((candidate) => candidate.repoId);
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const grabOffset = startY - event.currentTarget.getBoundingClientRect().top;
+    let pointerY = startY;
+    let slot = from;
+    let active = false;
+    let frame = 0;
+    let lastTick = 0;
+
+    const slotAt = () => {
+      const rect = list.getBoundingClientRect();
+      if (pointerY < rect.top || pointerY > rect.bottom) return from;
+      return Math.max(minSlot, dropIndex(others, pointerY - rect.top + list.scrollTop));
+    };
+    const track = () => {
+      const next = slotAt();
+      if (next === slot) return;
+      slot = next;
+      setRepoDrag({ repoId, from, slot });
+    };
+    const place = () => {
+      const ghost = ghostRef.current;
+      if (!ghost) return;
+      const rect = list.getBoundingClientRect();
+      ghost.style.left = `${rect.left + PAD}px`;
+      ghost.style.width = `${list.clientWidth - PAD * 2}px`;
+      ghost.style.top = `${Math.min(Math.max(pointerY - grabOffset, rect.top), rect.bottom - REPO_H)}px`;
+    };
+    const onMove = (moved: PointerEvent) => {
+      pointerY = moved.clientY;
+      if (!active) {
+        if (Math.hypot(moved.clientX - startX, pointerY - startY) < DRAG_THRESHOLD) return;
+        active = true;
+        setRepoDrag({ repoId, from, slot });
+      }
+      track();
+      place();
+    };
+    const finish = (commit: boolean) => {
+      cancelDrag.current = null;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onDrop);
+      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("blur", onCancel);
+      window.removeEventListener("keydown", onKeydown);
+      cancelAnimationFrame(frame);
+      if (!active) return;
+      swallowNextClick();
+      setRepoDrag(null);
+      if (!commit || slot === from) return;
+      const order = moveRepo(displayed, repoId, slot);
+      setRepoOrder(order);
+      setRepoSort("manual");
+      const landed = buildPickerItems({ ranked, scope, collapsed, expanded, searching, pinnedRepoId: currentRepoId, sort: "manual", repoOrder: order });
+      setSel(Math.max(0, landed.findIndex((it) => it.kind === "repo" && it.repoId === repoId)));
+    };
+    const onDrop = () => finish(true);
+    const onCancel = () => finish(false);
+    const onKeydown = (pressed: KeyboardEvent) => {
+      if (pressed.key !== "Escape") return;
+      pressed.preventDefault();
+      onCancel();
+    };
+    const autoscroll = (now: number) => {
+      if (active) {
+        const rect = list.getBoundingClientRect();
+        const above = rect.top + AUTOSCROLL_EDGE - pointerY;
+        const below = pointerY - (rect.bottom - AUTOSCROLL_EDGE);
+        if (above > 0 || below > 0) {
+          const intoEdge = Math.min(1, Math.max(above, below) / AUTOSCROLL_EDGE);
+          list.scrollTop += (below > 0 ? 1 : -1) * AUTOSCROLL_SPEED * Math.min(now - lastTick, 50) * intoEdge;
+        }
+        track();
+      }
+      lastTick = now;
+      frame = requestAnimationFrame(autoscroll);
+    };
+    cancelDrag.current = onCancel;
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onDrop);
+    window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("blur", onCancel);
+    window.addEventListener("keydown", onKeydown);
+    frame = requestAnimationFrame(autoscroll);
+  }
 
   function foldSelected(key: "ArrowLeft" | "ArrowRight"): boolean {
     const item = items[clampedSel];
@@ -233,6 +425,7 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
   }
 
   function onKey(e: React.KeyboardEvent) {
+    if (repoDrag) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setSel((s) => Math.min(rows.length - 1, s + 1));
@@ -305,6 +498,7 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
           value={query}
           onChange={(e) => onQueryChange(e.target.value)}
         />
+        <RepoSortMenu onClosed={() => inputRef.current?.focus()} />
         <Hint tip="Add a repo…">
           <button
             type="button"
@@ -319,6 +513,7 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
       </div>
       <div
         ref={listRef}
+        data-testid="picker-list"
         onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
         className="min-h-0 flex-1 overflow-auto"
       >
@@ -334,22 +529,36 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
           </div>
         ) : (
           <div style={{ position: "relative", height: totalHeight }}>
+            {activeDrag && (
+              <div
+                className="pointer-events-none absolute rounded-md border border-dashed border-primary/40 bg-primary/5"
+                style={{ top: slotTop, height: activeDrag.height, left: PAD, right: PAD }}
+              />
+            )}
             {visibleCells.map((c) => {
               const row = rows[c.i];
               const isSel = c.i === clampedSel;
               const item = items[c.i];
+              const slide = slideOf.get(row.repoId) ?? 0;
+              const isDragged = activeDrag?.repoId === row.repoId;
               return (
                 <div
                   key={c.key}
                   data-index={c.i}
-                  style={{ position: "absolute", top: c.top, height: c.height, left: PAD, right: PAD }}
-                  className={`group flex items-center rounded-md ${isSel ? "bg-accent text-accent-foreground" : "hover:bg-muted/60"}`}
+                  style={{ ...CELL_FRAME, top: c.top, height: c.height, transform: slide ? `translateY(${slide}px)` : undefined }}
+                  className={cn(
+                    "group flex items-center rounded-md",
+                    isSel ? "bg-accent text-accent-foreground" : "hover:bg-muted/60",
+                    activeDrag && "transition-transform duration-150 ease-out",
+                    isDragged && "opacity-0",
+                  )}
                   onMouseMove={(e) => onItemMouseMove(e, c.i)}
                 >
                   <button
                     type="button"
-                    className="flex h-full min-w-0 flex-1 items-center gap-2.5 px-3 text-left outline-none"
+                    className={`flex h-full min-w-0 flex-1 items-center gap-2.5 px-3 text-left outline-none ${row.onPress ? "cursor-grab select-none" : ""}`}
                     onClick={row.onActivate}
+                    onPointerDown={row.onPress}
                   >
                     {row.node}
                   </button>
@@ -383,6 +592,18 @@ export function ReviewPicker({ current, onOpenWorktree, onAddRepo, onDeleteRevie
           </div>
         )}
       </div>
+      {activeDrag && (
+        <>
+          <div data-testid="drag-shield" className="fixed inset-0 z-40 cursor-grabbing" />
+          <div
+            ref={ghostRef}
+            className="pointer-events-none fixed z-50 flex items-center rounded-md border border-border bg-popover px-3 text-[13px] text-popover-foreground shadow-lg ring-1 ring-foreground/10"
+            style={{ height: REPO_H }}
+          >
+            {repoNode(activeDrag.header)}
+          </div>
+        </>
+      )}
       <div className="flex shrink-0 items-center gap-4 border-t border-border/70 px-4 py-1.5 text-[11px] text-muted-foreground">
         <span>↑↓ navigate</span>
         <span>↵ open</span>

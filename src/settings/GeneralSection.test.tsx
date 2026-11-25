@@ -1,10 +1,23 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, expect, it } from "vitest";
 import { getFileTypeFilter, setFileTypeFilter } from "../fileTypeFilterPref";
+import { getRepoSort, setRepoSort } from "../repoSortPref";
 import { GeneralSection } from "./GeneralSection";
 
 beforeEach(() => {
   setFileTypeFilter("only-tests");
+  setRepoSort("recent");
+});
+
+it("offers the repo orders and stores the chosen one", () => {
+  render(<GeneralSection />);
+  const sort = screen.getByRole("combobox", { name: "Sort repos by" });
+  expect(sort).toHaveValue("recent");
+  expect(screen.getByRole("option", { name: "Manual" })).toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "Recent activity" })).toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "Name" })).toBeInTheDocument();
+  fireEvent.change(sort, { target: { value: "name" } });
+  expect(getRepoSort()).toBe("name");
 });
 
 it("uses the shared three-way file filter instead of a conflicting Hide tests toggle", () => {
